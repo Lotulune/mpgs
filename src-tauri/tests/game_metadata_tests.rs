@@ -222,12 +222,145 @@ fn sqlite_round_trips_cached_game_analysis_report() {
         .expect("load game analysis")
         .expect("analysis exists");
 
+    let stored_generated_at: Option<String> = conn
+        .query_row(
+            "SELECT ai_analysis_generated_at FROM games WHERE appid = ?1",
+            [card.appid],
+            |row| row.get(0),
+        )
+        .expect("query analysis generated at");
+
+    assert_eq!(loaded.appid, card.appid);
+    assert_eq!(loaded.generated_at, "2026-04-30T09:15:00Z");
     assert_eq!(loaded.source, AnalysisSource::Rule);
     assert_eq!(loaded.confidence, AnalysisConfidence::Medium);
+    assert_eq!(loaded.overall_score, 76.0);
     assert_eq!(
         loaded.overview,
         "Strong co-op signals with some onboarding friction."
     );
+    assert_eq!(stored_generated_at.as_deref(), Some("2026-04-30T09:15:00Z"));
+    assert_eq!(loaded.dimension_scores.len(), 1);
+    assert_eq!(loaded.dimension_scores[0].key, "co_op_depth");
+    assert_eq!(loaded.dimension_scores[0].label, "Co-op Depth");
+    assert_eq!(loaded.dimension_scores[0].score, 81.0);
+    assert_eq!(
+        loaded.dimension_scores[0].reason,
+        "Layered coordination mechanics appear consistently in store metadata."
+    );
+    assert_eq!(loaded.strengths.len(), 1);
+    assert_eq!(loaded.strengths[0].title, "Clear team roles");
+    assert_eq!(
+        loaded.strengths[0].reason,
+        "Review and tag signals both point to role-based co-op play."
+    );
+    assert_eq!(loaded.risks.len(), 1);
+    assert_eq!(loaded.risks[0].title, "Steep onboarding");
+    assert_eq!(
+        loaded.risks[0].reason,
+        "Early-session complexity may slow first-match retention."
+    );
     assert_eq!(loaded.evidence.len(), 1);
+    assert_eq!(loaded.evidence[0].kind, AnalysisEvidenceKind::Tags);
+    assert_eq!(loaded.evidence[0].label, "Top tags");
+    assert_eq!(loaded.evidence[0].value, "Co-op, Strategy");
+    assert_eq!(
+        loaded.evidence[0].interpretation,
+        "Store tags reinforce the coordination-heavy multiplayer angle."
+    );
     assert_eq!(loaded.review_evidence.len(), 1);
+    assert_eq!(
+        loaded.review_evidence[0].stance,
+        AnalysisReviewStance::Strength
+    );
+    assert_eq!(
+        loaded.review_evidence[0].quote,
+        "The teamwork clicks once everyone owns a station."
+    );
+    assert_eq!(
+        loaded.review_evidence[0].playtime_text,
+        "12.4 hrs on record"
+    );
+    assert_eq!(
+        loaded.review_evidence[0].interpretation,
+        "Players praise the role clarity after a short learning curve."
+    );
+}
+
+#[test]
+fn save_game_analysis_rejects_mismatched_report_appid() {
+    let conn = empty_db();
+    let card = GameCard {
+        appid: 3_990_031,
+        name: "Mismatch Dock".to_string(),
+        section: "new".to_string(),
+        short_description: None,
+        release_date: None,
+        release_date_text: "TBA".to_string(),
+        release_state: StoreReleaseState::Tba,
+        demo_status: DemoStatus::Released,
+        supported_languages: vec!["english".to_string()],
+        is_adult_content: false,
+        price_text: None,
+        discount_percent: None,
+        positive_review_pct: None,
+        total_reviews: None,
+        current_players: None,
+        recommendation_score: 40.0,
+        ai_score: None,
+        ai_summary: "Mismatch fixture.".to_string(),
+        capsule_url: "https://cdn.example.test/mismatch-dock.jpg".to_string(),
+        store_screenshot_urls: vec![],
+        tags: vec![],
+        multiplayer_modes: vec!["Online Co-op".to_string()],
+        review_snippets: vec![],
+        user_state: UserGameState::default(),
+    };
+    db::upsert_game(&conn, &card).expect("upsert game");
+
+    let report = GameAnalysisReport {
+        appid: card.appid + 1,
+        generated_at: "2026-04-30T10:00:00Z".to_string(),
+        source: AnalysisSource::Rule,
+        confidence: AnalysisConfidence::Low,
+        overall_score: 10.0,
+        overview: "Mismatched report".to_string(),
+        dimension_scores: vec![],
+        strengths: vec![],
+        risks: vec![],
+        evidence: vec![],
+        review_evidence: vec![],
+    };
+
+    let error = db::save_game_analysis(&conn, card.appid, &report).expect_err("should reject");
+    assert!(
+        error
+            .to_string()
+            .contains("report appid does not match target appid"),
+        "unexpected error: {error:#}"
+    );
+}
+
+#[test]
+fn save_game_analysis_requires_existing_game_row() {
+    let conn = empty_db();
+    let report = GameAnalysisReport {
+        appid: 3_990_041,
+        generated_at: "2026-04-30T10:05:00Z".to_string(),
+        source: AnalysisSource::Rule,
+        confidence: AnalysisConfidence::Low,
+        overall_score: 22.0,
+        overview: "Missing game row".to_string(),
+        dimension_scores: vec![],
+        strengths: vec![],
+        risks: vec![],
+        evidence: vec![],
+        review_evidence: vec![],
+    };
+
+    let error = db::save_game_analysis(&conn, report.appid, &report).expect_err("should reject");
+    assert!(
+        error.to_string().contains("no game row found for appid"),
+        "unexpected error: {error:#}"
+    );
 }

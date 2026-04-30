@@ -9,7 +9,7 @@ use crate::models::{
 use crate::recommendation::{
     bucket_game, compute_recommendation_score, today_iso_utc, DemoStatus, GameFacts, ReleaseBucket,
 };
-use anyhow::{Context, Result};
+use anyhow::{ensure, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use std::collections::HashSet;
 use std::path::Path;
@@ -610,7 +610,13 @@ pub fn load_game_analysis(conn: &Connection, appid: u32) -> Result<Option<GameAn
 }
 
 pub fn save_game_analysis(conn: &Connection, appid: u32, report: &GameAnalysisReport) -> Result<()> {
-    conn.execute(
+    ensure!(
+        appid == report.appid,
+        "report appid does not match target appid: target={appid}, report={}",
+        report.appid
+    );
+
+    let updated_rows = conn.execute(
         r#"
         UPDATE games
         SET ai_analysis_report_json = ?2,
@@ -619,6 +625,8 @@ pub fn save_game_analysis(conn: &Connection, appid: u32, report: &GameAnalysisRe
         "#,
         params![appid, serde_json::to_string(report)?, report.generated_at],
     )?;
+
+    ensure!(updated_rows == 1, "no game row found for appid {appid}");
     Ok(())
 }
 
