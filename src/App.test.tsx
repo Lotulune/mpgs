@@ -4,8 +4,12 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 import { mockDashboard } from "./data/mockDashboard";
+import type { GameAnalysisReport } from "./types";
 
+const assessGameWithAiMock = vi.fn();
 const getDashboardMock = vi.fn();
+const getGameAnalysisMock = vi.fn();
+const generateGameAnalysisMock = vi.fn();
 const syncSeedGamesMock = vi.fn();
 
 vi.mock("./api/client", async () => {
@@ -13,8 +17,10 @@ vi.mock("./api/client", async () => {
 
   return {
     ...actual,
-    assessGameWithAi: vi.fn(),
+    assessGameWithAi: (...args: unknown[]) => assessGameWithAiMock(...args),
     getDashboard: () => getDashboardMock(),
+    getGameAnalysis: (...args: unknown[]) => getGameAnalysisMock(...args),
+    generateGameAnalysis: (...args: unknown[]) => generateGameAnalysisMock(...args),
     previewSteamAppList: vi.fn(),
     saveConfig: vi.fn(),
     setGameUserState: vi.fn(),
@@ -80,6 +86,64 @@ function buildBackfillDashboard() {
   return dashboard;
 }
 
+function buildAnalysisReport(
+  appid: number,
+  overrides: Partial<GameAnalysisReport> = {},
+): GameAnalysisReport {
+  return {
+    appid,
+    generatedAt: "2026-04-30T12:45:00.000Z",
+    source: "hybrid",
+    confidence: "high",
+    overallScore: 92,
+    overview: "打开详情页后应直接显示缓存分析。",
+    dimensionScores: [
+      {
+        key: "approachability",
+        label: "易上手度",
+        score: 88,
+        reason: "回归测试夹具。",
+      },
+      {
+        key: "multiplayer_fun",
+        label: "联机乐趣",
+        score: 94,
+        reason: "回归测试夹具。",
+      },
+      {
+        key: "content_depth",
+        label: "内容深度",
+        score: 86,
+        reason: "回归测试夹具。",
+      },
+      {
+        key: "reputation_stability",
+        label: "口碑稳定性",
+        score: 95,
+        reason: "回归测试夹具。",
+      },
+      {
+        key: "activity_health",
+        label: "活跃健康度",
+        score: 90,
+        reason: "回归测试夹具。",
+      },
+    ],
+    strengths: [{ title: "缓存可见", reason: "详情页直接显示摘要。" }],
+    risks: [{ title: "无", reason: "纯回归夹具。" }],
+    evidence: [
+      {
+        kind: "positive_review_pct",
+        label: "好评率",
+        value: "97%",
+        interpretation: "回归测试夹具。",
+      },
+    ],
+    reviewEvidence: [],
+    ...overrides,
+  };
+}
+
 function getGameTitles(sectionHeading: string) {
   const heading = screen.getByRole("heading", { name: sectionHeading });
   const section = heading.closest(".game-section");
@@ -97,6 +161,17 @@ describe("App dashboard interactions", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     getDashboardMock.mockResolvedValue(buildDashboard());
+    assessGameWithAiMock.mockResolvedValue({
+      appid: 0,
+      score: 80,
+      summary: "AI 评估结果",
+      bestFor: [],
+      risks: [],
+    });
+    getGameAnalysisMock.mockResolvedValue(null);
+    generateGameAnalysisMock.mockImplementation(async (appid: number) =>
+      buildAnalysisReport(appid),
+    );
     syncSeedGamesMock.mockResolvedValue({
       updatedGames: 0,
       failedGames: 0,
@@ -251,5 +326,76 @@ describe("App dashboard interactions", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "快速同步" }));
     expect(syncSeedGamesMock).toHaveBeenNthCalledWith(2, "quick");
+  });
+
+  it("opens a dashboard game card into detail view and shows cached analysis", async () => {
+    const dashboard = buildDashboard();
+    const report = buildAnalysisReport(dashboard.newGames[0].appid);
+    getDashboardMock.mockResolvedValue(dashboard);
+    getGameAnalysisMock.mockResolvedValue(report);
+    generateGameAnalysisMock.mockResolvedValue(report);
+
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "新游区" });
+
+    const newGamesSection = screen
+      .getByRole("heading", { name: "新游区" })
+      .closest(".game-section");
+    if (!(newGamesSection instanceof HTMLElement)) {
+      throw new Error("Missing 新游区 section");
+    }
+
+    fireEvent.click(
+      within(newGamesSection).getByRole("button", {
+        name: new RegExp(dashboard.newGames[0].name, "i"),
+      }),
+    );
+
+    expect(await screen.findByText(report.overview)).toBeInTheDocument();
+    expect(generateGameAnalysisMock).not.toHaveBeenCalled();
+  });
+
+  it("refreshes the selected detail game from the latest dashboard payload", async () => {
+    const initialDashboard = buildDashboard();
+    const updatedDashboard = buildDashboard();
+    const targetAppid = initialDashboard.newGames[0].appid;
+    const refreshedDescription = "刷新后的详情简介，应替换掉旧的选中游戏对象。";
+
+    initialDashboard.newGames[0] = {
+      ...initialDashboard.newGames[0],
+      shortDescription: "旧的详情简介。",
+    };
+    updatedDashboard.newGames[0] = {
+      ...updatedDashboard.newGames[0],
+      shortDescription: refreshedDescription,
+    };
+
+    getDashboardMock
+      .mockResolvedValueOnce(initialDashboard)
+      .mockResolvedValue(updatedDashboard);
+    getGameAnalysisMock.mockResolvedValue(buildAnalysisReport(targetAppid));
+
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "新游区" });
+
+    const newGamesSection = screen
+      .getByRole("heading", { name: "新游区" })
+      .closest(".game-section");
+    if (!(newGamesSection instanceof HTMLElement)) {
+      throw new Error("Missing 新游区 section");
+    }
+
+    fireEvent.click(
+      within(newGamesSection).getByRole("button", {
+        name: new RegExp(initialDashboard.newGames[0].name, "i"),
+      }),
+    );
+
+    expect(await screen.findByText("旧的详情简介。")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByText(refreshedDescription)).toBeInTheDocument(),
+    );
   });
 });

@@ -117,13 +117,16 @@ function App() {
 
   async function refreshDashboard() {
     const payload = await getDashboard();
+    const latestGames = [
+      ...payload.upcoming,
+      ...payload.newGames,
+      ...payload.classics,
+    ];
     setDashboard(payload);
     setSelectedGame(
       (current) =>
-        current ??
-        payload.upcoming[0] ??
-        payload.newGames[0] ??
-        payload.classics[0] ??
+        latestGames.find((game) => game.appid === current?.appid) ??
+        latestGames[0] ??
         null,
     );
     return payload;
@@ -363,7 +366,6 @@ function App() {
           <DetailPage
             game={selectedGame}
             isBusy={isBusy}
-            onAiAssess={() => handleAiAssess(selectedGame)}
             onBack={() => setActiveView("home")}
             onToggleState={(patch, message) =>
               handleUserState(selectedGame.appid, patch, message)
