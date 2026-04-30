@@ -152,6 +152,68 @@ export interface AiAssessment {
   risks: string[];
 }
 
+export type AnalysisSource = "hybrid" | "rule";
+
+export type AnalysisConfidence = "high" | "medium" | "low";
+
+export type AnalysisEvidenceKind =
+  | "positive_review_pct"
+  | "total_reviews"
+  | "current_players"
+  | "tags"
+  | "multiplayer_modes"
+  | "short_description"
+  | "review_snippet";
+
+export type AnalysisReviewStance = "strength" | "risk";
+
+export type AnalysisDimensionKey =
+  | "approachability"
+  | "multiplayer_fun"
+  | "content_depth"
+  | "reputation_stability"
+  | "activity_health";
+
+export interface AnalysisDimensionScore {
+  key: AnalysisDimensionKey;
+  label: string;
+  score: number;
+  reason: string;
+}
+
+export interface AnalysisPoint {
+  title: string;
+  reason: string;
+}
+
+export interface AnalysisEvidenceItem {
+  kind: AnalysisEvidenceKind;
+  label: string;
+  value: string;
+  interpretation: string;
+}
+
+export interface AnalysisReviewEvidenceItem {
+  stance: AnalysisReviewStance;
+  quote: string;
+  playtimeText: string;
+  interpretation: string;
+}
+
+export interface GameAnalysisReport {
+  appid: number;
+  generatedAt: string;
+  source: AnalysisSource;
+  confidence: AnalysisConfidence;
+  overallScore: number;
+  overview: string;
+  dimensionScores: AnalysisDimensionScore[];
+  strengths: AnalysisPoint[];
+  risks: AnalysisPoint[];
+  evidence: AnalysisEvidenceItem[];
+  reviewEvidence: AnalysisReviewEvidenceItem[];
+}
+
 export interface SteamAppListPreview {
   apps: SteamAppListItem[];
   lastAppid?: number | null;

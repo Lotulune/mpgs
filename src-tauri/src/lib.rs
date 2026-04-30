@@ -43,6 +43,8 @@ pub fn run() {
             commands::sync_seed_games,
             commands::discover_steam_games,
             commands::assess_game_with_ai,
+            commands::get_game_analysis,
+            commands::generate_game_analysis,
             commands::preview_steam_app_list,
             commands::set_game_user_state,
             commands::get_user_collections,

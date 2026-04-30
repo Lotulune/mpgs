@@ -6,11 +6,12 @@ use crate::discovery::{
     DISCOVERY_CURSOR_CONFIG_KEY,
 };
 use crate::discovery_task::{emit_snapshot, spawn_discovery_worker, DiscoveryControl};
-use crate::llm::{self, LlmRuntimeConfig};
+use crate::game_analysis;
+use crate::llm::LlmRuntimeConfig;
 use crate::models::{
     AiAssessment, DashboardPayload, DiscoveryRunSnapshot, DiscoveryRunStatus, DiscoveryTaskRequest,
-    PublicConfig, SaveConfigRequest, SyncMode, SyncReport, SyncRequest, UserCollections,
-    UserGameState, UserGameStatePatch,
+    GameAnalysisReport, PublicConfig, SaveConfigRequest, SyncMode, SyncReport, SyncRequest,
+    UserCollections, UserGameState, UserGameStatePatch,
 };
 use crate::recommendation::{bucket_game, ReleaseBucket};
 use crate::state::AppState;
@@ -237,38 +238,28 @@ pub async fn assess_game_with_ai(
     state: State<'_, AppState>,
     appid: u32,
 ) -> Result<AiAssessment, String> {
-    let (game, config) = {
-        let conn = state.db.lock().map_err(|err| err.to_string())?;
-        let game = db::load_game(&conn, appid)
-            .map_err(to_command_error)?
-            .ok_or_else(|| format!("未找到 Steam App {appid}"))?;
-        let config = LlmRuntimeConfig {
-            api_key: db::get_secret(&conn, "llm_api_key").map_err(to_command_error)?,
-            base_url: db::get_config(&conn, "llm_base_url")
-                .map_err(to_command_error)?
-                .unwrap_or_else(|| "https://api.openai.com".to_string()),
-            model: db::get_config(&conn, "llm_model")
-                .map_err(to_command_error)?
-                .unwrap_or_else(|| "gpt-4.1-mini".to_string()),
-        };
-        (game, config)
-    };
-
-    let assessment = llm::assess_game(&state.http, &config, &game)
+    generate_assessment_from_report_pipeline(state.inner(), appid)
         .await
-        .map_err(to_command_error)?;
+        .map_err(to_command_error)
+}
 
-    {
-        let conn = state.db.lock().map_err(|err| err.to_string())?;
-        if let Some(mut existing) = db::load_game(&conn, appid).map_err(to_command_error)? {
-            existing.ai_score = Some(assessment.score);
-            existing.ai_summary = assessment.summary.clone();
-            existing.recommendation_score = db::score_card(&existing);
-            db::upsert_game(&conn, &existing).map_err(to_command_error)?;
-        }
-    }
+#[tauri::command]
+pub fn get_game_analysis(
+    state: State<'_, AppState>,
+    appid: u32,
+) -> Result<Option<GameAnalysisReport>, String> {
+    load_cached_game_analysis(state.inner(), appid).map_err(to_command_error)
+}
 
-    Ok(assessment)
+#[tauri::command]
+pub async fn generate_game_analysis(
+    state: State<'_, AppState>,
+    appid: u32,
+    force_refresh: Option<bool>,
+) -> Result<GameAnalysisReport, String> {
+    generate_or_load_game_analysis(state.inner(), appid, force_refresh.unwrap_or(false))
+        .await
+        .map_err(to_command_error)
 }
 
 #[tauri::command]
@@ -652,6 +643,81 @@ fn to_command_error(error: anyhow::Error) -> String {
     error.to_string()
 }
 
+fn load_cached_game_analysis(
+    state: &AppState,
+    appid: u32,
+) -> anyhow::Result<Option<GameAnalysisReport>> {
+    let conn = state
+        .db
+        .lock()
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+    db::load_game_analysis(&conn, appid)
+}
+
+fn summarize_analysis_report_as_assessment(report: GameAnalysisReport) -> AiAssessment {
+    game_analysis::summarize_report_as_assessment(&report)
+}
+
+async fn generate_assessment_from_report_pipeline(
+    state: &AppState,
+    appid: u32,
+) -> anyhow::Result<AiAssessment> {
+    let report = generate_or_load_game_analysis(state, appid, true).await?;
+    Ok(summarize_analysis_report_as_assessment(report))
+}
+
+async fn generate_or_load_game_analysis(
+    state: &AppState,
+    appid: u32,
+    force_refresh: bool,
+) -> anyhow::Result<GameAnalysisReport> {
+    let (game, config, cached_report) = {
+        let conn = state
+            .db
+            .lock()
+            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+        let game = db::load_game(&conn, appid)?
+            .ok_or_else(|| anyhow::anyhow!("未找到 Steam App {appid}"))?;
+        let config = load_llm_runtime_config(&conn)?;
+        let cached_report = if force_refresh {
+            None
+        } else {
+            db::load_game_analysis(&conn, appid)?
+        };
+        (game, config, cached_report)
+    };
+
+    if let Some(cached_report) = cached_report {
+        return Ok(cached_report);
+    }
+
+    let report =
+        game_analysis::generate_game_analysis(&state.http, &config, &game, now_rfc3339()?).await?;
+
+    let mut updated_game = game;
+    updated_game.ai_score = Some(report.overall_score);
+    updated_game.ai_summary = report.overview.clone();
+    updated_game.recommendation_score = db::score_card(&updated_game);
+
+    let conn = state
+        .db
+        .lock()
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+    db::save_game_analysis(&conn, appid, &report)?;
+    db::upsert_game(&conn, &updated_game)?;
+
+    Ok(report)
+}
+
+fn load_llm_runtime_config(conn: &rusqlite::Connection) -> anyhow::Result<LlmRuntimeConfig> {
+    Ok(LlmRuntimeConfig {
+        api_key: db::get_secret(conn, "llm_api_key")?,
+        base_url: db::get_config(conn, "llm_base_url")?
+            .unwrap_or_else(|| "https://api.openai.com".to_string()),
+        model: db::get_config(conn, "llm_model")?.unwrap_or_else(|| "gpt-4.1-mini".to_string()),
+    })
+}
+
 fn now_rfc3339() -> anyhow::Result<String> {
     Ok(OffsetDateTime::now_utc().format(&Rfc3339)?)
 }
@@ -660,5 +726,239 @@ fn sync_mode_label(mode: SyncMode) -> &'static str {
     match mode {
         SyncMode::Quick => "快速同步",
         SyncMode::Full => "完整同步",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        generate_assessment_from_report_pipeline, generate_or_load_game_analysis,
+        load_cached_game_analysis,
+    };
+    use crate::backfill_task::BackfillRuntimeState;
+    use crate::db;
+    use crate::discovery_task::DiscoveryRuntimeState;
+    use crate::models::{
+        AnalysisConfidence, AnalysisDimensionScore, AnalysisEvidenceItem, AnalysisEvidenceKind,
+        AnalysisPoint, AnalysisReviewEvidenceItem, AnalysisReviewStance, AnalysisSource,
+        GameAnalysisReport, GameCard, ReviewSnippet, StoreReleaseState, UserGameState,
+    };
+    use crate::recommendation::DemoStatus;
+    use crate::state::AppState;
+    use crate::sync_task::SyncRuntimeState;
+    use reqwest::Client;
+    use rusqlite::Connection;
+    use std::sync::Mutex;
+
+    fn seeded_state() -> AppState {
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        db::migrate(&conn).expect("migrate");
+        let card = GameCard {
+            appid: 7_301,
+            name: "Harbor Crew".to_string(),
+            short_description: Some(
+                "A cooperative harbor sim with short-session runs.".to_string(),
+            ),
+            section: "new".to_string(),
+            release_date: Some("2026-03-18".to_string()),
+            release_date_text: "2026-03-18".to_string(),
+            release_state: StoreReleaseState::Released,
+            demo_status: DemoStatus::ReleasedWithDemo,
+            supported_languages: vec!["English".to_string(), "Simplified Chinese".to_string()],
+            is_adult_content: false,
+            price_text: Some("$19.99".to_string()),
+            discount_percent: Some(15),
+            positive_review_pct: Some(91.0),
+            total_reviews: Some(1248),
+            current_players: Some(1860),
+            recommendation_score: 86.0,
+            ai_score: Some(88.0),
+            ai_summary: "seeded summary".to_string(),
+            capsule_url: "https://example.com/capsule.jpg".to_string(),
+            store_screenshot_urls: vec!["https://example.com/shot-1.jpg".to_string()],
+            tags: vec![
+                "Co-op".to_string(),
+                "Simulation".to_string(),
+                "Casual".to_string(),
+            ],
+            multiplayer_modes: vec!["Online Co-op".to_string(), "LAN Co-op".to_string()],
+            review_snippets: vec![
+                ReviewSnippet {
+                    voted_up: true,
+                    review: "Great with friends and easy to teach.".to_string(),
+                    playtime_hours: Some(18.4),
+                },
+                ReviewSnippet {
+                    voted_up: false,
+                    review: "Late-game variety is still a bit thin.".to_string(),
+                    playtime_hours: Some(14.7),
+                },
+            ],
+            user_state: UserGameState::default(),
+        };
+        db::upsert_game(&conn, &card).expect("seed game");
+
+        AppState {
+            db: Mutex::new(conn),
+            http: Client::builder().build().expect("build test client"),
+            discovery: Mutex::new(DiscoveryRuntimeState::default()),
+            backfill: Mutex::new(BackfillRuntimeState::default()),
+            sync: Mutex::new(SyncRuntimeState::default()),
+        }
+    }
+
+    fn cached_report(
+        appid: u32,
+        generated_at: &str,
+        summary: &str,
+        score: f64,
+    ) -> GameAnalysisReport {
+        GameAnalysisReport {
+            appid,
+            generated_at: generated_at.to_string(),
+            source: AnalysisSource::Hybrid,
+            confidence: AnalysisConfidence::High,
+            overall_score: score,
+            overview: summary.to_string(),
+            dimension_scores: vec![
+                AnalysisDimensionScore {
+                    key: "approachability".to_string(),
+                    label: "易上手度".to_string(),
+                    score,
+                    reason: "cached".to_string(),
+                },
+                AnalysisDimensionScore {
+                    key: "multiplayer_fun".to_string(),
+                    label: "联机乐趣".to_string(),
+                    score,
+                    reason: "cached".to_string(),
+                },
+                AnalysisDimensionScore {
+                    key: "content_depth".to_string(),
+                    label: "内容深度".to_string(),
+                    score,
+                    reason: "cached".to_string(),
+                },
+                AnalysisDimensionScore {
+                    key: "reputation_stability".to_string(),
+                    label: "口碑稳定性".to_string(),
+                    score,
+                    reason: "cached".to_string(),
+                },
+                AnalysisDimensionScore {
+                    key: "activity_health".to_string(),
+                    label: "活跃健康度".to_string(),
+                    score,
+                    reason: "cached".to_string(),
+                },
+            ],
+            strengths: vec![AnalysisPoint {
+                title: "缓存优势".to_string(),
+                reason: "cached".to_string(),
+            }],
+            risks: vec![AnalysisPoint {
+                title: "缓存风险".to_string(),
+                reason: "cached".to_string(),
+            }],
+            evidence: vec![AnalysisEvidenceItem {
+                kind: AnalysisEvidenceKind::PositiveReviewPct,
+                label: "好评率".to_string(),
+                value: "91%".to_string(),
+                interpretation: "cached".to_string(),
+            }],
+            review_evidence: vec![AnalysisReviewEvidenceItem {
+                stance: AnalysisReviewStance::Strength,
+                quote: "cached".to_string(),
+                playtime_text: "10.0h".to_string(),
+                interpretation: "cached".to_string(),
+            }],
+        }
+    }
+
+    #[test]
+    fn cached_read_path_returns_none_before_generation() {
+        let state = seeded_state();
+
+        let cached = load_cached_game_analysis(&state, 7_301).expect("load cached report");
+
+        assert!(cached.is_none());
+        let conn = state.db.lock().expect("lock db");
+        assert!(db::load_game_analysis(&conn, 7_301)
+            .expect("reload cached report")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn generate_path_without_force_refresh_returns_cached_report_when_present() {
+        let state = seeded_state();
+        let report = cached_report(7_301, "2026-04-30T10:00:00Z", "cached summary", 77.0);
+        {
+            let conn = state.db.lock().expect("lock db");
+            db::save_game_analysis(&conn, 7_301, &report).expect("save cached report");
+        }
+
+        let generated = generate_or_load_game_analysis(&state, 7_301, false)
+            .await
+            .expect("load report");
+
+        assert_eq!(generated.generated_at, "2026-04-30T10:00:00Z");
+        assert_eq!(generated.overview, "cached summary");
+        assert_eq!(generated.source, AnalysisSource::Hybrid);
+    }
+
+    #[tokio::test]
+    async fn generate_path_with_force_refresh_regenerates_and_overwrites_cache() {
+        let state = seeded_state();
+        let stale = cached_report(7_301, "2026-04-30T10:00:00Z", "stale cached summary", 61.0);
+        {
+            let conn = state.db.lock().expect("lock db");
+            db::save_game_analysis(&conn, 7_301, &stale).expect("save stale report");
+        }
+
+        let generated = generate_or_load_game_analysis(&state, 7_301, true)
+            .await
+            .expect("regenerate report");
+
+        assert_ne!(generated.generated_at, stale.generated_at);
+        assert_ne!(generated.overview, stale.overview);
+        let conn = state.db.lock().expect("lock db");
+        let saved = db::load_game_analysis(&conn, 7_301)
+            .expect("load saved report")
+            .expect("saved report exists");
+        assert_eq!(saved.generated_at, generated.generated_at);
+        assert_eq!(saved.overview, generated.overview);
+        assert_eq!(saved.overall_score, generated.overall_score);
+    }
+
+    #[tokio::test]
+    async fn legacy_assess_path_adapts_from_report_pipeline() {
+        let state = seeded_state();
+        let stale = cached_report(7_301, "2026-04-30T10:00:00Z", "stale cached summary", 61.0);
+        {
+            let conn = state.db.lock().expect("lock db");
+            db::save_game_analysis(&conn, 7_301, &stale).expect("save stale report");
+        }
+
+        let assessment = generate_assessment_from_report_pipeline(&state, 7_301)
+            .await
+            .expect("generate assessment");
+        let conn = state.db.lock().expect("lock db");
+        let saved = db::load_game_analysis(&conn, 7_301)
+            .expect("load saved report")
+            .expect("saved report exists");
+
+        assert_eq!(assessment.appid, saved.appid);
+        assert_eq!(assessment.summary, saved.overview);
+        assert_eq!(assessment.score, saved.overall_score);
+        assert_eq!(
+            assessment.best_for,
+            saved
+                .strengths
+                .iter()
+                .map(|item| item.title.clone())
+                .take(3)
+                .collect::<Vec<_>>()
+        );
+        assert_ne!(assessment.summary, stale.overview);
     }
 }

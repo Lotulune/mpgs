@@ -2,9 +2,18 @@ import { invoke } from "@tauri-apps/api/core";
 import { mockDashboard } from "../data/mockDashboard";
 import type {
   AiAssessment,
+  AnalysisConfidence,
+  AnalysisDimensionScore,
+  AnalysisEvidenceItem,
+  AnalysisPoint,
+  AnalysisReviewEvidenceItem,
+  AnalysisReviewStance,
+  AnalysisSource,
   DashboardPayload,
   DiscoveryRunSnapshot,
   DiscoveryTaskRequest,
+  GameAnalysisReport,
+  GameCard,
   PublicConfig,
   SaveConfigRequest,
   SteamDiscoveryReport,
@@ -17,12 +26,145 @@ import type {
   UserGameStatePatch,
 } from "../types";
 
-export const isTauriRuntime = () => "__TAURI_INTERNALS__" in window;
+export const isTauriRuntime = () =>
+  typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 const mockDiscoveryTaskHistory: DiscoveryRunSnapshot[] = [];
+const mockGameAnalysisCache = new Map<number, GameAnalysisReport>();
+let mockGameAnalysisVersion = 0;
+
+export function __resetMockGameAnalysisCacheForTests() {
+  mockGameAnalysisCache.clear();
+  mockGameAnalysisVersion = 0;
+}
 
 function allMockGames() {
   return [...mockDashboard.upcoming, ...mockDashboard.newGames, ...mockDashboard.classics];
+}
+
+function cloneAnalysisPoint(point: AnalysisPoint): AnalysisPoint {
+  return { ...point };
+}
+
+function cloneDimensionScore(score: AnalysisDimensionScore): AnalysisDimensionScore {
+  return { ...score };
+}
+
+function cloneEvidenceItem(item: AnalysisEvidenceItem): AnalysisEvidenceItem {
+  return { ...item };
+}
+
+function cloneReviewEvidenceItem(
+  item: AnalysisReviewEvidenceItem,
+): AnalysisReviewEvidenceItem {
+  return { ...item };
+}
+
+function cloneGameAnalysisReport(report: GameAnalysisReport): GameAnalysisReport {
+  return {
+    ...report,
+    dimensionScores: report.dimensionScores.map(cloneDimensionScore),
+    strengths: report.strengths.map(cloneAnalysisPoint),
+    risks: report.risks.map(cloneAnalysisPoint),
+    evidence: report.evidence.map(cloneEvidenceItem),
+    reviewEvidence: report.reviewEvidence.map(cloneReviewEvidenceItem),
+  };
+}
+
+function nextMockGeneratedAt() {
+  mockGameAnalysisVersion += 1;
+  return new Date(Date.UTC(2026, 3, 30, 12, 0, mockGameAnalysisVersion)).toISOString();
+}
+
+function buildMockAnalysisReport(game: GameCard): GameAnalysisReport {
+  const generatedAt = nextMockGeneratedAt();
+  const versionLabel = `模拟分析 ${mockGameAnalysisVersion}`;
+  const positiveReviewPct = game.positiveReviewPct ?? 0;
+  const totalReviews = game.totalReviews ?? 0;
+  const currentPlayers = game.currentPlayers ?? 0;
+  const source: AnalysisSource = "rule";
+  const confidence: AnalysisConfidence =
+    positiveReviewPct >= 85 && totalReviews >= 100 ? "high" : "medium";
+  const dimensionScores: AnalysisDimensionScore[] = [
+    {
+      key: "approachability",
+      label: "易上手度",
+      score: Math.min(95, Math.max(60, (game.aiScore ?? game.recommendationScore) - 4)),
+      reason: `${versionLabel}：${game.demoStatus.includes("demo") ? "有 Demo 或试玩路径" : "直接发售"}，上手门槛相对清晰。`,
+    },
+    {
+      key: "multiplayer_fun",
+      label: "联机乐趣",
+      score: Math.min(96, Math.max(62, game.recommendationScore)),
+      reason: `${versionLabel}：联机模式覆盖 ${game.multiplayerModes.join(" / ") || "多人协作"}。`,
+    },
+    {
+      key: "content_depth",
+      label: "内容深度",
+      score: Math.min(92, Math.max(58, game.recommendationScore - 3)),
+      reason: `${versionLabel}：标签聚焦 ${game.tags.slice(0, 3).join(" / ") || "多人体验"}，适合先看中期留存。`,
+    },
+    {
+      key: "reputation_stability",
+      label: "口碑稳定性",
+      score: Math.min(98, Math.max(50, positiveReviewPct)),
+      reason: `${versionLabel}：好评率 ${positiveReviewPct || "未知"}%，评测量 ${totalReviews || "未知"}。`,
+    },
+    {
+      key: "activity_health",
+      label: "活跃健康度",
+      score: Math.min(95, currentPlayers > 0 ? 60 + Math.log10(currentPlayers + 1) * 10 : 55),
+      reason: `${versionLabel}：当前在线 ${currentPlayers || "未知"}，可作为组队活跃参考。`,
+    },
+  ];
+
+  return {
+    appid: game.appid,
+    generatedAt,
+    source,
+    confidence,
+    overallScore: game.aiScore ?? game.recommendationScore,
+    overview: `${versionLabel}：${game.aiSummary || "适合多人尝鲜，但需要结合评测再判断。"}（生成于 ${generatedAt}）`,
+    dimensionScores,
+    strengths: [
+      {
+        title: "适合朋友开黑",
+        reason: `${versionLabel}：多人模式信息明确，适合固定队伍快速开局。`,
+      },
+      {
+        title: "口碑基础清晰",
+        reason: `${versionLabel}：好评率与现有推荐分都指向较稳的第一印象。`,
+      },
+    ],
+    risks: [
+      {
+        title: "浏览器模式为本地模拟",
+        reason: `${versionLabel}：当前结果未走真实数据库或在线叙事补丁。`,
+      },
+    ],
+    evidence: [
+      {
+        kind: "positive_review_pct",
+        label: "好评率",
+        value: positiveReviewPct ? `${positiveReviewPct}%` : "未知",
+        interpretation: `${versionLabel}：浏览器模式直接复用 mockDashboard 元数据。`,
+      },
+      {
+        kind: "multiplayer_modes",
+        label: "联机模式",
+        value: game.multiplayerModes.join(" / ") || "未知",
+        interpretation: `${versionLabel}：联机模式决定了朋友局的协作方式。`,
+      },
+    ],
+    reviewEvidence: [
+      {
+        stance: "strength" satisfies AnalysisReviewStance,
+        quote: game.aiSummary || "浏览器模式未收集真实评测。",
+        playtimeText: "mock",
+        interpretation: `${versionLabel}：浏览器模式仅提供本地预览证据。`,
+      },
+    ],
+  };
 }
 
 function cloneDiscoverySnapshot(
@@ -129,6 +271,45 @@ export async function assessGameWithAi(appid: number): Promise<AiAssessment> {
     };
   }
   return invoke<AiAssessment>("assess_game_with_ai", { appid });
+}
+
+export async function getGameAnalysis(
+  appid: number,
+): Promise<GameAnalysisReport | null> {
+  if (!isTauriRuntime()) {
+    const cached = mockGameAnalysisCache.get(appid);
+    return cached ? cloneGameAnalysisReport(cached) : null;
+  }
+
+  return invoke<GameAnalysisReport | null>("get_game_analysis", { appid });
+}
+
+export async function generateGameAnalysis(
+  appid: number,
+  forceRefresh = false,
+): Promise<GameAnalysisReport> {
+  if (!isTauriRuntime()) {
+    if (!forceRefresh) {
+      const cached = mockGameAnalysisCache.get(appid);
+      if (cached) {
+        return cloneGameAnalysisReport(cached);
+      }
+    }
+
+    const game = allMockGames().find((item) => item.appid === appid);
+    if (!game) {
+      throw new Error(`未找到 Steam App ${appid}`);
+    }
+
+    const report = buildMockAnalysisReport(game);
+    mockGameAnalysisCache.set(appid, report);
+    return cloneGameAnalysisReport(report);
+  }
+
+  return invoke<GameAnalysisReport>("generate_game_analysis", {
+    appid,
+    forceRefresh,
+  });
 }
 
 export async function setGameUserState(
