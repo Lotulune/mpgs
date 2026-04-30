@@ -218,27 +218,58 @@ fn build_evidence(game: &GameCard) -> Vec<AnalysisEvidenceItem> {
 }
 
 fn build_review_evidence(game: &GameCard) -> Vec<AnalysisReviewEvidenceItem> {
-    game.review_snippets
+    let mut items = game
+        .review_snippets
         .iter()
         .take(4)
-        .map(|snippet| AnalysisReviewEvidenceItem {
-            stance: if snippet.voted_up {
-                AnalysisReviewStance::Strength
-            } else {
-                AnalysisReviewStance::Risk
-            },
-            quote: snippet.review.clone(),
-            playtime_text: snippet
-                .playtime_hours
-                .map(|hours| format!("{hours:.1}h"))
-                .unwrap_or_else(|| "未知时长".to_string()),
-            interpretation: if snippet.voted_up {
-                "正向评测通常反映了合作体验、反馈手感或上手门槛的优势。".to_string()
-            } else {
-                "负向评测可用于识别内容深度、平衡或留存方面的风险。".to_string()
-            },
-        })
-        .collect()
+        .map(review_snippet_to_evidence)
+        .collect::<Vec<_>>();
+
+    let has_positive_anywhere = game.review_snippets.iter().any(|snippet| snippet.voted_up);
+    let has_negative_anywhere = game.review_snippets.iter().any(|snippet| !snippet.voted_up);
+    let has_strength_selected = items
+        .iter()
+        .any(|item| item.stance == AnalysisReviewStance::Strength);
+    let has_risk_selected = items
+        .iter()
+        .any(|item| item.stance == AnalysisReviewStance::Risk);
+
+    if has_positive_anywhere && has_negative_anywhere {
+        if !has_strength_selected {
+            if let Some(snippet) = game.review_snippets.iter().find(|snippet| snippet.voted_up) {
+                items.push(review_snippet_to_evidence(snippet));
+            }
+        }
+        if !has_risk_selected {
+            if let Some(snippet) = game.review_snippets.iter().find(|snippet| !snippet.voted_up) {
+                items.push(review_snippet_to_evidence(snippet));
+            }
+        }
+    }
+
+    items
+}
+
+fn review_snippet_to_evidence(
+    snippet: &crate::models::ReviewSnippet,
+) -> AnalysisReviewEvidenceItem {
+    AnalysisReviewEvidenceItem {
+        stance: if snippet.voted_up {
+            AnalysisReviewStance::Strength
+        } else {
+            AnalysisReviewStance::Risk
+        },
+        quote: snippet.review.clone(),
+        playtime_text: snippet
+            .playtime_hours
+            .map(|hours| format!("{hours:.1}h"))
+            .unwrap_or_else(|| "未知时长".to_string()),
+        interpretation: if snippet.voted_up {
+            "正向评测通常反映了合作体验、反馈手感或上手门槛的优势。".to_string()
+        } else {
+            "负向评测可用于识别内容深度、平衡或留存方面的风险。".to_string()
+        },
+    }
 }
 
 fn derive_confidence(

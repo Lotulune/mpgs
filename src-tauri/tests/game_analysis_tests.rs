@@ -3,8 +3,8 @@ use tauri_app_lib::game_analysis::{
 };
 use tauri_app_lib::llm::AnalysisNarrative;
 use tauri_app_lib::models::{
-    AnalysisConfidence, AnalysisPoint, AnalysisSource, GameCard, ReviewSnippet, StoreReleaseState,
-    UserGameState,
+    AnalysisConfidence, AnalysisPoint, AnalysisReviewStance, AnalysisSource, GameCard,
+    ReviewSnippet, StoreReleaseState, UserGameState,
 };
 use tauri_app_lib::recommendation::DemoStatus;
 
@@ -57,6 +57,38 @@ fn rich_fixture_game() -> GameCard {
     }
 }
 
+fn late_negative_fixture_game() -> GameCard {
+    let mut game = rich_fixture_game();
+    game.review_snippets = vec![
+        ReviewSnippet {
+            voted_up: true,
+            review: "Great onboarding for our group.".to_string(),
+            playtime_hours: Some(12.1),
+        },
+        ReviewSnippet {
+            voted_up: true,
+            review: "Easy to jump into after work.".to_string(),
+            playtime_hours: Some(8.7),
+        },
+        ReviewSnippet {
+            voted_up: true,
+            review: "Co-op tasks make communication fun.".to_string(),
+            playtime_hours: Some(16.4),
+        },
+        ReviewSnippet {
+            voted_up: true,
+            review: "Good value for short weekly sessions.".to_string(),
+            playtime_hours: Some(11.0),
+        },
+        ReviewSnippet {
+            voted_up: false,
+            review: "The endgame loop gets repetitive too quickly.".to_string(),
+            playtime_hours: Some(21.3),
+        },
+    ];
+    game
+}
+
 #[test]
 fn build_rule_report_returns_rich_rule_report() {
     let report = build_rule_report(&rich_fixture_game(), "2026-04-30T12:00:00Z".to_string())
@@ -73,6 +105,24 @@ fn build_rule_report_returns_rich_rule_report() {
         report.evidence
     );
     assert!(report.review_evidence.len() >= 2);
+}
+
+#[test]
+fn build_rule_report_review_evidence_keeps_both_stances_when_negative_is_late() {
+    let report = build_rule_report(
+        &late_negative_fixture_game(),
+        "2026-04-30T12:00:00Z".to_string(),
+    )
+    .expect("rule report should build");
+
+    assert!(report
+        .review_evidence
+        .iter()
+        .any(|item| item.stance == AnalysisReviewStance::Strength));
+    assert!(report
+        .review_evidence
+        .iter()
+        .any(|item| item.stance == AnalysisReviewStance::Risk));
 }
 
 #[test]
