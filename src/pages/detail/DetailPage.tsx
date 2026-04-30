@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import type { GameCard, UserGameStatePatch } from "../../types";
+import { GameAnalysisPanel } from "./GameAnalysisPanel";
+import { useGameAnalysis } from "./useGameAnalysis";
 
 type DetailTab = "ai" | "reviews" | "related";
 const detailTabs: DetailTab[] = ["ai", "reviews", "related"];
@@ -18,18 +20,19 @@ export function DetailPage({
   game,
   relatedGames,
   onBack,
-  onAiAssess,
+  onAiAssess: _onAiAssess,
   onToggleState,
   isBusy,
 }: {
   game: GameCard;
   relatedGames: GameCard[];
   onBack: () => void;
-  onAiAssess: () => void;
+  onAiAssess?: () => void;
   onToggleState: (patch: UserGameStatePatch, message: string) => void;
   isBusy: boolean;
 }) {
   const [activeTab, setActiveTab] = useState<DetailTab>("ai");
+  const { report, loading, error, expanded, refresh, toggleExpanded } = useGameAnalysis(game);
   const tabRefs = useRef<Record<DetailTab, HTMLButtonElement | null>>({
     ai: null,
     reviews: null,
@@ -174,19 +177,19 @@ export function DetailPage({
           {activeTab === "ai" && (
             <div
               aria-labelledby={tabIds.ai}
-              className="ai-eval-panel"
               id={panelIds.ai}
               role="tabpanel"
             >
-              <h3>AI 简评</h3>
-              <p>{game.aiSummary}</p>
-              <div className="bar-list">
-                <MetricBar label="游戏体验" value={Math.min(98, game.recommendationScore + 3)} />
-                <MetricBar label="游戏内容" value={Math.min(96, game.recommendationScore)} />
-                <MetricBar label="创新性" value={Math.max(70, game.recommendationScore - 4)} />
-                <MetricBar label="社交乐趣" value={Math.min(99, game.recommendationScore + 5)} />
-                <MetricBar label="综合推荐值" value={game.recommendationScore} />
-              </div>
+              <GameAnalysisPanel
+                error={error}
+                expanded={expanded}
+                loading={loading}
+                report={report}
+                onRefresh={() => {
+                  void refresh();
+                }}
+                onToggleExpanded={toggleExpanded}
+              />
             </div>
           )}
 
@@ -332,24 +335,19 @@ export function DetailPage({
             ))}
           </div>
 
-          <button className="gold-button" disabled={isBusy} type="button" onClick={onAiAssess}>
-            {isBusy ? "AI 评估中…" : "重新 AI 评估"}
+          <button
+            className="gold-button"
+            disabled={isBusy || loading}
+            type="button"
+            onClick={() => {
+              void refresh();
+            }}
+          >
+            {isBusy || loading ? "AI 评估中…" : "重新 AI 评估"}
           </button>
         </aside>
       </div>
     </section>
-  );
-}
-
-function MetricBar({ label, value }: { label: string; value: number }) {
-  return (
-    <div className="metric-bar">
-      <span>{label}</span>
-      <i>
-        <b style={{ width: `${Math.round(value)}%` }} />
-      </i>
-      <em>{Math.round(value)}</em>
-    </div>
   );
 }
 
