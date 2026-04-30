@@ -6,6 +6,26 @@ use crate::models::{
 };
 use anyhow::{anyhow, Result};
 use reqwest::Client;
+use std::collections::HashSet;
+
+pub const ANALYSIS_DIMENSION_KEYS: [&str; 5] = [
+    "approachability",
+    "multiplayer_fun",
+    "content_depth",
+    "reputation_stability",
+    "activity_health",
+];
+
+const MAX_NARRATIVE_POINTS: usize = 3;
+
+type DimensionReasonPatch = (String, String);
+
+struct SanitizedNarrativePatch {
+    overview: Option<String>,
+    strengths: Vec<AnalysisPoint>,
+    risks: Vec<AnalysisPoint>,
+    dimension_reasons: Vec<DimensionReasonPatch>,
+}
 
 pub fn build_rule_report(game: &GameCard, generated_at: String) -> Result<GameAnalysisReport> {
     let has_core_signal = !game.tags.is_empty()
@@ -50,32 +70,51 @@ pub fn build_rule_report(game: &GameCard, generated_at: String) -> Result<GameAn
 }
 
 pub fn apply_narrative_patch(
-    mut report: GameAnalysisReport,
+    report: GameAnalysisReport,
     narrative: AnalysisNarrative,
 ) -> GameAnalysisReport {
-    if !narrative.overview.trim().is_empty() {
-        report.overview = narrative.overview;
+    let sanitized = sanitize_narrative_patch(narrative);
+    if !sanitized.has_useful_content() {
+        return report;
     }
-    if !narrative.strengths.is_empty() {
-        report.strengths = narrative.strengths;
+
+    let mut patched = report.clone();
+    let mut changed = false;
+
+    if let Some(overview) = sanitized
+        .overview
+        .filter(|overview| *overview != patched.overview)
+    {
+        patched.overview = overview;
+        changed = true;
     }
-    if !narrative.risks.is_empty() {
-        report.risks = narrative.risks;
+    if !sanitized.strengths.is_empty()
+        && !point_lists_equal(&sanitized.strengths, &patched.strengths)
+    {
+        patched.strengths = sanitized.strengths;
+        changed = true;
     }
-    for (key, reason) in narrative.dimension_reasons {
-        if reason.trim().is_empty() {
-            continue;
-        }
-        if let Some(dimension) = report
+    if !sanitized.risks.is_empty() && !point_lists_equal(&sanitized.risks, &patched.risks) {
+        patched.risks = sanitized.risks;
+        changed = true;
+    }
+    for (key, reason) in sanitized.dimension_reasons {
+        if let Some(dimension) = patched
             .dimension_scores
             .iter_mut()
-            .find(|item| item.key == key)
+            .find(|item| item.key == key && item.reason != reason)
         {
             dimension.reason = reason;
+            changed = true;
         }
     }
-    report.source = AnalysisSource::Hybrid;
-    report
+
+    if changed {
+        patched.source = AnalysisSource::Hybrid;
+        patched
+    } else {
+        report
+    }
 }
 
 pub fn summarize_report_as_assessment(report: &GameAnalysisReport) -> AiAssessment {
@@ -136,6 +175,73 @@ fn build_overview(game: &GameCard, overall_score: f64) -> String {
         "{}，{}，规则评分 {:.1} 分。",
         review_phrase, multiplayer_phrase, overall_score
     )
+}
+
+fn sanitize_narrative_patch(narrative: AnalysisNarrative) -> SanitizedNarrativePatch {
+    SanitizedNarrativePatch {
+        overview: sanitize_overview(&narrative.overview),
+        strengths: sanitize_points(narrative.strengths),
+        risks: sanitize_points(narrative.risks),
+        dimension_reasons: sanitize_dimension_reasons(narrative.dimension_reasons),
+    }
+}
+
+fn sanitize_overview(overview: &str) -> Option<String> {
+    let trimmed = overview.trim();
+    if trimmed.chars().count() < 8 {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+fn sanitize_points(points: Vec<AnalysisPoint>) -> Vec<AnalysisPoint> {
+    points
+        .into_iter()
+        .filter_map(|point| {
+            let title = point.title.trim();
+            let reason = point.reason.trim();
+            if title.is_empty() || reason.is_empty() {
+                return None;
+            }
+            Some(AnalysisPoint {
+                title: title.to_string(),
+                reason: reason.to_string(),
+            })
+        })
+        .take(MAX_NARRATIVE_POINTS)
+        .collect()
+}
+
+fn sanitize_dimension_reasons(reasons: Vec<(String, String)>) -> Vec<DimensionReasonPatch> {
+    let valid_keys = ANALYSIS_DIMENSION_KEYS
+        .iter()
+        .copied()
+        .collect::<HashSet<_>>();
+    let mut seen = HashSet::new();
+
+    reasons
+        .into_iter()
+        .filter_map(|(key, reason)| {
+            let trimmed_key = key.trim();
+            let trimmed_reason = reason.trim();
+            if trimmed_reason.is_empty()
+                || !valid_keys.contains(trimmed_key)
+                || !seen.insert(trimmed_key.to_string())
+            {
+                return None;
+            }
+            Some((trimmed_key.to_string(), trimmed_reason.to_string()))
+        })
+        .take(ANALYSIS_DIMENSION_KEYS.len())
+        .collect()
+}
+
+fn point_lists_equal(left: &[AnalysisPoint], right: &[AnalysisPoint]) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .all(|(a, b)| a.title == b.title && a.reason == b.reason)
 }
 
 fn build_evidence(game: &GameCard) -> Vec<AnalysisEvidenceItem> {
@@ -241,7 +347,11 @@ fn build_review_evidence(game: &GameCard) -> Vec<AnalysisReviewEvidenceItem> {
             }
         }
         if !has_risk_selected {
-            if let Some(snippet) = game.review_snippets.iter().find(|snippet| !snippet.voted_up) {
+            if let Some(snippet) = game
+                .review_snippets
+                .iter()
+                .find(|snippet| !snippet.voted_up)
+            {
                 items.push(review_snippet_to_evidence(snippet));
             }
         }
@@ -272,6 +382,15 @@ fn review_snippet_to_evidence(
     }
 }
 
+impl SanitizedNarrativePatch {
+    fn has_useful_content(&self) -> bool {
+        self.overview.is_some()
+            || !self.strengths.is_empty()
+            || !self.risks.is_empty()
+            || !self.dimension_reasons.is_empty()
+    }
+}
+
 fn derive_confidence(
     game: &GameCard,
     evidence_count: usize,
@@ -296,7 +415,7 @@ fn build_strengths(game: &GameCard, dimensions: &[AnalysisDimensionScore]) -> Ve
     let mut items = Vec::new();
     if let Some(dimension) = dimensions
         .iter()
-        .find(|item| item.key == "approachability" && item.score >= 75.0)
+        .find(|item| item.key == ANALYSIS_DIMENSION_KEYS[0] && item.score >= 75.0)
     {
         items.push(AnalysisPoint {
             title: "上手负担较低".to_string(),
@@ -305,7 +424,7 @@ fn build_strengths(game: &GameCard, dimensions: &[AnalysisDimensionScore]) -> Ve
     }
     if let Some(dimension) = dimensions
         .iter()
-        .find(|item| item.key == "multiplayer_fun" && item.score >= 78.0)
+        .find(|item| item.key == ANALYSIS_DIMENSION_KEYS[1] && item.score >= 78.0)
     {
         items.push(AnalysisPoint {
             title: "适合朋友开黑".to_string(),
@@ -331,7 +450,7 @@ fn build_risks(game: &GameCard, dimensions: &[AnalysisDimensionScore]) -> Vec<An
     let mut items = Vec::new();
     if let Some(dimension) = dimensions
         .iter()
-        .find(|item| item.key == "content_depth" && item.score <= 72.0)
+        .find(|item| item.key == ANALYSIS_DIMENSION_KEYS[2] && item.score <= 72.0)
     {
         items.push(AnalysisPoint {
             title: "长期内容待观察".to_string(),
@@ -383,7 +502,7 @@ fn approachability_dimension(game: &GameCard) -> AnalysisDimensionScore {
         score += 8.0;
     }
     AnalysisDimensionScore {
-        key: "approachability".to_string(),
+        key: ANALYSIS_DIMENSION_KEYS[0].to_string(),
         label: "易上手度".to_string(),
         score: round_score(score.clamp(0.0, 100.0)),
         reason: if game.demo_status == crate::recommendation::DemoStatus::ReleasedWithDemo {
@@ -409,7 +528,7 @@ fn multiplayer_fun_dimension(game: &GameCard) -> AnalysisDimensionScore {
         score += 8.0;
     }
     AnalysisDimensionScore {
-        key: "multiplayer_fun".to_string(),
+        key: ANALYSIS_DIMENSION_KEYS[1].to_string(),
         label: "联机乐趣".to_string(),
         score: round_score(score.clamp(0.0, 100.0)),
         reason: if joined.contains("co-op") {
@@ -434,7 +553,7 @@ fn content_depth_dimension(game: &GameCard) -> AnalysisDimensionScore {
         score -= 8.0;
     }
     AnalysisDimensionScore {
-        key: "content_depth".to_string(),
+        key: ANALYSIS_DIMENSION_KEYS[2].to_string(),
         label: "内容深度".to_string(),
         score: round_score(score.clamp(0.0, 100.0)),
         reason: if score >= 72.0 {
@@ -451,7 +570,7 @@ fn reputation_stability_dimension(game: &GameCard) -> AnalysisDimensionScore {
     let review_volume_bonus = (total_reviews.log10() * 8.0).clamp(0.0, 24.0);
     let score = review_pct * 0.72 + review_volume_bonus;
     AnalysisDimensionScore {
-        key: "reputation_stability".to_string(),
+        key: ANALYSIS_DIMENSION_KEYS[3].to_string(),
         label: "口碑稳定性".to_string(),
         score: round_score(score.clamp(0.0, 100.0)),
         reason: if total_reviews >= 1000.0 {
@@ -470,7 +589,7 @@ fn activity_health_dimension(game: &GameCard) -> AnalysisDimensionScore {
         35.0 + (players.log10() * 18.0).clamp(0.0, 50.0)
     };
     AnalysisDimensionScore {
-        key: "activity_health".to_string(),
+        key: ANALYSIS_DIMENSION_KEYS[4].to_string(),
         label: "活跃健康度".to_string(),
         score: round_score(player_score.clamp(0.0, 100.0)),
         reason: if players >= 1000.0 {

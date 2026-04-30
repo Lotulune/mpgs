@@ -1,12 +1,26 @@
+use reqwest::Client;
+use std::io::{Read, Write};
+use std::net::TcpListener;
+use std::thread;
 use tauri_app_lib::game_analysis::{
-    apply_narrative_patch, build_rule_report, summarize_report_as_assessment,
+    apply_narrative_patch, build_rule_report, generate_game_analysis,
+    summarize_report_as_assessment,
 };
 use tauri_app_lib::llm::AnalysisNarrative;
+use tauri_app_lib::llm::LlmRuntimeConfig;
 use tauri_app_lib::models::{
     AnalysisConfidence, AnalysisPoint, AnalysisReviewStance, AnalysisSource, GameCard,
     ReviewSnippet, StoreReleaseState, UserGameState,
 };
 use tauri_app_lib::recommendation::DemoStatus;
+
+const EXPECTED_DIMENSION_KEYS: [&str; 5] = [
+    "approachability",
+    "multiplayer_fun",
+    "content_depth",
+    "reputation_stability",
+    "activity_health",
+];
 
 fn rich_fixture_game() -> GameCard {
     GameCard {
@@ -89,6 +103,38 @@ fn late_negative_fixture_game() -> GameCard {
     game
 }
 
+fn local_test_client() -> Client {
+    Client::builder()
+        .build()
+        .expect("build local test HTTP client")
+}
+
+fn spawn_chat_completion_server(status_line: &str, body: &str) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind local test server");
+    let address = listener
+        .local_addr()
+        .expect("read local test server address");
+    let status_line = status_line.to_string();
+    let body = body.to_string();
+
+    thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            let mut buffer = [0_u8; 4096];
+            let _ = stream.read(&mut buffer);
+            let response = format!(
+                "{status_line}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write test response");
+            let _ = stream.flush();
+        }
+    });
+
+    format!("http://{}", address)
+}
+
 #[test]
 fn build_rule_report_returns_rich_rule_report() {
     let report = build_rule_report(&rich_fixture_game(), "2026-04-30T12:00:00Z".to_string())
@@ -97,6 +143,14 @@ fn build_rule_report_returns_rich_rule_report() {
     assert_eq!(report.source, AnalysisSource::Rule);
     assert_eq!(report.confidence, AnalysisConfidence::High);
     assert_eq!(report.dimension_scores.len(), 5);
+    assert_eq!(
+        report
+            .dimension_scores
+            .iter()
+            .map(|dimension| dimension.key.as_str())
+            .collect::<Vec<_>>(),
+        EXPECTED_DIMENSION_KEYS
+    );
     assert!(!report.strengths.is_empty());
     assert!(!report.risks.is_empty());
     assert!(
@@ -191,6 +245,69 @@ fn apply_narrative_patch_updates_text_without_changing_evidence_shape() {
 }
 
 #[test]
+fn apply_narrative_patch_with_valid_content_flips_source_to_hybrid() {
+    let report = build_rule_report(&rich_fixture_game(), "2026-04-30T12:00:00Z".to_string())
+        .expect("rule report should build");
+
+    let patched = apply_narrative_patch(
+        report,
+        AnalysisNarrative {
+            overview: "这款作品对固定好友局很友好，合作反馈比规则版文案更完整。".to_string(),
+            strengths: vec![AnalysisPoint {
+                title: "合作反馈明确".to_string(),
+                reason: "正面评测集中提到沟通与分工的乐趣，适合稳定开黑。".to_string(),
+            }],
+            risks: vec![AnalysisPoint {
+                title: "后段耐玩度待看".to_string(),
+                reason: "负面反馈主要集中在中后期循环变化不足。".to_string(),
+            }],
+            dimension_reasons: vec![(
+                "approachability".to_string(),
+                "教程和合作目标都比较清楚，新玩家较快能加入节奏。".to_string(),
+            )],
+        },
+    );
+
+    assert_eq!(patched.source, AnalysisSource::Hybrid);
+    assert_eq!(patched.strengths[0].title, "合作反馈明确");
+}
+
+#[test]
+fn apply_narrative_patch_rejects_degraded_narrative_and_keeps_rule_report() {
+    let report = build_rule_report(&rich_fixture_game(), "2026-04-30T12:00:00Z".to_string())
+        .expect("rule report should build");
+    let original = serde_json::to_value(&report).expect("serialize original report");
+
+    let patched = apply_narrative_patch(
+        report,
+        AnalysisNarrative {
+            overview: "   ".to_string(),
+            strengths: vec![
+                AnalysisPoint {
+                    title: "".to_string(),
+                    reason: "   ".to_string(),
+                };
+                6
+            ],
+            risks: vec![AnalysisPoint {
+                title: " ".to_string(),
+                reason: "".to_string(),
+            }],
+            dimension_reasons: vec![
+                ("unknown_key".to_string(), "   ".to_string()),
+                ("approachability".to_string(), " ".to_string()),
+            ],
+        },
+    );
+
+    assert_eq!(patched.source, AnalysisSource::Rule);
+    assert_eq!(
+        serde_json::to_value(&patched).expect("serialize patched report"),
+        original
+    );
+}
+
+#[test]
 fn summarize_report_as_assessment_reuses_core_fields() {
     let report = build_rule_report(&rich_fixture_game(), "2026-04-30T12:00:00Z".to_string())
         .expect("rule report should build");
@@ -201,4 +318,69 @@ fn summarize_report_as_assessment_reuses_core_fields() {
     assert_eq!(assessment.summary, report.overview);
     assert_eq!(assessment.score, report.overall_score);
     assert!(!assessment.risks.is_empty());
+}
+
+#[tokio::test]
+async fn generate_game_analysis_returns_rule_report_when_narrative_request_fails() {
+    let client = local_test_client();
+    let base_url = spawn_chat_completion_server("HTTP/1.1 500 Internal Server Error", "{}");
+    let config = LlmRuntimeConfig {
+        api_key: Some("test-key".to_string()),
+        base_url,
+        model: "gpt-test".to_string(),
+    };
+
+    let report = generate_game_analysis(
+        &client,
+        &config,
+        &rich_fixture_game(),
+        "2026-04-30T12:00:00Z".to_string(),
+    )
+    .await
+    .expect("fallback to rule report");
+
+    assert_eq!(report.source, AnalysisSource::Rule);
+    assert_eq!(
+        report
+            .dimension_scores
+            .iter()
+            .map(|dimension| dimension.key.as_str())
+            .collect::<Vec<_>>(),
+        EXPECTED_DIMENSION_KEYS
+    );
+}
+
+#[tokio::test]
+async fn generate_game_analysis_keeps_rule_report_when_narrative_is_unusable() {
+    let client = local_test_client();
+    let base_url = spawn_chat_completion_server(
+        "HTTP/1.1 200 OK",
+        r#"{"choices":[{"message":{"content":"{\"overview\":\"   \",\"strengths\":[{\"title\":\"\",\"reason\":\" \"},{\"title\":\" \",\"reason\":\"\"},{\"title\":\"\",\"reason\":\"\"},{\"title\":\"\",\"reason\":\"\"},{\"title\":\"\",\"reason\":\"\"}],\"risks\":[{\"title\":\" \",\"reason\":\" \"}],\"dimensionReasons\":[[\"approachability\",\" \"],[\"unknown_key\",\"still bad\"]]}"}}]}"#,
+    );
+    let config = LlmRuntimeConfig {
+        api_key: Some("test-key".to_string()),
+        base_url,
+        model: "gpt-test".to_string(),
+    };
+
+    let report = generate_game_analysis(
+        &client,
+        &config,
+        &rich_fixture_game(),
+        "2026-04-30T12:00:00Z".to_string(),
+    )
+    .await
+    .expect("fallback to rule report");
+
+    assert_eq!(report.source, AnalysisSource::Rule);
+    assert!(!report.strengths.is_empty());
+    assert!(!report.risks.is_empty());
+    assert_eq!(
+        report
+            .dimension_scores
+            .iter()
+            .map(|dimension| dimension.key.as_str())
+            .collect::<Vec<_>>(),
+        EXPECTED_DIMENSION_KEYS
+    );
 }
