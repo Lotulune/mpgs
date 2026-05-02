@@ -1,7 +1,158 @@
-# Tauri + React + Typescript
+# MPGS / Co-Play
 
-This template should help get you started developing with Tauri, React and Typescript in Vite.
+MPGS（界面品牌名为 Co-Play）是一个面向 Steam 多人游戏发现的桌面应用。
 
-## Recommended IDE Setup
+它的目标不是把 Steam 商店完整搬进本地，而是把“适合和朋友一起玩”的游戏筛出来，再结合评论、在线人数、本地收藏状态和 AI 分析，做成一个更好逛、更好筛、更容易积累个人偏好的本地游戏库。
 
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+## 这项目能做什么
+
+### 1. 首页分区推荐
+
+- 把游戏按 **新游区**、**精品老游区**、**最近发现** 等分区展示
+- 提供综合推荐分、基础口碑、在线人数、Demo 状态等信息
+- 支持从首页直接进入详情页继续查看
+
+### 2. Steam 数据同步
+
+- 支持 **完整同步** 和 **快速同步**
+- 可以预览 Steam AppList 返回的应用列表
+- 将同步结果写入本地 SQLite，作为应用主数据源
+
+### 3. Steam 多人游戏发现任务
+
+- 从 Steam AppList 分页扫描候选游戏
+- 识别并导入多人游戏到本地库
+- 支持 **开始**、**暂停**、**继续**、**取消**
+- 可以查看任务进度、历史记录和失败项
+
+### 4. AI 辅助分析
+
+- 支持对单个游戏生成 AI 评估结果
+- 在详情页查看更完整的分析内容，例如摘要、维度评分、优点、风险和证据
+- 支持对库内游戏执行 **AI 批量重算**
+
+### 5. 本地收藏与追踪
+
+- 支持 **收藏**
+- 支持 **愿望单**
+- 支持 **关注**
+- 支持 **浏览记录**
+
+这些状态会即时写入本地数据库，方便后续继续筛选和回看。
+
+### 6. 本地设置与模型配置
+
+- 配置 Steam Web API Key
+- 配置 LLM API Key
+- 配置 LLM Base URL、模型、地区、语言
+- 兼容 OpenAI 风格和 Anthropic 风格接口
+
+## 适合谁
+
+- 想找适合和朋友开黑、合作、联机的 Steam 游戏
+- 想把零散的 Steam 游戏信息整理成一个本地可浏览的资料库
+- 想在 Tauri + Rust + React 的桌面项目上继续迭代
+
+## 技术栈
+
+- 前端：React 19 + TypeScript + Vite
+- 桌面壳：Tauri 2
+- 后端：Rust
+- 本地数据库：SQLite
+- 网络请求：Reqwest
+- 测试：Vitest + Rust tests
+
+## 快速开始
+
+### 环境要求
+
+建议先准备好：
+
+- Node.js
+- npm
+- Rust 工具链
+- Tauri 桌面开发环境
+
+### 安装依赖
+
+```bash
+npm install
+```
+
+### 启动桌面开发环境
+
+```bash
+npm run tauri dev
+```
+
+### 仅预览前端界面
+
+```bash
+npm run dev
+```
+
+说明：
+
+- `npm run dev` 只会启动前端页面
+- 这时不会调用真实 Tauri 后端，而是使用项目内的 mock 数据
+- 如果要体验真实的数据库、同步、发现任务和 AI 调用，请使用 `npm run tauri dev`
+
+### 运行测试
+
+```bash
+npm test
+```
+
+### 构建
+
+```bash
+npm run build
+npm run tauri build
+```
+
+## 首次使用建议
+
+1. 打开“设置”页，先配置 Steam Web API Key。
+2. 如果要启用 AI 分析，再配置 LLM API Key、Base URL 和模型。
+3. 先执行一次完整同步，让本地库拿到基础数据。
+4. 再启动发现任务，把更多多人游戏导入本地库。
+5. 需要更完整的推荐说明时，可以在详情页或设置页触发 AI 分析。
+
+## 项目结构
+
+```text
+src/                  React 前端入口与页面
+src/api/              前端调用 Tauri 命令的封装
+src/features/         功能模块，例如发现任务、库状态处理
+src/pages/            首页、详情、设置、收藏、AI 等页面
+src-tauri/src/        Rust 后端、数据库、Steam、评分、AI 逻辑
+src-tauri/tests/      Rust 侧测试
+docs/                 规格说明、路线图、实现计划
+```
+
+## 数据与隐私
+
+- 本地主数据使用 SQLite 保存
+- API Key 保存在本机数据库中，不会主动上传到项目自带服务器
+- 应用启动时会在系统应用数据目录下创建本地数据库文件 `mpgs.sqlite3`
+
+## 当前状态
+
+这个项目已经不再是 Tauri 默认模板，当前已经具备完整的桌面应用雏形，重点能力包括：
+
+- 本地游戏库
+- Steam 同步
+- 多人游戏发现任务
+- 单游戏 AI 分析
+- AI 批量重算
+- 收藏 / 愿望单 / 关注 / 浏览记录
+
+同时也要说明：
+
+- 项目目前更接近“可持续迭代的产品原型”
+- 已有核心链路可用
+- 部分页面和高级筛选能力仍在继续完善
+
+## 一句话总结
+
+如果你想做一个“专门帮你找 Steam 多人游戏”的本地桌面工具，这个项目已经具备了从数据同步、游戏发现、本地收藏到 AI 辅助分析的一整套基础能力。
