@@ -1706,6 +1706,10 @@ p {
   min-width: 0;
 }
 
+.analysis-review-head {
+  gap: 8px;
+}
+
 .analysis-summary-head {
   gap: 16px;
   flex-wrap: wrap;
@@ -1727,7 +1731,7 @@ p {
   line-height: 1.65;
   margin-bottom: 0;
   overflow-wrap: break-word;
-  word-break: keep-all;
+  word-break: break-word;
   font-size: 14px;
 }
 
@@ -1813,6 +1817,7 @@ p {
   display: grid;
   gap: 8px;
   min-width: 0;
+  overflow: hidden;
   padding: 12px;
 }
 
@@ -1830,12 +1835,31 @@ p {
 }
 
 .analysis-dimension-head strong,
-.analysis-point-card strong,
-.analysis-evidence-head strong {
+.analysis-point-card strong {
   color: #8a6200;
   flex-shrink: 0;
   margin-left: 8px;
   white-space: nowrap;
+}
+
+.analysis-evidence-head {
+  gap: 8px;
+}
+
+.analysis-evidence-head strong {
+  color: #8a6200;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.analysis-evidence-head span {
+  color: var(--muted);
+  font-size: 13px;
+  min-width: 0;
+  overflow-wrap: break-word;
+  text-align: right;
+  white-space: normal;
+  word-break: break-word;
 }
 
 .analysis-dimension-track {
@@ -1860,12 +1884,14 @@ p {
 }
 
 .analysis-expanded-grid {
+  align-items: start;
   display: grid;
   gap: 14px;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
 }
 
 .analysis-expanded-grid section {
+  align-content: start;
   display: grid;
   gap: 12px;
   min-width: 0;
@@ -1877,23 +1903,26 @@ p {
   margin: 0;
 }
 
-.analysis-evidence-head span,
 .analysis-review-head span {
+  flex-shrink: 0;
   min-width: 0;
   overflow-wrap: break-word;
   text-align: right;
   white-space: normal;
-  word-break: keep-all;
+  word-break: break-word;
 }
 
 .analysis-review-card blockquote {
   border-left: 3px solid #f0c85d;
   color: #44392f;
+  line-height: 1.65;
   margin: 0;
-  padding-left: 12px;
-  white-space: pre-wrap;
-  word-break: keep-all;
+  max-width: 100%;
   overflow-wrap: break-word;
+  padding-left: 12px;
+  padding-right: 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .review-snippet-list,
@@ -2005,7 +2034,8 @@ p {
 .detail-side > p {
   color: var(--muted);
   overflow-wrap: break-word;
-  word-break: keep-all;
+  word-break: break-word;
+  line-height: 1.6;
 }
 
 .detail-description {
@@ -2055,9 +2085,23 @@ p {
 }
 
 .tag-panel.compact {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
   margin: 4px 0 10px;
   word-break: keep-all;
   overflow-wrap: break-word;
+}
+
+.tag-panel.compact em {
+  background: #fff2cf;
+  border: 1px solid #f0dda8;
+  border-radius: 5px;
+  color: #8a6200;
+  font-size: 12px;
+  font-style: normal;
+  padding: 4px 8px;
+  white-space: nowrap;
 }
 
 @media (max-width: 960px) {
@@ -2269,9 +2313,9 @@ p {
 }
 
 .favorite-toolbar {
+  align-items: center;
   display: flex;
   gap: 10px;
-  justify-content: space-between;
   margin-bottom: 18px;
 }
 
@@ -2280,6 +2324,11 @@ p {
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 8px 12px;
+  white-space: nowrap;
+}
+
+.favorite-toolbar button:first-child {
+  margin-right: auto;
 }
 
 .collection-page {
