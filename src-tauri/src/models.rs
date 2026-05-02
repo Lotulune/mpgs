@@ -10,6 +10,7 @@ pub struct PublicConfig {
     pub llm_model: String,
     pub country: String,
     pub language: String,
+    pub ai_batch_refresh_concurrency: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -21,6 +22,7 @@ pub struct SaveConfigRequest {
     pub llm_model: Option<String>,
     pub country: Option<String>,
     pub language: Option<String>,
+    pub ai_batch_refresh_concurrency: Option<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,6 +66,16 @@ pub struct DashboardStats {
     pub backfill_max_attempts: u8,
     pub backfill_last_error: Option<String>,
     pub backfill_last_error_appid: Option<u32>,
+    pub ai_batch_refresh_running: bool,
+    pub ai_batch_refresh_concurrency: u8,
+    pub ai_batch_refresh_pending_count: usize,
+    pub ai_batch_refresh_active_count: usize,
+    pub ai_batch_refresh_total_count: usize,
+    pub ai_batch_refresh_processed_count: usize,
+    pub ai_batch_refresh_updated_count: usize,
+    pub ai_batch_refresh_failed_count: usize,
+    pub ai_batch_refresh_last_error: Option<String>,
+    pub ai_batch_refresh_last_error_appid: Option<u32>,
     pub data_source: String,
 }
 
@@ -155,6 +167,15 @@ pub struct SyncReport {
     pub message: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiBatchRefreshReport {
+    pub total_games: usize,
+    pub updated_games: usize,
+    pub failed_games: usize,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SyncMode {
@@ -212,6 +233,22 @@ pub enum AnalysisReviewStance {
     Risk,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RecommendationPool {
+    NewRelease,
+    Evergreen,
+    HiddenGem,
+    FriendsParty,
+    DemoPotential,
+}
+
+impl Default for RecommendationPool {
+    fn default() -> Self {
+        Self::Evergreen
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AnalysisDimensionScore {
@@ -246,6 +283,15 @@ pub struct AnalysisReviewEvidenceItem {
     pub interpretation: String,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnalysisRiskFlag {
+    pub key: String,
+    pub label: String,
+    pub severity: f64,
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GameAnalysisReport {
@@ -253,6 +299,18 @@ pub struct GameAnalysisReport {
     pub generated_at: String,
     pub source: AnalysisSource,
     pub confidence: AnalysisConfidence,
+    #[serde(default = "default_score_version")]
+    pub score_version: String,
+    #[serde(default)]
+    pub quality_score: f64,
+    #[serde(default)]
+    pub recommendation_score: f64,
+    #[serde(default)]
+    pub confidence_score: f64,
+    #[serde(default)]
+    pub pool_type: RecommendationPool,
+    #[serde(default)]
+    pub risk_flags: Vec<AnalysisRiskFlag>,
     pub overall_score: f64,
     pub overview: String,
     pub dimension_scores: Vec<AnalysisDimensionScore>,
@@ -260,6 +318,10 @@ pub struct GameAnalysisReport {
     pub risks: Vec<AnalysisPoint>,
     pub evidence: Vec<AnalysisEvidenceItem>,
     pub review_evidence: Vec<AnalysisReviewEvidenceItem>,
+}
+
+fn default_score_version() -> String {
+    "v1_compat".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

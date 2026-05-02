@@ -40,6 +40,18 @@ describe("recommendation scoring", () => {
     expect(score).toBeGreaterThanOrEqual(80);
   });
 
+  it("does not give an unevaluated game a hidden default AI boost", () => {
+    const score = scoreGame(
+      {
+        ...baseFacts,
+        aiScore: null,
+      },
+      new Date("2026-04-26T00:00:00Z"),
+    );
+
+    expect(score).toBeLessThan(80);
+  });
+
   it("places games from the last 30 days into the new release bucket", () => {
     expect(bucketGame(baseFacts, new Date("2026-04-26T00:00:00Z"))).toBe(
       "new",

@@ -16,6 +16,7 @@ describe("Settings and About pages", () => {
       <SettingsPage
         config={mockDashboard.config}
         isBusy={false}
+        onRefreshAllAnalyses={vi.fn(async () => undefined)}
         stats={mockDashboard.stats}
         onRefreshDashboard={vi.fn(async () => undefined)}
         onSave={vi.fn(async () => undefined)}
@@ -34,11 +35,13 @@ describe("Settings and About pages", () => {
 
   it("shows both sync and discovery operations in settings", () => {
     const onSync = vi.fn();
+    const onRefreshAllAnalyses = vi.fn(async () => undefined);
 
     render(
       <SettingsPage
         config={mockDashboard.config}
         isBusy={false}
+        onRefreshAllAnalyses={onRefreshAllAnalyses}
         stats={mockDashboard.stats}
         onRefreshDashboard={vi.fn(async () => undefined)}
         onSave={vi.fn(async () => undefined)}
@@ -50,14 +53,77 @@ describe("Settings and About pages", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "完整同步" }));
     fireEvent.click(screen.getByRole("button", { name: "快速同步" }));
+    fireEvent.click(screen.getByRole("button", { name: "批量重算 AI 评分" }));
 
     expect(onSync).toHaveBeenNthCalledWith(1, "full");
     expect(onSync).toHaveBeenNthCalledWith(2, "quick");
+    expect(onRefreshAllAnalyses).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("button", { name: "完整同步" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "快速同步" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "批量重算 AI 评分" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "发现任务控制台" })).toBeInTheDocument();
     expect(screen.getByText("Steam 同步")).toBeInTheDocument();
     expect(screen.getByText("当前库已就绪。")).toBeInTheDocument();
+  });
+
+  it("passes the selected batch refresh concurrency to the refresh action", () => {
+    const onRefreshAllAnalyses = vi.fn(async (_concurrency: number) => undefined);
+
+    render(
+      <SettingsPage
+        config={mockDashboard.config}
+        isBusy={false}
+        onRefreshAllAnalyses={onRefreshAllAnalyses}
+        stats={mockDashboard.stats}
+        onRefreshDashboard={vi.fn(async () => undefined)}
+        onSave={vi.fn(async () => undefined)}
+        onStatus={vi.fn()}
+        onSync={vi.fn()}
+        status="当前库已就绪。"
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("AI 批量重算并发数"), {
+      target: { value: "10" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "批量重算 AI 评分" }));
+
+    expect(onRefreshAllAnalyses).toHaveBeenCalledWith(10);
+  });
+
+  it("shows batch refresh progress when AI score recompute is running", () => {
+    const stats = {
+      ...mockDashboard.stats,
+      aiBatchRefreshRunning: true,
+      aiBatchRefreshConcurrency: 5,
+      aiBatchRefreshPendingCount: 12,
+      aiBatchRefreshActiveCount: 5,
+      aiBatchRefreshTotalCount: 20,
+      aiBatchRefreshProcessedCount: 8,
+      aiBatchRefreshUpdatedCount: 7,
+      aiBatchRefreshFailedCount: 1,
+      aiBatchRefreshLastError: "7301: upstream timeout",
+      aiBatchRefreshLastErrorAppid: 7301,
+    } as typeof mockDashboard.stats;
+
+    render(
+      <SettingsPage
+        config={mockDashboard.config}
+        isBusy={false}
+        onRefreshAllAnalyses={vi.fn(async () => undefined)}
+        stats={stats}
+        onRefreshDashboard={vi.fn(async () => undefined)}
+        onSave={vi.fn(async () => undefined)}
+        onStatus={vi.fn()}
+        onSync={vi.fn()}
+        status="AI 批量重算进行中。"
+      />,
+    );
+
+    expect(screen.getByText("AI 批量重算")).toBeInTheDocument();
+    expect(screen.getByText("进度 40%")).toBeInTheDocument();
+    expect(screen.getByText("8/20")).toBeInTheDocument();
+    expect(screen.getByText("7301: upstream timeout")).toBeInTheDocument();
   });
 
   it("renders a real about/diagnostic surface", () => {

@@ -5,6 +5,9 @@ use serde::{Deserialize, Serialize};
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const DEFAULT_ANTHROPIC_MAX_TOKENS: u32 = 1_200;
+pub const ANALYSIS_NARRATIVE_SYSTEM_PROMPT: &str =
+    "You refine rule-based Steam multiplayer analyses. Return strict JSON only.";
+const ANALYSIS_NARRATIVE_CACHE_VERSION: &str = "analysis_narrative_v1";
 
 #[derive(Debug, Clone)]
 pub struct LlmRuntimeConfig {
@@ -68,13 +71,33 @@ pub async fn generate_analysis_narrative(
         &api_key,
         &base_url,
         &model,
-        "You refine rule-based Steam multiplayer analyses. Return strict JSON only.",
+        ANALYSIS_NARRATIVE_SYSTEM_PROMPT,
         prompt,
         0.1,
     )
     .await?;
 
     Ok(serde_json::from_str(trim_json_content(&content)?)?)
+}
+
+pub fn build_analysis_narrative_cache_key(
+    config: &LlmRuntimeConfig,
+    game: &GameCard,
+    rule_report: &GameAnalysisReport,
+) -> String {
+    let normalized_base_url = config.base_url.trim().trim_end_matches('/');
+    let model = config.model.trim();
+    let prompt = build_analysis_narrative_prompt(game, rule_report);
+    let fingerprint_payload = serde_json::json!({
+        "cache_version": ANALYSIS_NARRATIVE_CACHE_VERSION,
+        "base_url": normalized_base_url,
+        "model": model,
+        "system_prompt": ANALYSIS_NARRATIVE_SYSTEM_PROMPT,
+        "user_prompt": prompt,
+    })
+    .to_string();
+
+    stable_cache_hex(&fingerprint_payload)
 }
 
 fn heuristic_assessment(game: &GameCard) -> AiAssessment {
@@ -186,6 +209,8 @@ fn parse_assessment(appid: u32, content: &str) -> Result<AiAssessment> {
 }
 
 fn build_analysis_narrative_prompt(game: &GameCard, rule_report: &GameAnalysisReport) -> String {
+    let mut normalized_rule_report = rule_report.clone();
+    normalized_rule_report.generated_at.clear();
     serde_json::json!({
         "task": "Polish a rule-based multiplayer game analysis in Simplified Chinese without changing factual evidence.",
         "rules": [
@@ -211,9 +236,22 @@ fn build_analysis_narrative_prompt(game: &GameCard, rule_report: &GameAnalysisRe
             "current_players": game.current_players,
             "review_snippets": game.review_snippets,
         },
-        "rule_report": rule_report,
+        "rule_report": normalized_rule_report,
     })
     .to_string()
+}
+
+fn stable_cache_hex(input: &str) -> String {
+    const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+
+    let mut hash = FNV_OFFSET_BASIS;
+    for byte in input.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+
+    format!("{hash:016x}")
 }
 
 async fn request_chat_completion_content(

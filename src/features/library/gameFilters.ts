@@ -40,15 +40,17 @@ export function filterGames(
   sortMode: LibrarySortMode,
 ) {
   const normalizedQuery = query.trim().toLowerCase();
-  const normalizedSelectedTags = filters.selectedTags.map((tag) => tag.toLowerCase());
+  const normalizedSelectedTags = Array.isArray(filters.selectedTags)
+    ? filters.selectedTags.map((tag) => tag.toLowerCase())
+    : [];
   const today = new Date();
 
   return games
     .filter((game) => {
       const haystack = [
         game.name,
-        ...game.tags,
-        ...game.multiplayerModes,
+        ...(Array.isArray(game.tags) ? game.tags : []),
+        ...(Array.isArray(game.multiplayerModes) ? game.multiplayerModes : []),
         game.aiSummary,
       ]
         .join(" ")
@@ -63,14 +65,16 @@ export function filterGames(
     .filter((game) =>
       filters.selectedLanguage === "all"
         ? true
-        : game.supportedLanguages.some(
+        : Array.isArray(game.supportedLanguages) &&
+          game.supportedLanguages.some(
             (language) => language.toLowerCase() === filters.selectedLanguage,
           ),
     )
     .filter((game) =>
       normalizedSelectedTags.length === 0
         ? true
-        : game.tags.some((tag) => normalizedSelectedTags.includes(tag.toLowerCase())),
+        : Array.isArray(game.tags) &&
+          game.tags.some((tag) => normalizedSelectedTags.includes(tag.toLowerCase())),
     )
     .sort((left, right) => compareGames(left, right, sortMode));
 }

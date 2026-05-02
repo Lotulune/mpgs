@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { StrictMode } from "react";
+import { StrictMode, type ComponentProps } from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mockDashboard } from "../../data/mockDashboard";
@@ -97,14 +97,30 @@ function buildReport(
   };
 }
 
-function renderDetailPage(game = buildGame()) {
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((nextResolve, nextReject) => {
+    resolve = nextResolve;
+    reject = nextReject;
+  });
+
+  return { promise, resolve, reject };
+}
+
+function renderDetailPage(
+  game = buildGame(),
+  props: Partial<ComponentProps<typeof DetailPage>> = {},
+) {
   return render(
     <DetailPage
       game={game}
       relatedGames={buildRelatedGames()}
       isBusy={false}
       onBack={vi.fn()}
+      onAnalysisUpdated={vi.fn()}
       onToggleState={vi.fn()}
+      {...props}
     />,
   );
 }
@@ -154,6 +170,53 @@ describe("DetailPage", () => {
       "id",
       detailsId,
     );
+  });
+
+  it("shows separate recommendation and quality scores for a V2 report", async () => {
+    const game = buildGame();
+    const v2Report = {
+      ...buildReport(game.appid, {
+        overallScore: 87,
+      }),
+      scoreVersion: "v2",
+      recommendationScore: 87,
+      qualityScore: 74,
+      confidenceScore: 0.82,
+      poolType: "hidden_gem",
+      riskFlags: [],
+    } as unknown as GameAnalysisReport;
+    clientMocks.getGameAnalysis.mockResolvedValueOnce(v2Report);
+
+    renderDetailPage(game);
+
+    expect(await screen.findByText(v2Report.overview)).toBeInTheDocument();
+    expect(screen.getByText("综合推荐")).toBeInTheDocument();
+    expect(screen.getByText("游戏质量")).toBeInTheDocument();
+    expect(screen.getByText("74")).toBeInTheDocument();
+  });
+
+  it("sanitizes bbcode-style review evidence before rendering it", async () => {
+    const game = buildGame();
+    const cachedReport = buildReport(game.appid, {
+      reviewEvidence: [
+        {
+          stance: "strength",
+          quote:
+            "[url=https://store.steampowered.com/]这游戏在 Steam Deck 上也很好玩[/url]，朋友局节奏很顺。",
+          playtimeText: "5.6 小时",
+          interpretation: "正向评论通常反映合作体验和上手门槛。",
+        },
+      ],
+    });
+    clientMocks.getGameAnalysis.mockResolvedValueOnce(cachedReport);
+
+    renderDetailPage(game);
+
+    fireEvent.click(await screen.findByRole("button", { name: "查看完整报告" }));
+
+    expect(await screen.findByText(/这游戏在 Steam Deck 上也很好玩/)).toBeInTheDocument();
+    expect(screen.queryByText(/\[url=/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/\[\/url\]/)).not.toBeInTheDocument();
   });
 
   it("auto-generates a report when cache is missing", async () => {
@@ -217,6 +280,60 @@ describe("DetailPage", () => {
       expect(clientMocks.generateGameAnalysis).toHaveBeenCalledWith(game.appid, true),
     );
     expect(await screen.findByText(refreshedReport.overview)).toBeInTheDocument();
+  });
+
+  it("notifies the parent to refresh card state after analysis refresh succeeds", async () => {
+    const game = buildGame();
+    const onAnalysisUpdated = vi.fn();
+    clientMocks.getGameAnalysis.mockResolvedValueOnce(buildReport(game.appid));
+
+    renderDetailPage(game, { onAnalysisUpdated });
+
+    expect(await screen.findByText("这是一份缓存中的 AI 详细评估。")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "重新 AI 评估" }));
+
+    await waitFor(() =>
+      expect(clientMocks.generateGameAnalysis).toHaveBeenCalledWith(game.appid, true),
+    );
+    await waitFor(() => expect(onAnalysisUpdated).toHaveBeenCalledTimes(1));
+  });
+
+  it("queues a single back action until refresh and parent sync both finish", async () => {
+    const game = buildGame();
+    const onBack = vi.fn();
+    const onAnalysisUpdated = vi.fn();
+    const refreshRequest = createDeferred<GameAnalysisReport>();
+    const parentSyncRequest = createDeferred<void>();
+    const refreshedReport = buildReport(game.appid, {
+      generatedAt: "2026-04-30T12:45:00.000Z",
+      overview: "刷新完成后的 AI 详细评估。",
+    });
+
+    clientMocks.getGameAnalysis.mockResolvedValueOnce(buildReport(game.appid));
+    clientMocks.generateGameAnalysis.mockImplementationOnce(() => refreshRequest.promise);
+    onAnalysisUpdated.mockImplementationOnce(() => parentSyncRequest.promise);
+
+    renderDetailPage(game, { onAnalysisUpdated, onBack });
+
+    expect(await screen.findByText("这是一份缓存中的 AI 详细评估。")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "刷新分析" }));
+    fireEvent.click(screen.getByRole("button", { name: "← 返回" }));
+
+    expect(
+      screen.getByRole("button", { name: "AI 评估完成后返回…" }),
+    ).toBeInTheDocument();
+
+    refreshRequest.resolve(refreshedReport);
+
+    await waitFor(() => expect(onAnalysisUpdated).toHaveBeenCalledTimes(1));
+    expect(onBack).not.toHaveBeenCalled();
+
+    parentSyncRequest.resolve();
+
+    await waitFor(() => expect(onBack).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole("button", { name: "← 返回" })).toBeInTheDocument();
   });
 
   it("renders the current game's own store gallery thumbnails", () => {

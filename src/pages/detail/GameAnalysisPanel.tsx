@@ -46,6 +46,14 @@ export function GameAnalysisPanel({
   }
 
   const expandedRegionId = `game-analysis-expanded-${report.appid}`;
+  const recommendationScore =
+    typeof report.recommendationScore === "number"
+      ? report.recommendationScore
+      : report.overallScore;
+  const qualityScore =
+    typeof report.qualityScore === "number"
+      ? report.qualityScore
+      : report.overallScore;
 
   return (
     <div className="detail-content-panel ai-analysis-report">
@@ -56,8 +64,12 @@ export function GameAnalysisPanel({
             <p>{report.overview}</p>
           </div>
           <div className="analysis-score-card">
-            <strong>{Math.round(report.overallScore)}</strong>
-            <span>综合推荐值</span>
+            <strong>{Math.round(recommendationScore)}</strong>
+            <span>综合推荐</span>
+          </div>
+          <div className="analysis-score-card">
+            <strong>{Math.round(qualityScore)}</strong>
+            <span>游戏质量</span>
           </div>
         </div>
 
@@ -68,8 +80,21 @@ export function GameAnalysisPanel({
           <span className="analysis-badge analysis-badge-confidence">
             {formatConfidence(report.confidence)}
           </span>
+          {report.poolType ? (
+            <span className="analysis-badge">{formatPoolType(report.poolType)}</span>
+          ) : null}
           <span className="analysis-badge">更新于 {formatGeneratedAt(report.generatedAt)}</span>
         </div>
+
+        {report.riskFlags?.length ? (
+          <div className="analysis-summary-badges">
+            {report.riskFlags.slice(0, 3).map((flag) => (
+              <span className="analysis-badge" key={flag.key}>
+                风险：{flag.label}
+              </span>
+            ))}
+          </div>
+        ) : null}
 
         {error ? <p className="analysis-inline-alert">刷新失败：{error}</p> : null}
 
@@ -183,7 +208,7 @@ export function GameAnalysisPanel({
                       </strong>
                       <span>{item.playtimeText}</span>
                     </div>
-                    <blockquote>{item.quote}</blockquote>
+                    <blockquote>{formatReviewQuote(item.quote)}</blockquote>
                     <p>{item.interpretation}</p>
                   </article>
                 ))
@@ -195,6 +220,16 @@ export function GameAnalysisPanel({
       </div>
     </div>
   );
+}
+
+function formatReviewQuote(value: string) {
+  return value
+    .replace(/\[url=[^\]]+\]([\s\S]*?)\[\/url\]/gi, "$1")
+    .replace(/\[(?:\/)?[a-z*]+(?:=[^\]]+)?\]/gi, "")
+    .replace(/\s+\n/g, "\n")
+    .replace(/\n\s+/g, "\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
 }
 
 function formatSource(source: GameAnalysisReport["source"]) {
@@ -225,4 +260,19 @@ function formatGeneratedAt(generatedAt: string) {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function formatPoolType(poolType: NonNullable<GameAnalysisReport["poolType"]>) {
+  switch (poolType) {
+    case "new_release":
+      return "新游候选池";
+    case "evergreen":
+      return "稳定推荐池";
+    case "hidden_gem":
+      return "冷门宝藏池";
+    case "friends_party":
+      return "朋友开黑池";
+    case "demo_potential":
+      return "Demo 潜力池";
+  }
 }

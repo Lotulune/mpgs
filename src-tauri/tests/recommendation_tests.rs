@@ -37,6 +37,19 @@ fn scoring_keeps_low_player_hidden_gems_above_burial_threshold() {
 }
 
 #[test]
+fn scoring_without_ai_score_does_not_get_a_hidden_default_boost() {
+    let mut facts = base_facts();
+    facts.ai_score = None;
+
+    let score = compute_recommendation_score(&facts, "2026-04-26");
+
+    assert!(
+        score < 80.0,
+        "score should stay conservative without a real AI score, got {score}"
+    );
+}
+
+#[test]
 fn bucket_game_splits_recent_and_classic_games() {
     assert_eq!(bucket_game(&base_facts(), "2026-04-26"), ReleaseBucket::New);
 

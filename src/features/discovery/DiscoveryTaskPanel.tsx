@@ -98,6 +98,36 @@ function discoverySyncModeLabel(mode: SyncMode) {
   return mode === "quick" ? "部分拉取" : "完整拉取";
 }
 
+function SubPanel({
+  title,
+  status,
+  expanded,
+  onToggle,
+  children,
+}: {
+  title: string;
+  status?: React.ReactNode;
+  expanded: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="discovery-subpanel">
+      <button
+        type="button"
+        className="discovery-subpanel-header"
+        aria-expanded={expanded}
+        onClick={onToggle}
+      >
+        <h4>{title}</h4>
+        {status && <span>{status}</span>}
+        <em className="discovery-subpanel-chevron">{expanded ? "▼" : "▶"}</em>
+      </button>
+      {expanded && <div className="discovery-subpanel-body">{children}</div>}
+    </section>
+  );
+}
+
 export function DiscoveryTaskPanel({
   stats,
   onStatus,
@@ -121,6 +151,13 @@ export function DiscoveryTaskPanel({
   const [syncMode, setSyncMode] = useState<SyncMode>(DEFAULT_SYNC_MODE);
   const [actionError, setActionError] = useState<string | null>(null);
   const [isDirty, setIsDirty] = useState(false);
+  const [expandedPanels, setExpandedPanels] = useState({
+    backfill: false,
+    failures: false,
+    history: true,
+  });
+  const togglePanel = (key: keyof typeof expandedPanels) =>
+    setExpandedPanels((prev) => ({ ...prev, [key]: !prev[key] }));
   const lastRefreshedTerminalKeyRef = useRef<string | null>(null);
   const backfillRefreshIssuedRef = useRef(false);
 
@@ -378,11 +415,12 @@ export function DiscoveryTaskPanel({
       </div>
 
       <div className="discovery-grid">
-        <section className="discovery-subpanel">
-          <div className="discovery-subpanel-head">
-            <h4>元数据补全</h4>
-            <span>{`${formatNumber(stats.backfillProcessedCount)}/${formatNumber(stats.backfillTotalCount)}`}</span>
-          </div>
+        <SubPanel
+          title="元数据补全"
+          status={`${formatNumber(stats.backfillProcessedCount)}/${formatNumber(stats.backfillTotalCount)}`}
+          expanded={expandedPanels.backfill}
+          onToggle={() => togglePanel("backfill")}
+        >
           <div className="discovery-table">
             <div className="discovery-table-row">
               <strong>{describeBackfillStatus(stats)}</strong>
@@ -412,13 +450,14 @@ export function DiscoveryTaskPanel({
               </p>
             </div>
           </div>
-        </section>
+        </SubPanel>
 
-        <section className="discovery-subpanel">
-          <div className="discovery-subpanel-head">
-            <h4>失败记录</h4>
-            <span>{snapshot?.failures.length ?? 0} 条</span>
-          </div>
+        <SubPanel
+          title="失败记录"
+          status={`${snapshot?.failures.length ?? 0} 条`}
+          expanded={expandedPanels.failures}
+          onToggle={() => togglePanel("failures")}
+        >
           {snapshot?.failures.length ? (
             <div className="discovery-table">
               {snapshot.failures.map((failure) => (
@@ -432,13 +471,14 @@ export function DiscoveryTaskPanel({
           ) : (
             <p className="settings-hint">当前任务没有失败记录。</p>
           )}
-        </section>
+        </SubPanel>
 
-        <section className="discovery-subpanel">
-          <div className="discovery-subpanel-head">
-            <h4>历史任务</h4>
-            <span>{history.length} 条</span>
-          </div>
+        <SubPanel
+          title="历史任务"
+          status={`${history.length} 条`}
+          expanded={expandedPanels.history}
+          onToggle={() => togglePanel("history")}
+        >
           {history.length ? (
             <div className="discovery-table">
               {history.map((item) => (
@@ -460,7 +500,7 @@ export function DiscoveryTaskPanel({
           ) : (
             <p className="settings-hint">暂无历史任务。</p>
           )}
-        </section>
+        </SubPanel>
       </div>
     </section>
   );

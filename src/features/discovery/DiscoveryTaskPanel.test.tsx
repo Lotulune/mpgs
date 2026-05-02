@@ -77,6 +77,16 @@ const stats: DashboardStats = {
   backfillMaxAttempts: 2,
   backfillLastError: null,
   backfillLastErrorAppid: null,
+  aiBatchRefreshRunning: false,
+  aiBatchRefreshConcurrency: 0,
+  aiBatchRefreshPendingCount: 0,
+  aiBatchRefreshActiveCount: 0,
+  aiBatchRefreshTotalCount: 0,
+  aiBatchRefreshProcessedCount: 0,
+  aiBatchRefreshUpdatedCount: 0,
+  aiBatchRefreshFailedCount: 0,
+  aiBatchRefreshLastError: null,
+  aiBatchRefreshLastErrorAppid: null,
   dataSource: "SQLite",
 };
 

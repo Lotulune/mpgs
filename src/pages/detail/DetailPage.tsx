@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
-import type { GameCard, UserGameStatePatch } from "../../types";
+import type { GameAnalysisReport, GameCard, UserGameStatePatch } from "../../types";
+import { getDisplayedGameScore } from "../../features/library/gameScoreDisplay";
 import { GameAnalysisPanel } from "./GameAnalysisPanel";
 import { useGameAnalysis } from "./useGameAnalysis";
 
@@ -20,19 +21,26 @@ export function DetailPage({
   game,
   relatedGames,
   onBack,
-  onAiAssess: _onAiAssess,
+  onAnalysisUpdated,
   onToggleState,
   isBusy,
 }: {
   game: GameCard;
   relatedGames: GameCard[];
   onBack: () => void;
-  onAiAssess?: () => void;
+  onAnalysisUpdated?: (report: GameAnalysisReport) => Promise<void> | void;
   onToggleState: (patch: UserGameStatePatch, message: string) => void;
   isBusy: boolean;
 }) {
   const [activeTab, setActiveTab] = useState<DetailTab>("ai");
-  const { report, loading, error, expanded, refresh, toggleExpanded } = useGameAnalysis(game);
+  const [backQueued, setBackQueued] = useState(false);
+  const { report, loading, error, expanded, refresh, toggleExpanded } = useGameAnalysis(
+    game,
+    onAnalysisUpdated,
+  );
+  const scoreDisplay = getDisplayedGameScore(game);
+  const analysisRefreshPromiseRef = useRef<Promise<void> | null>(null);
+  const backQueuedRef = useRef(false);
   const tabRefs = useRef<Record<DetailTab, HTMLButtonElement | null>>({
     ai: null,
     reviews: null,
@@ -52,12 +60,45 @@ export function DetailPage({
     `标签：${joinOrFallback(game.tags, 3)}`,
     `评论摘录：${game.reviewSnippets.length} 条`,
     `当前在线：${formatNumber(game.currentPlayers)}`,
-    `推荐值：${Math.round(game.recommendationScore)}`,
+    `${scoreDisplay.label}：${Math.round(scoreDisplay.value)}`,
   ];
 
   useEffect(() => {
     setActiveMediaUrl(primaryMediaUrl);
   }, [game.appid, primaryMediaUrl]);
+
+  useEffect(() => {
+    backQueuedRef.current = false;
+    setBackQueued(false);
+  }, [game.appid]);
+
+  async function handleAnalysisRefresh() {
+    const runRefresh = async () => {
+      await refresh();
+    };
+
+    const pendingRefresh = runRefresh().finally(() => {
+      analysisRefreshPromiseRef.current = null;
+      if (backQueuedRef.current) {
+        backQueuedRef.current = false;
+        setBackQueued(false);
+        onBack();
+      }
+    });
+
+    analysisRefreshPromiseRef.current = pendingRefresh;
+    await pendingRefresh;
+  }
+
+  function handleBack() {
+    if (analysisRefreshPromiseRef.current) {
+      backQueuedRef.current = true;
+      setBackQueued(true);
+      return;
+    }
+
+    onBack();
+  }
 
   function focusTab(nextTab: DetailTab) {
     setActiveTab(nextTab);
@@ -98,8 +139,8 @@ export function DetailPage({
   return (
     <section className="detail-page">
       <div className="detail-toolbar">
-        <button type="button" onClick={onBack}>
-          ← 返回
+        <button type="button" onClick={handleBack}>
+          {backQueued ? "AI 评估完成后返回…" : "← 返回"}
         </button>
       </div>
       <div className="detail-grid">
@@ -186,7 +227,7 @@ export function DetailPage({
                 loading={loading}
                 report={report}
                 onRefresh={() => {
-                  void refresh();
+                  void handleAnalysisRefresh();
                 }}
                 onToggleExpanded={toggleExpanded}
               />
@@ -250,8 +291,8 @@ export function DetailPage({
                           {relatedGame.multiplayerModes.slice(0, 2).join(" · ")}
                         </p>
                         <span>
-                          {formatPct(relatedGame.positiveReviewPct)} 好评 · 推荐值{" "}
-                          {Math.round(relatedGame.recommendationScore)}
+                          {formatPct(relatedGame.positiveReviewPct)} 好评 ·{" "}
+                          {formatGameScore(relatedGame)}
                         </span>
                       </div>
                     </article>
@@ -340,7 +381,7 @@ export function DetailPage({
             disabled={isBusy || loading}
             type="button"
             onClick={() => {
-              void refresh();
+              void handleAnalysisRefresh();
             }}
           >
             {isBusy || loading ? "AI 评估中…" : "重新 AI 评估"}
@@ -366,6 +407,11 @@ function demoLabel(status: GameCard["demoStatus"]) {
 
 function formatPct(value?: number | null) {
   return typeof value === "number" ? `${Math.round(value)}%` : "—";
+}
+
+function formatGameScore(game: Pick<GameCard, "aiScore" | "recommendationScore">) {
+  const scoreDisplay = getDisplayedGameScore(game);
+  return `${scoreDisplay.label} ${Math.round(scoreDisplay.value)}`;
 }
 
 function formatNumber(value?: number | null) {

@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { mockDashboard } from "../data/mockDashboard";
 import type {
   AiAssessment,
+  AiBatchRefreshReport,
   AnalysisConfidence,
   AnalysisDimensionScore,
   AnalysisEvidenceItem,
@@ -123,6 +124,12 @@ function buildMockAnalysisReport(game: GameCard): GameAnalysisReport {
     generatedAt,
     source,
     confidence,
+    scoreVersion: "v2",
+    qualityScore: Math.max(55, (game.aiScore ?? game.recommendationScore) - 6),
+    recommendationScore: game.aiScore ?? game.recommendationScore,
+    confidenceScore: confidence === "high" ? 0.82 : 0.58,
+    poolType: game.demoStatus === "demo_only" ? "demo_potential" : "evergreen",
+    riskFlags: [],
     overallScore: game.aiScore ?? game.recommendationScore,
     overview: `${versionLabel}：${game.aiSummary || "适合多人尝鲜，但需要结合评测再判断。"}（生成于 ${generatedAt}）`,
     dimensionScores,
@@ -210,6 +217,9 @@ export async function saveConfig(
       llmModel: request.llmModel || mockDashboard.config.llmModel,
       country: request.country || mockDashboard.config.country,
       language: request.language || mockDashboard.config.language,
+      aiBatchRefreshConcurrency:
+        clampBatchRefreshConcurrency(request.aiBatchRefreshConcurrency) ??
+        mockDashboard.config.aiBatchRefreshConcurrency,
     };
   }
   return invoke<PublicConfig>("save_config", { request });
@@ -271,6 +281,39 @@ export async function assessGameWithAi(appid: number): Promise<AiAssessment> {
     };
   }
   return invoke<AiAssessment>("assess_game_with_ai", { appid });
+}
+
+export async function refreshAllGameAnalyses(
+  concurrency?: number,
+): Promise<AiBatchRefreshReport> {
+  const normalizedConcurrency =
+    clampBatchRefreshConcurrency(concurrency) ?? mockDashboard.config.aiBatchRefreshConcurrency;
+  if (!isTauriRuntime()) {
+    const games = allMockGames();
+    for (const game of games) {
+      const report = buildMockAnalysisReport(game);
+      mockGameAnalysisCache.set(game.appid, report);
+    }
+
+    return {
+      totalGames: games.length,
+      updatedGames: games.length,
+      failedGames: 0,
+      message: `浏览器预览模式：已模拟按 ${normalizedConcurrency} 路并发重算 ${games.length} 款游戏的 AI 评分。`,
+    };
+  }
+
+  return invoke<AiBatchRefreshReport>("refresh_all_game_analyses", {
+    concurrency: normalizedConcurrency,
+  });
+}
+
+function clampBatchRefreshConcurrency(value?: number): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return undefined;
+  }
+
+  return Math.min(10, Math.max(1, Math.round(value)));
 }
 
 export async function getGameAnalysis(

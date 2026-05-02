@@ -13,6 +13,7 @@ export interface PublicConfig {
   llmModel: string;
   country: string;
   language: string;
+  aiBatchRefreshConcurrency: number;
 }
 
 export interface SaveConfigRequest {
@@ -22,6 +23,7 @@ export interface SaveConfigRequest {
   llmModel?: string;
   country?: string;
   language?: string;
+  aiBatchRefreshConcurrency?: number;
 }
 
 export interface DashboardPayload {
@@ -61,6 +63,16 @@ export interface DashboardStats {
   backfillMaxAttempts: number;
   backfillLastError?: string | null;
   backfillLastErrorAppid?: number | null;
+  aiBatchRefreshRunning: boolean;
+  aiBatchRefreshConcurrency: number;
+  aiBatchRefreshPendingCount: number;
+  aiBatchRefreshActiveCount: number;
+  aiBatchRefreshTotalCount: number;
+  aiBatchRefreshProcessedCount: number;
+  aiBatchRefreshUpdatedCount: number;
+  aiBatchRefreshFailedCount: number;
+  aiBatchRefreshLastError?: string | null;
+  aiBatchRefreshLastErrorAppid?: number | null;
   dataSource: string;
 }
 
@@ -131,6 +143,13 @@ export interface SyncReport {
   message: string;
 }
 
+export interface AiBatchRefreshReport {
+  totalGames: number;
+  updatedGames: number;
+  failedGames: number;
+  message: string;
+}
+
 export interface SteamDiscoveryReport {
   scannedApps: number;
   skippedExisting: number;
@@ -168,11 +187,22 @@ export type AnalysisEvidenceKind =
 export type AnalysisReviewStance = "strength" | "risk";
 
 export type AnalysisDimensionKey =
+  | "review_quality"
+  | "multiplayer_fit"
+  | "activity_health"
+  | "content_depth"
+  | "accessibility"
+  | "discovery_value"
   | "approachability"
   | "multiplayer_fun"
-  | "content_depth"
-  | "reputation_stability"
-  | "activity_health";
+  | "reputation_stability";
+
+export type RecommendationPool =
+  | "new_release"
+  | "evergreen"
+  | "hidden_gem"
+  | "friends_party"
+  | "demo_potential";
 
 export interface AnalysisDimensionScore {
   key: AnalysisDimensionKey;
@@ -200,11 +230,24 @@ export interface AnalysisReviewEvidenceItem {
   interpretation: string;
 }
 
+export interface AnalysisRiskFlag {
+  key: string;
+  label: string;
+  severity: number;
+  reason: string;
+}
+
 export interface GameAnalysisReport {
   appid: number;
   generatedAt: string;
   source: AnalysisSource;
   confidence: AnalysisConfidence;
+  scoreVersion?: string;
+  qualityScore?: number;
+  recommendationScore?: number;
+  confidenceScore?: number;
+  poolType?: RecommendationPool;
+  riskFlags?: AnalysisRiskFlag[];
   overallScore: number;
   overview: string;
   dimensionScores: AnalysisDimensionScore[];

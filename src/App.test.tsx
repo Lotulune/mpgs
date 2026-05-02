@@ -32,6 +32,33 @@ function buildDashboard() {
   return structuredClone(mockDashboard);
 }
 
+function createGames(count: number, prefix: string) {
+  return Array.from({ length: count }, (_, index) => {
+    const template = mockDashboard.newGames[index % mockDashboard.newGames.length];
+
+    return {
+      ...template,
+      appid: template.appid + 70_000 + index,
+      name: `${prefix} ${index + 1}`,
+      userState: { ...template.userState },
+    };
+  });
+}
+
+function buildPagedDashboard() {
+  const dashboard = buildDashboard();
+  dashboard.newGames = createGames(13, "分页新游");
+  dashboard.classics = [];
+  dashboard.recentDiscoveries = [];
+  dashboard.stats = {
+    ...dashboard.stats,
+    totalGames: dashboard.upcoming.length + dashboard.newGames.length,
+    newGamesCount: dashboard.newGames.length,
+    classicGamesCount: 0,
+  };
+  return dashboard;
+}
+
 function buildLowActivityDiscoveryDashboard() {
   const dashboard = structuredClone(mockDashboard);
   const lowActivityGame = {
@@ -81,6 +108,25 @@ function buildBackfillDashboard() {
     backfillRunning: true,
     backfillCurrentAppid: 730123,
     backfillCurrentAttempt: 1,
+  };
+
+  return dashboard;
+}
+
+function buildAiBatchRefreshDashboard() {
+  const dashboard = structuredClone(mockDashboard);
+  dashboard.stats = {
+    ...dashboard.stats,
+    aiBatchRefreshRunning: true,
+    aiBatchRefreshConcurrency: 5,
+    aiBatchRefreshPendingCount: 12,
+    aiBatchRefreshActiveCount: 5,
+    aiBatchRefreshTotalCount: 20,
+    aiBatchRefreshProcessedCount: 8,
+    aiBatchRefreshUpdatedCount: 7,
+    aiBatchRefreshFailedCount: 1,
+    aiBatchRefreshLastError: null,
+    aiBatchRefreshLastErrorAppid: null,
   };
 
   return dashboard;
@@ -155,6 +201,17 @@ function getGameTitles(sectionHeading: string) {
   return within(section)
     .getAllByRole("heading", { level: 3 })
     .map((node) => node.textContent);
+}
+
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((nextResolve, nextReject) => {
+    resolve = nextResolve;
+    reject = nextReject;
+  });
+
+  return { promise, resolve, reject };
 }
 
 describe("App dashboard interactions", () => {
@@ -313,6 +370,86 @@ describe("App dashboard interactions", () => {
     expect(getDashboardMock).toHaveBeenCalledTimes(2);
   });
 
+  it("polls for dashboard refresh while AI batch refresh is running", async () => {
+    vi.useFakeTimers();
+    getDashboardMock.mockResolvedValue(buildAiBatchRefreshDashboard());
+
+    render(<App />);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(screen.getByRole("heading", { name: "新游区" })).toBeInTheDocument();
+    expect(getDashboardMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(2_200);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(getDashboardMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("clears the busy state after ai assess even if polling refresh overtakes loadDashboard", async () => {
+    vi.useFakeTimers();
+    const dashboard = buildAiBatchRefreshDashboard();
+    const manualRefresh = createDeferred<typeof dashboard>();
+    assessGameWithAiMock.mockResolvedValueOnce({
+      appid: dashboard.newGames[0].appid,
+      score: 91,
+      summary: "AI 评估完成",
+      bestFor: [],
+      risks: [],
+    });
+    getDashboardMock
+      .mockResolvedValueOnce(dashboard)
+      .mockImplementationOnce(() => manualRefresh.promise)
+      .mockResolvedValue(dashboard);
+
+    render(<App />);
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByRole("heading", { name: "新游区" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "✦ 让 AI 帮我找游戏" }));
+
+    const targetRow = screen
+      .getByRole("heading", { name: dashboard.newGames[0].name })
+      .closest(".recommend-row");
+    if (!(targetRow instanceof HTMLElement)) {
+      throw new Error("Missing AI recommendation row");
+    }
+
+    fireEvent.click(within(targetRow).getByRole("button", { name: "评估" }));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(getDashboardMock).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      vi.advanceTimersByTime(2_200);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(getDashboardMock).toHaveBeenCalledTimes(3);
+
+    await act(async () => {
+      manualRefresh.resolve(dashboard);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(within(targetRow).getByRole("button", { name: "评估" })).toBeEnabled();
+  });
+
   it("routes full and quick sync requests with their selected mode", async () => {
     render(<App />);
 
@@ -397,5 +534,316 @@ describe("App dashboard interactions", () => {
     await waitFor(() =>
       expect(screen.getByText(refreshedDescription)).toBeInTheDocument(),
     );
+  });
+
+  it("syncs the dashboard card as soon as detail analysis is auto-generated", async () => {
+    const dashboard = buildDashboard();
+    const target = {
+      ...dashboard.newGames[0],
+      recommendationScore: 61,
+      aiScore: null,
+      aiSummary: "还没有 AI 评测。",
+    };
+    dashboard.newGames[0] = target;
+    const generatedReport = buildAnalysisReport(target.appid, {
+      overallScore: 97,
+      overview: "首次打开详情后自动生成的 AI 分析。",
+    });
+
+    getDashboardMock.mockResolvedValue(dashboard);
+    getGameAnalysisMock.mockResolvedValueOnce(null);
+    generateGameAnalysisMock.mockResolvedValueOnce(generatedReport);
+
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "新游区" });
+
+    const getNewGamesSection = () =>
+      screen.getByRole("heading", { name: "新游区" }).closest(".game-section") as HTMLElement;
+    const getHomeCard = () =>
+      within(getNewGamesSection()).getByRole("button", {
+        name: new RegExp(target.name, "i"),
+      });
+
+    expect(within(getHomeCard()).getByText("61")).toBeInTheDocument();
+
+    fireEvent.click(getHomeCard());
+
+    expect(await screen.findByText(generatedReport.overview)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "← 返回" }));
+
+    await waitFor(() =>
+      expect(within(getHomeCard()).getByText("97")).toBeInTheDocument(),
+    );
+    expect(within(getHomeCard()).getByText("综合推荐")).toBeInTheDocument();
+    expect(within(getHomeCard()).queryByText("61")).not.toBeInTheDocument();
+  });
+
+  it("keeps the latest aiScore when older dashboard requests resolve afterwards", async () => {
+    const initialDashboard = buildDashboard();
+    const target = {
+      ...initialDashboard.newGames[0],
+      recommendationScore: 61,
+      aiScore: 61,
+    };
+    initialDashboard.newGames[0] = target;
+
+    const staleDashboard = structuredClone(initialDashboard);
+    const refreshedDashboard = structuredClone(initialDashboard);
+    refreshedDashboard.newGames[0] = {
+      ...refreshedDashboard.newGames[0],
+      aiScore: 97,
+      aiSummary: "新的 AI 评测结果",
+    };
+
+    const cachedReport = buildAnalysisReport(target.appid, {
+      overview: "详情页缓存分析。",
+    });
+    const refreshedReport = buildAnalysisReport(target.appid, {
+      overallScore: 97,
+      overview: "新的 AI 评测结果",
+    });
+    const staleRequest = createDeferred<typeof staleDashboard>();
+    const refreshedRequest = createDeferred<typeof refreshedDashboard>();
+
+    getDashboardMock
+      .mockResolvedValueOnce(initialDashboard)
+      .mockImplementationOnce(() => staleRequest.promise)
+      .mockImplementationOnce(() => refreshedRequest.promise);
+    getGameAnalysisMock.mockResolvedValue(cachedReport);
+    generateGameAnalysisMock.mockResolvedValue(refreshedReport);
+
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "新游区" });
+
+    const newGamesSection = screen
+      .getByRole("heading", { name: "新游区" })
+      .closest(".game-section");
+    if (!(newGamesSection instanceof HTMLElement)) {
+      throw new Error("Missing 新游区 section");
+    }
+
+    fireEvent.click(
+      within(newGamesSection).getByRole("button", {
+        name: new RegExp(target.name, "i"),
+      }),
+    );
+
+    expect(await screen.findByText(cachedReport.overview)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "刷新分析" }));
+    await waitFor(() =>
+      expect(generateGameAnalysisMock).toHaveBeenCalledWith(target.appid, true),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "← 返回" }));
+
+    const getUpdatedCard = () =>
+      within(
+        screen.getByRole("heading", { name: "新游区" }).closest(".game-section") as HTMLElement,
+      ).getByRole("button", {
+        name: new RegExp(target.name, "i"),
+      });
+
+    let updatedCard = getUpdatedCard();
+    expect(within(updatedCard).getByText("97")).toBeInTheDocument();
+    expect(within(updatedCard).getByText("综合推荐")).toBeInTheDocument();
+
+    await act(async () => {
+      staleRequest.resolve(staleDashboard);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    updatedCard = getUpdatedCard();
+    expect(within(updatedCard).getByText("97")).toBeInTheDocument();
+    expect(within(updatedCard).queryByText("61")).not.toBeInTheDocument();
+
+    await act(async () => {
+      refreshedRequest.resolve(refreshedDashboard);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    updatedCard = getUpdatedCard();
+    expect(within(updatedCard).getByText("97")).toBeInTheDocument();
+  });
+
+  it("updates the home card even when leaving detail before analysis refresh finishes", async () => {
+    const initialDashboard = buildDashboard();
+    const target = {
+      ...initialDashboard.newGames[0],
+      recommendationScore: 61,
+      aiScore: 61,
+    };
+    initialDashboard.newGames[0] = target;
+
+    const refreshedDashboard = structuredClone(initialDashboard);
+    refreshedDashboard.newGames[0] = {
+      ...refreshedDashboard.newGames[0],
+      aiScore: 97,
+      aiSummary: "离开详情后也该同步到首页",
+    };
+
+    const cachedReport = buildAnalysisReport(target.appid, {
+      overview: "详情页缓存分析。",
+    });
+    const refreshedReport = buildAnalysisReport(target.appid, {
+      overallScore: 97,
+      overview: "离开详情后也该同步到首页",
+    });
+    const staleDashboardRequest = createDeferred<typeof initialDashboard>();
+    const refreshAnalysisRequest = createDeferred<GameAnalysisReport>();
+
+    getDashboardMock
+      .mockResolvedValueOnce(initialDashboard)
+      .mockImplementationOnce(() => staleDashboardRequest.promise)
+      .mockResolvedValueOnce(refreshedDashboard);
+    getGameAnalysisMock.mockResolvedValue(cachedReport);
+    generateGameAnalysisMock.mockImplementationOnce(() => refreshAnalysisRequest.promise);
+
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "新游区" });
+
+    const getNewGamesSection = () =>
+      screen.getByRole("heading", { name: "新游区" }).closest(".game-section") as HTMLElement;
+    const getHomeCard = () =>
+      within(getNewGamesSection()).getByRole("button", {
+        name: new RegExp(target.name, "i"),
+      });
+
+    fireEvent.click(getHomeCard());
+
+    expect(await screen.findByText(cachedReport.overview)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "刷新分析" }));
+    fireEvent.click(screen.getByRole("button", { name: "← 返回" }));
+
+    await act(async () => {
+      refreshAnalysisRequest.resolve(refreshedReport);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(within(getHomeCard()).getByText("97")).toBeInTheDocument();
+    expect(within(getHomeCard()).getByText("综合推荐")).toBeInTheDocument();
+
+    await act(async () => {
+      staleDashboardRequest.resolve(initialDashboard);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(within(getHomeCard()).getByText("97")).toBeInTheDocument();
+    expect(within(getHomeCard()).queryByText("61")).not.toBeInTheDocument();
+  });
+
+  it("keeps the AI assistant card score synced after its follow-up dashboard reload", async () => {
+    const initialDashboard = buildDashboard();
+    const target = {
+      ...initialDashboard.newGames[0],
+      recommendationScore: 61,
+      aiScore: null,
+      aiSummary: "评估前仍显示基础推荐值。",
+    };
+    initialDashboard.newGames[0] = target;
+
+    const staleDashboard = structuredClone(initialDashboard);
+    assessGameWithAiMock.mockResolvedValueOnce({
+      appid: target.appid,
+      score: 97,
+      summary: "AI 助手刚生成的新推荐值",
+      bestFor: [],
+      risks: [],
+    });
+    getDashboardMock
+      .mockResolvedValueOnce(initialDashboard)
+      .mockResolvedValueOnce(staleDashboard);
+
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "新游区" });
+    fireEvent.click(screen.getByRole("button", { name: "✦ 让 AI 帮我找游戏" }));
+
+    const getAiCard = () =>
+      screen.getByRole("heading", { name: target.name }).closest(".recommend-row") as HTMLElement;
+
+    expect(within(getAiCard()).getByText("61")).toBeInTheDocument();
+    expect(within(getAiCard()).getByText("推荐值")).toBeInTheDocument();
+
+    fireEvent.click(within(getAiCard()).getByRole("button", { name: "评估" }));
+
+    await waitFor(() => expect(assessGameWithAiMock).toHaveBeenCalledWith(target.appid));
+    await waitFor(() => expect(getDashboardMock).toHaveBeenCalledTimes(2));
+
+    expect(within(getAiCard()).getByText("97")).toBeInTheDocument();
+    expect(within(getAiCard()).getByText("综合推荐")).toBeInTheDocument();
+    expect(within(getAiCard()).queryByText("61")).not.toBeInTheDocument();
+  });
+
+  it("returns to the previously browsed page instead of resetting pagination", async () => {
+    const dashboard = buildPagedDashboard();
+
+    getDashboardMock.mockResolvedValue(dashboard);
+    getGameAnalysisMock.mockImplementation(async (appid: number) =>
+      buildAnalysisReport(appid),
+    );
+    generateGameAnalysisMock.mockImplementation(async (appid: number) =>
+      buildAnalysisReport(appid),
+    );
+
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "新游区" });
+
+    fireEvent.click(screen.getAllByRole("button", { name: "查看全部 〉" })[0]);
+
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "新游区" })).toBeInTheDocument();
+      expect(screen.queryByRole("heading", { name: "精品老游区" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("heading", { name: "最近发现" })).not.toBeInTheDocument();
+      expect(screen.getByText("第 1 / 2 页")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("第 2 / 2 页")).toBeInTheDocument();
+      expect(screen.queryByText("分页新游 1")).not.toBeInTheDocument();
+    });
+
+    const newGamesSection = screen
+      .getByRole("heading", { name: "新游区" })
+      .closest(".game-section");
+    if (!(newGamesSection instanceof HTMLElement)) {
+      throw new Error("Missing 新游区 section");
+    }
+
+    const targetName = within(newGamesSection).getAllByRole("heading", { level: 3 })[0]
+      ?.textContent;
+    if (!targetName) {
+      throw new Error("Missing page-2 target game");
+    }
+
+    fireEvent.click(
+      within(newGamesSection).getByRole("button", {
+        name: new RegExp(targetName, "i"),
+      }),
+    );
+
+    expect(await screen.findByText("打开详情页后应直接显示缓存分析。")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "← 返回" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "新游区" })).toBeInTheDocument();
+      expect(screen.queryByRole("heading", { name: "精品老游区" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("heading", { name: "最近发现" })).not.toBeInTheDocument();
+      expect(screen.getByText("第 2 / 2 页")).toBeInTheDocument();
+      expect(screen.getByText(targetName)).toBeInTheDocument();
+      expect(screen.queryByText("分页新游 1")).not.toBeInTheDocument();
+    });
   });
 });

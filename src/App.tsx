@@ -1,7 +1,16 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
+import { ErrorBoundary } from "./components/ErrorBoundary";
+import {
+  applyGameAnalysisSnapshotToDashboard,
+  applyGameAnalysisSnapshotToGame,
+  snapshotFromReport,
+  type GameAnalysisSnapshot,
+} from "./features/library/gameDashboardState";
 import {
   assessGameWithAi,
   getDashboard,
+  refreshAllGameAnalyses,
   saveConfig,
   setGameUserState,
   syncSeedGames,
@@ -12,7 +21,10 @@ import { AboutPage } from "./pages/about/AboutPage";
 import { CollectionsHubPage } from "./pages/collections/CollectionsHubPage";
 import { HistoryPage } from "./pages/collections/HistoryPage";
 import { WishlistTrackerPage } from "./pages/collections/WishlistTrackerPage";
-import { DashboardPage } from "./pages/dashboard/DashboardPage";
+import {
+  DashboardPage,
+  type DashboardSectionPageState,
+} from "./pages/dashboard/DashboardPage";
 import { DetailPage } from "./pages/detail/DetailPage";
 import { FilterPage } from "./pages/filter/FilterPage";
 import { SettingsPage } from "./pages/settings/SettingsPage";
@@ -31,7 +43,7 @@ import "./App.css";
 const defaultTagOptions = ["合作", "独立", "像素风格", "解谜", "轻松"];
 const DEFAULT_MIN_PLAYERS = 0;
 const DEFAULT_MIN_REVIEW_PCT = 0;
-const BACKFILL_REFRESH_INTERVAL_MS = 2_000;
+const DASHBOARD_POLL_INTERVAL_MS = 2_000;
 
 const navPrimary: Array<{ id: ViewId; label: string; icon: string; badge?: string }> = [
   { id: "home", label: "首页", icon: "⌂" },
@@ -60,6 +72,12 @@ const DEFAULT_FILTERS: LibraryFilters = {
   selectedLanguage: "all",
 };
 
+const DEFAULT_SECTION_PAGES: DashboardSectionPageState = {
+  new: 1,
+  classic: 1,
+  recent: 1,
+};
+
 function App() {
   const [dashboard, setDashboard] = useState<DashboardPayload | null>(null);
   const [activeView, setActiveView] = useState<ViewId>("home");
@@ -70,9 +88,24 @@ function App() {
   const [status, setStatus] = useState("正在打开 Co-Play 多人游戏雷达……");
   const [isBusy, setIsBusy] = useState(false);
   const [assessment, setAssessment] = useState<AiAssessment | null>(null);
+  const [sectionPages, setSectionPages] =
+    useState<DashboardSectionPageState>(DEFAULT_SECTION_PAGES);
+  const mountedRef = useRef(true);
+  const dashboardRequestIdRef = useRef(0);
+  const detailReturnViewRef = useRef<ViewId>("home");
+  const pendingAnalysisSnapshotsRef = useRef(new Map<number, GameAnalysisSnapshot>());
 
   useEffect(() => {
     void loadDashboard();
+  }, []);
+
+  useEffect(() => {
+    mountedRef.current = true;
+
+    return () => {
+      mountedRef.current = false;
+      dashboardRequestIdRef.current += 1;
+    };
   }, []);
 
   useEffect(() => {
@@ -83,7 +116,8 @@ function App() {
     if (
       !dashboard.stats.syncRunning &&
       !dashboard.stats.backfillRunning &&
-      dashboard.stats.backfillPendingCount === 0
+      dashboard.stats.backfillPendingCount === 0 &&
+      !dashboard.stats.aiBatchRefreshRunning
     ) {
       return;
     }
@@ -100,12 +134,12 @@ function App() {
         }
       } finally {
         if (!isDisposed) {
-          timer = window.setTimeout(poll, BACKFILL_REFRESH_INTERVAL_MS);
+          timer = window.setTimeout(poll, DASHBOARD_POLL_INTERVAL_MS);
         }
       }
     };
 
-    timer = window.setTimeout(poll, BACKFILL_REFRESH_INTERVAL_MS);
+    timer = window.setTimeout(poll, DASHBOARD_POLL_INTERVAL_MS);
 
     return () => {
       isDisposed = true;
@@ -115,14 +149,19 @@ function App() {
     };
   }, [dashboard, refreshDashboard]);
 
-  async function refreshDashboard() {
+  async function refreshDashboard(requestId = beginDashboardRequest()) {
     const payload = await getDashboard();
+    if (!isDashboardRequestCurrent(requestId)) {
+      return null;
+    }
+
+    const nextPayload = applyPendingGameAnalysisSnapshots(payload);
     const latestGames = [
-      ...payload.upcoming,
-      ...payload.newGames,
-      ...payload.classics,
+      ...nextPayload.upcoming,
+      ...nextPayload.newGames,
+      ...nextPayload.classics,
     ];
-    setDashboard(payload);
+    setDashboard(nextPayload);
     setSelectedGame(
       (current) =>
         latestGames.find((game) => game.appid === current?.appid) ??
@@ -132,15 +171,24 @@ function App() {
     return payload;
   }
 
-  async function loadDashboard() {
-    setIsBusy(true);
+  async function loadDashboard(manageBusyState = true) {
+    const requestId = beginDashboardRequest();
+    if (manageBusyState) {
+      setIsBusy(true);
+    }
     try {
-      const payload = await refreshDashboard();
-      setStatus(payload.stats.dataSource);
+      const payload = await refreshDashboard(requestId);
+      if (payload) {
+        setStatus(payload.stats.dataSource);
+      }
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error));
+      if (isDashboardRequestCurrent(requestId)) {
+        setStatus(error instanceof Error ? error.message : String(error));
+      }
     } finally {
-      setIsBusy(false);
+      if (manageBusyState && isDashboardRequestCurrent(requestId)) {
+        setIsBusy(false);
+      }
     }
   }
 
@@ -167,9 +215,28 @@ function App() {
     setStatus(`正在让 AI 评估《${game.name}》……`);
     try {
       const nextAssessment = await assessGameWithAi(game.appid);
+      commitGameAnalysisSnapshot({
+        appid: game.appid,
+        aiScore: nextAssessment.score,
+        aiSummary: nextAssessment.summary,
+      });
       setAssessment(nextAssessment);
       setStatus(`AI：${nextAssessment.summary}`);
-      await loadDashboard();
+      await loadDashboard(false);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function handleRefreshAllAnalyses(concurrency: number) {
+    setIsBusy(true);
+    setStatus(`正在按 ${concurrency} 路并发批量重算库内游戏的 AI 评分……`);
+    try {
+      const report = await refreshAllGameAnalyses(concurrency);
+      await refreshDashboard();
+      setStatus(report.message);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
     } finally {
@@ -185,7 +252,7 @@ function App() {
     setIsBusy(true);
     try {
       await setGameUserState(appid, patch);
-      await loadDashboard();
+      await loadDashboard(false);
       setSelectedGame((current) =>
         current?.appid === appid
           ? {
@@ -219,30 +286,111 @@ function App() {
     }
   }
 
+  function syncGameAnalysisLocally(snapshot: GameAnalysisSnapshot) {
+    pendingAnalysisSnapshotsRef.current.set(snapshot.appid, snapshot);
+    setDashboard((current) =>
+      current ? applyGameAnalysisSnapshotToDashboard(current, snapshot) : current,
+    );
+    setSelectedGame((current) =>
+      current ? applyGameAnalysisSnapshotToGame(current, snapshot) : current,
+    );
+  }
+
+  function applyPendingGameAnalysisSnapshots(payload: DashboardPayload) {
+    let nextPayload = payload;
+
+    for (const snapshot of pendingAnalysisSnapshotsRef.current.values()) {
+      if (dashboardContainsSnapshot(nextPayload, snapshot)) {
+        pendingAnalysisSnapshotsRef.current.delete(snapshot.appid);
+        continue;
+      }
+
+      nextPayload = applyGameAnalysisSnapshotToDashboard(nextPayload, snapshot);
+    }
+
+    return nextPayload;
+  }
+
+  function commitGameAnalysisSnapshot(snapshot: GameAnalysisSnapshot) {
+    flushSync(() => {
+      syncGameAnalysisLocally(snapshot);
+    });
+  }
+
+  function beginDashboardRequest() {
+    const requestId = dashboardRequestIdRef.current + 1;
+    dashboardRequestIdRef.current = requestId;
+    return requestId;
+  }
+
+  function isDashboardRequestCurrent(requestId: number) {
+    return mountedRef.current && dashboardRequestIdRef.current === requestId;
+  }
+
+  function dashboardContainsSnapshot(
+    payload: DashboardPayload,
+    snapshot: GameAnalysisSnapshot,
+  ) {
+    const matchingGames = [
+      ...payload.newGames,
+      ...payload.classics,
+      ...payload.upcoming,
+      ...payload.recentDiscoveries,
+      ...payload.collections.favorites,
+      ...payload.collections.wishlist,
+      ...payload.collections.followed,
+      ...payload.collections.history,
+    ].filter((game) => game.appid === snapshot.appid);
+
+    return (
+      matchingGames.length > 0 &&
+      matchingGames.every(
+        (game) =>
+          game.aiScore === snapshot.aiScore &&
+          game.aiSummary === snapshot.aiSummary,
+      )
+    );
+  }
+
   function openDetail(game: GameCard) {
+    detailReturnViewRef.current = activeView;
     setSelectedGame(game);
     setActiveView("detail");
     void handleUserState(game.appid, { viewed: true }, `已打开《${game.name}》详情。`);
   }
 
+  function openSelectedGameDetail() {
+    detailReturnViewRef.current = activeView;
+    setActiveView("detail");
+  }
+
+  function returnFromDetail() {
+    setActiveView(detailReturnViewRef.current === "detail" ? "home" : detailReturnViewRef.current);
+  }
+
   function resetFilters() {
     setFilters({ ...DEFAULT_FILTERS });
+    setSectionPages(DEFAULT_SECTION_PAGES);
   }
 
   function setDemoFilter(demoFilter: LibraryFilters["demoFilter"]) {
     setFilters((current) => ({ ...current, demoFilter }));
+    setSectionPages(DEFAULT_SECTION_PAGES);
   }
 
   function setMinPlayers(minPlayers: number) {
     setFilters((current) => ({ ...current, minPlayers }));
+    setSectionPages(DEFAULT_SECTION_PAGES);
   }
 
   function setMinReviewPct(minReviewPct: number) {
     setFilters((current) => ({ ...current, minReviewPct }));
+    setSectionPages(DEFAULT_SECTION_PAGES);
   }
 
   function setReleaseWindow(releaseWindow: LibraryFilters["releaseWindow"]) {
     setFilters((current) => ({ ...current, releaseWindow }));
+    setSectionPages(DEFAULT_SECTION_PAGES);
   }
 
   function toggleHideAdultContent() {
@@ -250,6 +398,7 @@ function App() {
       ...current,
       hideAdultContent: !current.hideAdultContent,
     }));
+    setSectionPages(DEFAULT_SECTION_PAGES);
   }
 
   function toggleQuickTag(tag: string) {
@@ -259,6 +408,15 @@ function App() {
         ? current.selectedTags.filter((item) => item !== tag)
         : [...current.selectedTags, tag],
     }));
+    setSectionPages(DEFAULT_SECTION_PAGES);
+  }
+
+  function changeSectionPage(sectionId: keyof DashboardSectionPageState, page: number) {
+    setSectionPages((current) =>
+      current[sectionId] === page
+        ? current
+        : { ...current, [sectionId]: Math.max(1, page) },
+    );
   }
 
   const allGames = useMemo(
@@ -275,10 +433,12 @@ function App() {
     const ordered: string[] = [];
 
     for (const game of allGames) {
-      for (const tag of game.tags) {
-        if (!seen.has(tag)) {
-          seen.add(tag);
-          ordered.push(tag);
+      if (Array.isArray(game.tags)) {
+        for (const tag of game.tags) {
+          if (!seen.has(tag)) {
+            seen.add(tag);
+            ordered.push(tag);
+          }
         }
       }
     }
@@ -336,16 +496,17 @@ function App() {
   const showDashboardRail = ["home", "new", "classic", "browse"].includes(activeView);
 
   return (
-    <main className="coplay-shell">
-      <Sidebar activeView={activeView} onNavigate={setActiveView} />
+    <ErrorBoundary>
+      <main className="coplay-shell">
+        <Sidebar activeView={activeView} onNavigate={setActiveView} />
 
-      <section className="page-surface">
+        <section className="page-surface">
         <TopBar
           activeView={activeView}
           query={query}
           selectedGame={selectedGame}
           setQuery={setQuery}
-          onDetail={() => setActiveView("detail")}
+          onDetail={openSelectedGameDetail}
         />
 
         {activeView === "filter" && (
@@ -366,7 +527,13 @@ function App() {
           <DetailPage
             game={selectedGame}
             isBusy={isBusy}
-            onBack={() => setActiveView("home")}
+            onBack={returnFromDetail}
+            onAnalysisUpdated={(report) => {
+              commitGameAnalysisSnapshot(snapshotFromReport(report));
+              void refreshDashboard().catch((error) => {
+                setStatus(error instanceof Error ? error.message : String(error));
+              });
+            }}
             onToggleState={(patch, message) =>
               handleUserState(selectedGame.appid, patch, message)
             }
@@ -434,6 +601,7 @@ function App() {
           <SettingsPage
             config={dashboard.config}
             isBusy={isBusy}
+            onRefreshAllAnalyses={handleRefreshAllAnalyses}
             onRefreshDashboard={refreshDashboard}
             onSave={handleSaveConfig}
             onStatus={setStatus}
@@ -457,6 +625,7 @@ function App() {
             isBusy={isBusy}
             onAi={() => setActiveView("ai")}
             onChangeView={setActiveView}
+            onChangeSectionPage={changeSectionPage}
             onOpenFilters={() => setActiveView("filter")}
             onOpenGame={openDetail}
             onResetFilters={resetFilters}
@@ -470,6 +639,7 @@ function App() {
             onSync={handleSync}
             quickTags={quickTagOptions}
             sections={sections}
+            sectionPages={sectionPages}
             selectedAppid={selectedGame?.appid}
             sortMode={sortMode}
             stats={dashboard.stats}
@@ -478,6 +648,7 @@ function App() {
         )}
       </section>
     </main>
+    </ErrorBoundary>
   );
 }
 

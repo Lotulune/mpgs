@@ -312,6 +312,16 @@ export const mockDashboard: DashboardPayload = {
     backfillMaxAttempts: 2,
     backfillLastError: null,
     backfillLastErrorAppid: null,
+    aiBatchRefreshRunning: false,
+    aiBatchRefreshConcurrency: 0,
+    aiBatchRefreshPendingCount: 0,
+    aiBatchRefreshActiveCount: 0,
+    aiBatchRefreshTotalCount: 0,
+    aiBatchRefreshProcessedCount: 0,
+    aiBatchRefreshUpdatedCount: 0,
+    aiBatchRefreshFailedCount: 0,
+    aiBatchRefreshLastError: null,
+    aiBatchRefreshLastErrorAppid: null,
     dataSource: "浏览器预览 mock 数据；Tauri 内会读取本地 SQLite",
   },
   config: {
@@ -321,5 +331,6 @@ export const mockDashboard: DashboardPayload = {
     llmModel: "deepseek-v4-flash",
     country: "US",
     language: "schinese",
+    aiBatchRefreshConcurrency: 5,
   },
 };

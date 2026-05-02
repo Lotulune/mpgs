@@ -1,3 +1,4 @@
+use crate::ai_batch_refresh_task::AiBatchRefreshRuntimeState;
 use crate::backfill_task::BackfillRuntimeState;
 use crate::discovery_task::DiscoveryRuntimeState;
 use crate::sync_task::SyncRuntimeState;
@@ -11,4 +12,5 @@ pub struct AppState {
     pub discovery: Mutex<DiscoveryRuntimeState>,
     pub backfill: Mutex<BackfillRuntimeState>,
     pub sync: Mutex<SyncRuntimeState>,
+    pub ai_batch_refresh: Mutex<AiBatchRefreshRuntimeState>,
 }

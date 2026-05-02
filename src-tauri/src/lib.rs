@@ -1,3 +1,4 @@
+pub mod ai_batch_refresh_task;
 pub mod backfill_task;
 pub mod commands;
 pub mod db;
@@ -7,6 +8,7 @@ pub mod game_analysis;
 pub mod llm;
 pub mod models;
 pub mod recommendation;
+pub mod scoring;
 pub mod state;
 pub mod steam;
 pub mod sync_task;
@@ -33,6 +35,9 @@ pub fn run() {
                 discovery: std::sync::Mutex::new(discovery_task::DiscoveryRuntimeState::default()),
                 backfill: std::sync::Mutex::new(backfill_task::BackfillRuntimeState::default()),
                 sync: std::sync::Mutex::new(sync_task::SyncRuntimeState::default()),
+                ai_batch_refresh: std::sync::Mutex::new(
+                    ai_batch_refresh_task::AiBatchRefreshRuntimeState::default(),
+                ),
             });
             backfill_task::restore_backfill_runtime(app.handle().clone())?;
             Ok(())
@@ -45,6 +50,7 @@ pub fn run() {
             commands::assess_game_with_ai,
             commands::get_game_analysis,
             commands::generate_game_analysis,
+            commands::refresh_all_game_analyses,
             commands::preview_steam_app_list,
             commands::set_game_user_state,
             commands::get_user_collections,

@@ -2,7 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import { generateGameAnalysis, getGameAnalysis } from "../../api/client";
 import type { GameAnalysisReport, GameCard } from "../../types";
 
-export function useGameAnalysis(game: GameCard) {
+type AnalysisUpdatedHandler = (report: GameAnalysisReport) => Promise<void> | void;
+
+export function useGameAnalysis(
+  game: GameCard,
+  onAnalysisUpdated?: AnalysisUpdatedHandler,
+) {
   const [report, setReport] = useState<GameAnalysisReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -10,15 +15,16 @@ export function useGameAnalysis(game: GameCard) {
   const activeRequestIdRef = useRef(0);
   const mountedRef = useRef(true);
   const currentAppidRef = useRef(game.appid);
+  const onAnalysisUpdatedRef = useRef(onAnalysisUpdated);
 
   currentAppidRef.current = game.appid;
+  onAnalysisUpdatedRef.current = onAnalysisUpdated;
 
   useEffect(() => {
     mountedRef.current = true;
 
     return () => {
       mountedRef.current = false;
-      activeRequestIdRef.current += 1;
     };
   }, []);
 
@@ -33,30 +39,32 @@ export function useGameAnalysis(game: GameCard) {
 
     try {
       const cachedReport = await getGameAnalysis(appid);
-      if (!isRequestCurrent(requestId, appid)) {
+      if (!isRequestLatest(requestId, appid)) {
         return;
       }
 
       if (cachedReport) {
-        setReport(cachedReport);
-        setLoading(false);
+        await publishReport(cachedReport, false);
         return;
       }
 
       const generatedReport = await generateGameAnalysis(appid, false);
-      if (!isRequestCurrent(requestId, appid)) {
+      if (!isRequestLatest(requestId, appid)) {
         return;
       }
 
-      setReport(generatedReport);
-      setLoading(false);
+      if (mountedRef.current) {
+        await publishReport(generatedReport, true);
+      }
     } catch (nextError) {
-      if (!isRequestCurrent(requestId, appid)) {
+      if (!isRequestLatest(requestId, appid)) {
         return;
       }
 
-      setError(getErrorMessage(nextError));
-      setLoading(false);
+      if (mountedRef.current) {
+        setError(getErrorMessage(nextError));
+        setLoading(false);
+      }
     }
   }
 
@@ -66,24 +74,40 @@ export function useGameAnalysis(game: GameCard) {
 
     try {
       const generatedReport = await generateGameAnalysis(appid, true);
-      if (!isRequestCurrent(requestId, appid)) {
-        return;
+      if (!isRequestLatest(requestId, appid)) {
+        return null;
       }
 
-      setReport(generatedReport);
-      setLoading(false);
+      if (mountedRef.current) {
+        await publishReport(generatedReport, true);
+      }
+      return generatedReport;
     } catch (nextError) {
-      if (!isRequestCurrent(requestId, appid)) {
-        return;
+      if (!isRequestLatest(requestId, appid)) {
+        return null;
       }
 
-      setError(getErrorMessage(nextError));
-      setLoading(false);
+      if (mountedRef.current) {
+        setError(getErrorMessage(nextError));
+        setLoading(false);
+      }
+      return null;
     }
   }
 
   function toggleExpanded() {
     setExpanded((value) => !value);
+  }
+
+  async function publishReport(report: GameAnalysisReport, shouldNotifyParent: boolean) {
+    if (mountedRef.current) {
+      setReport(report);
+      setLoading(false);
+    }
+
+    if (shouldNotifyParent) {
+      await onAnalysisUpdatedRef.current?.(report);
+    }
   }
 
   function beginRequest() {
@@ -94,12 +118,8 @@ export function useGameAnalysis(game: GameCard) {
     return requestId;
   }
 
-  function isRequestCurrent(requestId: number, appid: number) {
-    return (
-      mountedRef.current &&
-      activeRequestIdRef.current === requestId &&
-      currentAppidRef.current === appid
-    );
+  function isRequestLatest(requestId: number, appid: number) {
+    return activeRequestIdRef.current === requestId && currentAppidRef.current === appid;
   }
 
   return {

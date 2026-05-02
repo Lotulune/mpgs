@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
 import type { DashboardStats, GameCard, SyncMode } from "../../types";
 import type { DashboardSection } from "../../features/library/gameFilters";
+import { getDisplayedGameScore } from "../../features/library/gameScoreDisplay";
 import type {
   DemoFilter,
   LibraryFilters,
@@ -37,18 +37,22 @@ const SECTION_PAGE_SIZES: Record<DashboardSection["id"], number> = {
   recent: 8,
 };
 
+export type DashboardSectionPageState = Record<DashboardSection["id"], number>;
+
 export function DashboardPage({
   activeView,
   filters,
   isBusy,
   quickTags,
   sections,
+  sectionPages,
   selectedAppid,
   sortMode,
   stats,
   status,
   onAi,
   onChangeView,
+  onChangeSectionPage,
   onOpenFilters,
   onOpenGame,
   onResetFilters,
@@ -66,12 +70,14 @@ export function DashboardPage({
   isBusy: boolean;
   quickTags: string[];
   sections: DashboardSection[];
+  sectionPages: DashboardSectionPageState;
   selectedAppid?: number;
   sortMode: LibrarySortMode;
   stats: DashboardStats;
   status: string;
   onAi: () => void;
   onChangeView: (view: ViewId) => void;
+  onChangeSectionPage: (sectionId: DashboardSection["id"], page: number) => void;
   onOpenFilters: () => void;
   onOpenGame: (game: GameCard) => void;
   onResetFilters: () => void;
@@ -99,9 +105,11 @@ export function DashboardPage({
 
         {sections.map((section) => (
           <GameSection
+            currentPage={sectionPages[section.id] ?? 1}
             games={section.games}
             isHome={isHome}
             key={section.id}
+            onChangePage={(page) => onChangeSectionPage(section.id, page)}
             onSelect={onOpenGame}
             onViewAll={
               isHome
@@ -129,7 +137,7 @@ export function DashboardPage({
         )}
 
         <p className="hint-line">
-          💡 推荐值由 AI 综合评估游戏的游玩人数、好评度、评价内容、发售时间等因素得出，仅供参考。
+          💡 已生成详细评估的游戏会优先显示综合推荐；未评估时仍显示基础推荐值。
         </p>
       </section>
 
@@ -224,32 +232,30 @@ function Toolbar({
 }
 
 function GameSection({
+  currentPage,
   sectionId,
   title,
   subtitle,
   games,
   isHome,
   selectedAppid,
+  onChangePage,
   onSelect,
   onViewAll,
 }: {
+  currentPage: number;
   sectionId: DashboardSection["id"];
   title: string;
   subtitle: string;
   games: GameCard[];
   isHome: boolean;
   selectedAppid?: number;
+  onChangePage: (page: number) => void;
   onSelect: (game: GameCard) => void;
   onViewAll?: () => void;
 }) {
   const pageSize = SECTION_PAGE_SIZES[sectionId];
   const totalPages = Math.max(1, Math.ceil(games.length / pageSize));
-  const [currentPage, setCurrentPage] = useState(1);
-
-  useEffect(() => {
-    setCurrentPage(1);
-  }, [games, isHome]);
-
   const safePage = Math.min(currentPage, totalPages);
   const visibleGames = isHome
     ? games
@@ -277,7 +283,7 @@ function GameSection({
               <span>{`共 ${games.length} 款`}</span>
               <button
                 disabled={safePage <= 1}
-                onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+                onClick={() => onChangePage(Math.max(1, safePage - 1))}
                 type="button"
               >
                 上一页
@@ -285,7 +291,7 @@ function GameSection({
               <strong>{`第 ${safePage} / ${totalPages} 页`}</strong>
               <button
                 disabled={safePage >= totalPages}
-                onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}
+                onClick={() => onChangePage(Math.min(totalPages, safePage + 1))}
                 type="button"
               >
                 下一页
@@ -296,37 +302,41 @@ function GameSection({
       </div>
 
       <div className="game-grid">
-        {visibleGames.map((game) => (
-          <button
-            className={selectedAppid === game.appid ? "game-card selected" : "game-card"}
-            key={game.appid}
-            onClick={() => onSelect(game)}
-            type="button"
-          >
-            <div className="cover-wrap">
-              <img src={game.capsuleUrl} alt="" loading="lazy" />
-              <span className={`demo-pill ${game.demoStatus}`}>
-                {demoLabel(game.demoStatus)}
-              </span>
-            </div>
-            <div className="game-body">
-              <h3>{game.name}</h3>
-              <p>{game.tags.slice(0, 3).join(" · ")}</p>
-              <div className="review-line">
-                <span>♟ {formatPct(game.positiveReviewPct)} 好评</span>
-                <em>({formatNumber(game.totalReviews)})</em>
+        {visibleGames.map((game) => {
+          const scoreDisplay = getDisplayedGameScore(game);
+
+          return (
+            <button
+              className={selectedAppid === game.appid ? "game-card selected" : "game-card"}
+              key={game.appid}
+              onClick={() => onSelect(game)}
+              type="button"
+            >
+              <div className="cover-wrap">
+                <img src={game.capsuleUrl} alt="" loading="lazy" />
+                <span className={`demo-pill ${game.demoStatus}`}>
+                  {demoLabel(game.demoStatus)}
+                </span>
               </div>
-              <div className="player-line">♟ {formatNumber(game.currentPlayers)} 当前在线</div>
-              <div className="card-bottom">
-                <span>{game.releaseDateText} 发行</span>
-                <strong>
-                  {Math.round(game.recommendationScore)}
-                  <small>推荐值</small>
-                </strong>
+              <div className="game-body">
+                <h3>{game.name}</h3>
+                <p>{(Array.isArray(game.tags) ? game.tags : []).slice(0, 3).join(" · ")}</p>
+                <div className="review-line">
+                  <span>♟ {formatPct(game.positiveReviewPct)} 好评</span>
+                  <em>({formatNumber(game.totalReviews)})</em>
+                </div>
+                <div className="player-line">♟ {formatNumber(game.currentPlayers)} 当前在线</div>
+                <div className="card-bottom">
+                  <span>{game.releaseDateText} 发行</span>
+                  <strong>
+                    {Math.round(scoreDisplay.value)}
+                    <small>{scoreDisplay.label}</small>
+                  </strong>
+                </div>
               </div>
-            </div>
-          </button>
-        ))}
+            </button>
+          );
+        })}
       </div>
     </section>
   );
@@ -557,28 +567,70 @@ function RightRail({
           </button>
         </div>
         <label className="range-field">
-          <span>在线人数下限</span>
-          <input
-            max="16"
-            min="0"
-            onChange={(event) => onSetMinPlayers(Number(event.currentTarget.value))}
-            type="range"
-            value={filters.minPlayers}
-          />
+          <span>
+            在线人数下限
+            <b className="range-current">{filters.minPlayers}</b>
+          </span>
+          <div className="range-control-row">
+            <input
+              max="1000"
+              min="0"
+              onChange={(event) => {
+                const value = Number(event.currentTarget.value);
+                onSetMinPlayers(value);
+              }}
+              type="range"
+              value={filters.minPlayers}
+            />
+            <input
+              className="range-number-input"
+              max="1000"
+              min="0"
+              onChange={(event) => {
+                const value = Number(event.currentTarget.value);
+                onSetMinPlayers(
+                  Number.isFinite(value) ? Math.max(0, Math.min(1000, value)) : 0,
+                );
+              }}
+              type="number"
+              value={filters.minPlayers}
+            />
+          </div>
           <small>
             <b>0</b>
-            <b>16+</b>
+            <b>1000+</b>
           </small>
         </label>
         <label className="range-field">
-          <span>Steam 好评度</span>
-          <input
-            max="100"
-            min="0"
-            onChange={(event) => onSetMinReviewPct(Number(event.currentTarget.value))}
-            type="range"
-            value={filters.minReviewPct}
-          />
+          <span>
+            Steam 好评度
+            <b className="range-current">{filters.minReviewPct}%</b>
+          </span>
+          <div className="range-control-row">
+            <input
+              max="100"
+              min="0"
+              onChange={(event) => {
+                const value = Number(event.currentTarget.value);
+                onSetMinReviewPct(value);
+              }}
+              type="range"
+              value={filters.minReviewPct}
+            />
+            <input
+              className="range-number-input"
+              max="100"
+              min="0"
+              onChange={(event) => {
+                const value = Number(event.currentTarget.value);
+                onSetMinReviewPct(
+                  Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0,
+                );
+              }}
+              type="number"
+              value={filters.minReviewPct}
+            />
+          </div>
           <small>
             <b>0%</b>
             <b>100%</b>
@@ -601,17 +653,22 @@ function RightRail({
             </button>
           </div>
           <div className="tag-list">
-            {quickTags.map((tag) => (
-              <button
-                aria-pressed={filters.selectedTags.includes(tag)}
-                className={filters.selectedTags.includes(tag) ? "active" : ""}
-                key={tag}
-                onClick={() => handleQuickTagClick(tag)}
-                type="button"
-              >
-                {tag}
-              </button>
-            ))}
+            {quickTags.map((tag) => {
+              const isSelected =
+                Array.isArray(filters.selectedTags) &&
+                filters.selectedTags.includes(tag);
+              return (
+                <button
+                  aria-pressed={isSelected}
+                  className={isSelected ? "active" : ""}
+                  key={tag}
+                  onClick={() => handleQuickTagClick(tag)}
+                  type="button"
+                >
+                  {tag}
+                </button>
+              );
+            })}
           </div>
         </div>
         <div className="stacked-actions">

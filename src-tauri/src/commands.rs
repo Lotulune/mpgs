@@ -1,3 +1,4 @@
+use crate::ai_batch_refresh_task;
 use crate::backfill_task;
 use crate::db;
 use crate::discovery::{
@@ -7,11 +8,11 @@ use crate::discovery::{
 };
 use crate::discovery_task::{emit_snapshot, spawn_discovery_worker, DiscoveryControl};
 use crate::game_analysis;
-use crate::llm::LlmRuntimeConfig;
+use crate::llm::{self, LlmRuntimeConfig};
 use crate::models::{
-    AiAssessment, DashboardPayload, DiscoveryRunSnapshot, DiscoveryRunStatus, DiscoveryTaskRequest,
-    GameAnalysisReport, PublicConfig, SaveConfigRequest, SyncMode, SyncReport, SyncRequest,
-    UserCollections, UserGameState, UserGameStatePatch,
+    AiAssessment, AiBatchRefreshReport, DashboardPayload, DiscoveryRunSnapshot, DiscoveryRunStatus,
+    DiscoveryTaskRequest, GameAnalysisReport, PublicConfig, SaveConfigRequest, SyncMode,
+    SyncReport, SyncRequest, UserCollections, UserGameState, UserGameStatePatch,
 };
 use crate::recommendation::{bucket_game, ReleaseBucket};
 use crate::state::AppState;
@@ -20,6 +21,9 @@ use crate::sync_task;
 use std::collections::HashSet;
 use tauri::{AppHandle, Manager, State};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
+
+#[cfg(test)]
+use futures::{stream, StreamExt};
 
 #[tauri::command]
 pub fn get_dashboard(state: State<'_, AppState>) -> Result<DashboardPayload, String> {
@@ -33,6 +37,14 @@ pub fn get_dashboard(state: State<'_, AppState>) -> Result<DashboardPayload, Str
     let persisted_sync_last_error = payload.stats.sync_last_error.clone();
     let persisted_sync_last_error_appid = payload.stats.sync_last_error_appid;
     let persisted_pending_count = payload.stats.backfill_pending_count;
+    let persisted_ai_batch_refresh_total_count = payload.stats.ai_batch_refresh_total_count;
+    let persisted_ai_batch_refresh_processed_count = payload.stats.ai_batch_refresh_processed_count;
+    let persisted_ai_batch_refresh_updated_count = payload.stats.ai_batch_refresh_updated_count;
+    let persisted_ai_batch_refresh_failed_count = payload.stats.ai_batch_refresh_failed_count;
+    let persisted_ai_batch_refresh_last_error = payload.stats.ai_batch_refresh_last_error.clone();
+    let persisted_ai_batch_refresh_last_error_appid =
+        payload.stats.ai_batch_refresh_last_error_appid;
+    let persisted_ai_batch_refresh_concurrency = payload.stats.ai_batch_refresh_concurrency;
     let sync = state.sync.lock().map_err(|err| err.to_string())?.snapshot();
     payload.stats.sync_running = sync.running;
     payload.stats.sync_pending_count = persisted_sync_pending_count.max(sync.pending_count);
@@ -64,6 +76,33 @@ pub fn get_dashboard(state: State<'_, AppState>) -> Result<DashboardPayload, Str
     };
     payload.stats.backfill_processed_count = backfill.processed_count;
     payload.stats.backfill_failed_count = backfill.failed_count;
+    let ai_batch_refresh = state
+        .ai_batch_refresh
+        .lock()
+        .map_err(|err| err.to_string())?
+        .snapshot();
+    payload.stats.ai_batch_refresh_running = ai_batch_refresh.running;
+    payload.stats.ai_batch_refresh_concurrency = visible_ai_batch_refresh_concurrency(
+        &ai_batch_refresh,
+        persisted_ai_batch_refresh_concurrency,
+    );
+    payload.stats.ai_batch_refresh_pending_count = ai_batch_refresh.pending_count;
+    payload.stats.ai_batch_refresh_active_count = ai_batch_refresh.active_count;
+    payload.stats.ai_batch_refresh_total_count =
+        persisted_ai_batch_refresh_total_count.max(ai_batch_refresh.total_count);
+    payload.stats.ai_batch_refresh_processed_count =
+        persisted_ai_batch_refresh_processed_count.max(ai_batch_refresh.processed_count);
+    payload.stats.ai_batch_refresh_updated_count =
+        persisted_ai_batch_refresh_updated_count.max(ai_batch_refresh.updated_count);
+    payload.stats.ai_batch_refresh_failed_count =
+        persisted_ai_batch_refresh_failed_count.max(ai_batch_refresh.failed_count);
+    payload.stats.ai_batch_refresh_last_error = ai_batch_refresh
+        .last_error
+        .clone()
+        .or(persisted_ai_batch_refresh_last_error);
+    payload.stats.ai_batch_refresh_last_error_appid = ai_batch_refresh
+        .last_error_appid
+        .or(persisted_ai_batch_refresh_last_error_appid);
     Ok(payload)
 }
 
@@ -121,6 +160,14 @@ pub fn save_config(
         .filter(|value| !value.is_empty())
     {
         db::set_config(&conn, "language", value).map_err(to_command_error)?;
+    }
+    if let Some(value) = request.ai_batch_refresh_concurrency {
+        db::set_config(
+            &conn,
+            "ai_batch_refresh_concurrency",
+            &db::clamp_ai_batch_refresh_concurrency(value).to_string(),
+        )
+        .map_err(to_command_error)?;
     }
 
     db::public_config(&conn).map_err(to_command_error)
@@ -260,6 +307,48 @@ pub async fn generate_game_analysis(
     generate_or_load_game_analysis(state.inner(), appid, force_refresh.unwrap_or(false))
         .await
         .map_err(to_command_error)
+}
+
+#[tauri::command]
+pub fn refresh_all_game_analyses(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    concurrency: Option<u8>,
+) -> Result<AiBatchRefreshReport, String> {
+    let concurrency =
+        resolve_batch_refresh_concurrency(state.inner(), concurrency).map_err(to_command_error)?;
+
+    let appids = {
+        let conn = state.db.lock().map_err(|err| err.to_string())?;
+        db::list_game_appids(&conn).map_err(to_command_error)?
+    };
+    if appids.is_empty() {
+        return Ok(AiBatchRefreshReport {
+            total_games: 0,
+            updated_games: 0,
+            failed_games: 0,
+            message: "当前库为空，没有可重算的 AI 评分。".to_string(),
+        });
+    }
+
+    if let Some(existing_snapshot) =
+        start_ai_batch_refresh_runtime(state.inner(), appids.len(), concurrency)
+            .map_err(to_command_error)?
+    {
+        return Ok(running_ai_batch_refresh_report(&existing_snapshot));
+    }
+    ai_batch_refresh_task::spawn_ai_batch_refresh_worker(app, appids.clone(), concurrency);
+
+    Ok(AiBatchRefreshReport {
+        total_games: appids.len(),
+        updated_games: 0,
+        failed_games: 0,
+        message: format!(
+            "已启动 AI 批量重算：共 {} 款游戏，当前并发 {}。",
+            appids.len(),
+            concurrency
+        ),
+    })
 }
 
 #[tauri::command]
@@ -666,7 +755,53 @@ async fn generate_assessment_from_report_pipeline(
     Ok(summarize_analysis_report_as_assessment(report))
 }
 
-async fn generate_or_load_game_analysis(
+async fn generate_game_analysis_with_narrative_cache(
+    state: &AppState,
+    config: &LlmRuntimeConfig,
+    game: &crate::models::GameCard,
+    generated_at: String,
+) -> anyhow::Result<GameAnalysisReport> {
+    let rule_report = game_analysis::build_rule_report(game, generated_at)?;
+    if config.api_key.is_none() {
+        return Ok(rule_report);
+    }
+
+    let cache_key = llm::build_analysis_narrative_cache_key(config, game, &rule_report);
+    if let Some(cached_narrative) = {
+        let conn = state
+            .db
+            .lock()
+            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+        db::load_analysis_narrative_cache(&conn, &cache_key)?
+    } {
+        return Ok(game_analysis::apply_narrative_patch(
+            rule_report,
+            cached_narrative,
+        ));
+    }
+
+    match llm::generate_analysis_narrative(&state.http, config, game, &rule_report).await {
+        Ok(narrative) => {
+            let conn = state
+                .db
+                .lock()
+                .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+            db::save_analysis_narrative_cache(
+                &conn,
+                &cache_key,
+                game.appid,
+                &rule_report.score_version,
+                config.base_url.trim(),
+                config.model.trim(),
+                &narrative,
+            )?;
+            Ok(game_analysis::apply_narrative_patch(rule_report, narrative))
+        }
+        Err(_) => Ok(rule_report),
+    }
+}
+
+pub(crate) async fn generate_or_load_game_analysis(
     state: &AppState,
     appid: u32,
     force_refresh: bool,
@@ -692,12 +827,12 @@ async fn generate_or_load_game_analysis(
     }
 
     let report =
-        game_analysis::generate_game_analysis(&state.http, &config, &game, now_rfc3339()?).await?;
+        generate_game_analysis_with_narrative_cache(state, &config, &game, now_rfc3339()?).await?;
 
     let mut updated_game = game;
-    updated_game.ai_score = Some(report.overall_score);
+    updated_game.ai_score = Some(report.recommendation_score);
     updated_game.ai_summary = report.overview.clone();
-    updated_game.recommendation_score = db::score_card(&updated_game);
+    updated_game.recommendation_score = report.recommendation_score;
 
     let conn = state
         .db
@@ -707,6 +842,140 @@ async fn generate_or_load_game_analysis(
     db::upsert_game(&conn, &updated_game)?;
 
     Ok(report)
+}
+
+#[cfg(test)]
+async fn refresh_all_game_analyses_pipeline(
+    state: &AppState,
+    concurrency: u8,
+) -> anyhow::Result<AiBatchRefreshReport> {
+    let appids = {
+        let conn = state
+            .db
+            .lock()
+            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+        db::list_game_appids(&conn)?
+    };
+
+    if appids.is_empty() {
+        return Ok(AiBatchRefreshReport {
+            total_games: 0,
+            updated_games: 0,
+            failed_games: 0,
+            message: "当前库为空，没有可重算的 AI 评分。".to_string(),
+        });
+    }
+
+    let concurrency = db::clamp_ai_batch_refresh_concurrency(concurrency);
+    let total_games = appids.len();
+    let mut updated_games = 0usize;
+    let mut failed_games = 0usize;
+    let mut failure_samples = Vec::new();
+
+    let mut refreshes = stream::iter(appids)
+        .map(|appid| async move {
+            (
+                appid,
+                generate_or_load_game_analysis(state, appid, true).await,
+            )
+        })
+        .buffer_unordered(usize::from(concurrency));
+
+    while let Some((appid, outcome)) = refreshes.next().await {
+        match outcome {
+            Ok(_) => updated_games += 1,
+            Err(error) => {
+                failed_games += 1;
+                if failure_samples.len() < 3 {
+                    failure_samples.push(format!("{appid}: {error}"));
+                }
+            }
+        }
+    }
+
+    let message = if failed_games == 0 {
+        format!("已按 {concurrency} 路并发重算 {updated_games} 款游戏的 AI 评分。")
+    } else {
+        let detail = failure_samples.join("；");
+        format!(
+            "已按 {concurrency} 路并发重算 {updated_games}/{total_games} 款游戏，失败 {failed_games} 款。{}",
+            if detail.is_empty() {
+                "请查看日志定位失败原因。".to_string()
+            } else {
+                format!("失败示例：{detail}")
+            }
+        )
+    };
+
+    Ok(AiBatchRefreshReport {
+        total_games,
+        updated_games,
+        failed_games,
+        message,
+    })
+}
+
+fn resolve_batch_refresh_concurrency(
+    state: &AppState,
+    requested: Option<u8>,
+) -> anyhow::Result<u8> {
+    if let Some(value) = requested {
+        return Ok(db::clamp_ai_batch_refresh_concurrency(value));
+    }
+
+    let conn = state
+        .db
+        .lock()
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+    db::load_ai_batch_refresh_concurrency(&conn)
+}
+
+fn visible_ai_batch_refresh_concurrency(
+    snapshot: &crate::ai_batch_refresh_task::AiBatchRefreshRuntimeSnapshot,
+    persisted_concurrency: u8,
+) -> u8 {
+    if snapshot.concurrency > 0 {
+        snapshot.concurrency
+    } else if persisted_concurrency > 0 {
+        persisted_concurrency
+    } else {
+        db::DEFAULT_AI_BATCH_REFRESH_CONCURRENCY
+    }
+}
+
+fn start_ai_batch_refresh_runtime(
+    state: &AppState,
+    total_count: usize,
+    concurrency: u8,
+) -> anyhow::Result<Option<crate::ai_batch_refresh_task::AiBatchRefreshRuntimeSnapshot>> {
+    let mut runtime = state
+        .ai_batch_refresh
+        .lock()
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+
+    if runtime.start(total_count, concurrency) {
+        Ok(None)
+    } else {
+        Ok(Some(runtime.snapshot()))
+    }
+}
+
+fn running_ai_batch_refresh_report(
+    snapshot: &crate::ai_batch_refresh_task::AiBatchRefreshRuntimeSnapshot,
+) -> AiBatchRefreshReport {
+    AiBatchRefreshReport {
+        total_games: snapshot.total_count,
+        updated_games: snapshot.updated_count,
+        failed_games: snapshot.failed_count,
+        message: format!(
+            "AI 批量重算正在进行：已处理 {}/{}，成功 {}，失败 {}，并发 {}。",
+            snapshot.processed_count,
+            snapshot.total_count,
+            snapshot.updated_count,
+            snapshot.failed_count,
+            snapshot.concurrency
+        ),
+    }
 }
 
 fn load_llm_runtime_config(conn: &rusqlite::Connection) -> anyhow::Result<LlmRuntimeConfig> {
@@ -734,7 +1003,8 @@ fn sync_mode_label(mode: SyncMode) -> &'static str {
 mod tests {
     use super::{
         generate_assessment_from_report_pipeline, generate_or_load_game_analysis,
-        load_cached_game_analysis,
+        load_cached_game_analysis, refresh_all_game_analyses_pipeline,
+        start_ai_batch_refresh_runtime, visible_ai_batch_refresh_concurrency,
     };
     use crate::backfill_task::BackfillRuntimeState;
     use crate::db;
@@ -749,7 +1019,11 @@ mod tests {
     use crate::sync_task::SyncRuntimeState;
     use reqwest::Client;
     use rusqlite::Connection;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
     use std::sync::Mutex;
+    use std::thread;
+    use std::time::Duration;
 
     fn seeded_state() -> AppState {
         let conn = Connection::open_in_memory().expect("open in-memory db");
@@ -805,7 +1079,77 @@ mod tests {
             discovery: Mutex::new(DiscoveryRuntimeState::default()),
             backfill: Mutex::new(BackfillRuntimeState::default()),
             sync: Mutex::new(SyncRuntimeState::default()),
+            ai_batch_refresh: Mutex::new(
+                crate::ai_batch_refresh_task::AiBatchRefreshRuntimeState::default(),
+            ),
         }
+    }
+
+    fn second_seeded_card() -> GameCard {
+        GameCard {
+            appid: 8_402,
+            name: "Quiet Orbit".to_string(),
+            short_description: Some(
+                "A compact co-op survival loop for weeknight squads.".to_string(),
+            ),
+            section: "classic".to_string(),
+            release_date: Some("2025-08-10".to_string()),
+            release_date_text: "2025-08-10".to_string(),
+            release_state: StoreReleaseState::Released,
+            demo_status: DemoStatus::Released,
+            supported_languages: vec!["English".to_string(), "Simplified Chinese".to_string()],
+            is_adult_content: false,
+            price_text: Some("$14.99".to_string()),
+            discount_percent: None,
+            positive_review_pct: Some(94.0),
+            total_reviews: Some(612),
+            current_players: Some(402),
+            recommendation_score: 74.0,
+            ai_score: Some(73.0),
+            ai_summary: "second seeded summary".to_string(),
+            capsule_url: "https://example.com/orbit.jpg".to_string(),
+            store_screenshot_urls: vec!["https://example.com/orbit-shot.jpg".to_string()],
+            tags: vec!["Co-op".to_string(), "Survival".to_string()],
+            multiplayer_modes: vec!["Multi-player".to_string(), "Online Co-op".to_string()],
+            review_snippets: vec![
+                ReviewSnippet {
+                    voted_up: true,
+                    review: "Great for a fixed co-op group.".to_string(),
+                    playtime_hours: Some(16.0),
+                },
+                ReviewSnippet {
+                    voted_up: false,
+                    review: "Late-game content still needs more variety.".to_string(),
+                    playtime_hours: Some(11.5),
+                },
+            ],
+            user_state: UserGameState::default(),
+        }
+    }
+
+    fn spawn_single_use_chat_completion_server(body: &str) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind local test server");
+        let address = listener
+            .local_addr()
+            .expect("read local test server address");
+        let body = body.to_string();
+
+        thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buffer = [0_u8; 16_384];
+                let _ = stream.read(&mut buffer);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("write test response");
+                let _ = stream.flush();
+            }
+        });
+
+        format!("http://{}", address)
     }
 
     fn cached_report(
@@ -819,18 +1163,30 @@ mod tests {
             generated_at: generated_at.to_string(),
             source: AnalysisSource::Hybrid,
             confidence: AnalysisConfidence::High,
+            score_version: "v2".to_string(),
+            quality_score: score - 4.0,
+            recommendation_score: score,
+            confidence_score: 0.82,
+            pool_type: crate::models::RecommendationPool::Evergreen,
+            risk_flags: vec![],
             overall_score: score,
             overview: summary.to_string(),
             dimension_scores: vec![
                 AnalysisDimensionScore {
-                    key: "approachability".to_string(),
-                    label: "易上手度".to_string(),
+                    key: "review_quality".to_string(),
+                    label: "口碑质量".to_string(),
                     score,
                     reason: "cached".to_string(),
                 },
                 AnalysisDimensionScore {
-                    key: "multiplayer_fun".to_string(),
-                    label: "联机乐趣".to_string(),
+                    key: "multiplayer_fit".to_string(),
+                    label: "联机适配度".to_string(),
+                    score,
+                    reason: "cached".to_string(),
+                },
+                AnalysisDimensionScore {
+                    key: "activity_health".to_string(),
+                    label: "活跃健康度".to_string(),
                     score,
                     reason: "cached".to_string(),
                 },
@@ -841,14 +1197,14 @@ mod tests {
                     reason: "cached".to_string(),
                 },
                 AnalysisDimensionScore {
-                    key: "reputation_stability".to_string(),
-                    label: "口碑稳定性".to_string(),
+                    key: "accessibility".to_string(),
+                    label: "上手与本地化".to_string(),
                     score,
                     reason: "cached".to_string(),
                 },
                 AnalysisDimensionScore {
-                    key: "activity_health".to_string(),
-                    label: "活跃健康度".to_string(),
+                    key: "discovery_value".to_string(),
+                    label: "发现价值".to_string(),
                     score,
                     reason: "cached".to_string(),
                 },
@@ -929,6 +1285,153 @@ mod tests {
         assert_eq!(saved.generated_at, generated.generated_at);
         assert_eq!(saved.overview, generated.overview);
         assert_eq!(saved.overall_score, generated.overall_score);
+    }
+
+    #[tokio::test]
+    async fn force_refresh_reuses_cached_narrative_when_only_generated_at_changes() {
+        let state = seeded_state();
+        let base_url = spawn_single_use_chat_completion_server(
+            r#"{"choices":[{"message":{"content":"{\"overview\":\"联机亮点明确，适合固定好友队反复开黑。\",\"strengths\":[{\"title\":\"朋友局体验稳\",\"reason\":\"在线协作信号和近期口碑都够强。\"}],\"risks\":[{\"title\":\"后期深度一般\",\"reason\":\"差评主要集中在内容消耗后的重复感。\"}],\"dimensionReasons\":[[\"content_depth\",\"后期内容延展性一般，但不影响短中期组局体验。\"]]}"}}]}"#,
+        );
+        {
+            let conn = state.db.lock().expect("lock db");
+            db::set_config(&conn, "llm_api_key", "test-key").expect("set llm api key");
+            db::set_config(&conn, "llm_base_url", &base_url).expect("set llm base url");
+            db::set_config(&conn, "llm_model", "deepseek-v4-flash").expect("set llm model");
+        }
+
+        let first = generate_or_load_game_analysis(&state, 7_301, true)
+            .await
+            .expect("generate first hybrid report");
+        thread::sleep(Duration::from_millis(1_100));
+        let second = generate_or_load_game_analysis(&state, 7_301, true)
+            .await
+            .expect("reuse cached narrative on force refresh");
+
+        assert_eq!(first.source, AnalysisSource::Hybrid);
+        assert_eq!(second.source, AnalysisSource::Hybrid);
+        assert_ne!(first.generated_at, second.generated_at);
+        assert_eq!(first.overview, second.overview);
+
+        let conn = state.db.lock().expect("lock db");
+        let cache_entries: i64 = conn
+            .query_row("SELECT COUNT(*) FROM analysis_narrative_cache", [], |row| {
+                row.get(0)
+            })
+            .expect("count narrative cache entries");
+        assert_eq!(cache_entries, 1);
+    }
+
+    #[tokio::test]
+    async fn batch_refresh_pipeline_regenerates_all_cached_reports_and_updates_scores() {
+        let state = seeded_state();
+        {
+            let conn = state.db.lock().expect("lock db");
+            db::upsert_game(&conn, &second_seeded_card()).expect("seed second game");
+            db::save_game_analysis(
+                &conn,
+                7_301,
+                &cached_report(7_301, "2026-04-30T10:00:00Z", "stale first summary", 61.0),
+            )
+            .expect("save first stale report");
+            db::save_game_analysis(
+                &conn,
+                8_402,
+                &cached_report(8_402, "2026-04-30T10:00:00Z", "stale second summary", 58.0),
+            )
+            .expect("save second stale report");
+        }
+
+        let result = refresh_all_game_analyses_pipeline(&state, 2)
+            .await
+            .expect("refresh all analyses");
+
+        assert_eq!(result.total_games, 2);
+        assert_eq!(result.updated_games, 2);
+        assert_eq!(result.failed_games, 0);
+
+        let conn = state.db.lock().expect("lock db");
+        let first = db::load_game_analysis(&conn, 7_301)
+            .expect("load first refreshed report")
+            .expect("first refreshed report exists");
+        let second = db::load_game_analysis(&conn, 8_402)
+            .expect("load second refreshed report")
+            .expect("second refreshed report exists");
+        assert_ne!(first.overview, "stale first summary");
+        assert_ne!(second.overview, "stale second summary");
+        assert_ne!(first.generated_at, "2026-04-30T10:00:00Z");
+        assert_ne!(second.generated_at, "2026-04-30T10:00:00Z");
+
+        let first_game = db::load_game(&conn, 7_301)
+            .expect("load first game")
+            .expect("first game exists");
+        let second_game = db::load_game(&conn, 8_402)
+            .expect("load second game")
+            .expect("second game exists");
+        assert_eq!(first_game.ai_score, Some(first.recommendation_score));
+        assert_eq!(second_game.ai_score, Some(second.recommendation_score));
+    }
+
+    #[tokio::test]
+    async fn batch_refresh_pipeline_clamps_requested_concurrency_and_reports_it() {
+        let state = seeded_state();
+        {
+            let conn = state.db.lock().expect("lock db");
+            db::upsert_game(&conn, &second_seeded_card()).expect("seed second game");
+        }
+
+        let lowered = refresh_all_game_analyses_pipeline(&state, 0)
+            .await
+            .expect("refresh analyses with lowered concurrency");
+        let raised = refresh_all_game_analyses_pipeline(&state, 99)
+            .await
+            .expect("refresh analyses with raised concurrency");
+
+        assert!(lowered.message.contains("1 路并发"));
+        assert!(raised.message.contains("10 路并发"));
+    }
+
+    #[test]
+    fn visible_batch_refresh_concurrency_prefers_runtime_value_while_running() {
+        let running = crate::ai_batch_refresh_task::AiBatchRefreshRuntimeSnapshot {
+            running: true,
+            concurrency: 5,
+            pending_count: 4,
+            active_count: 5,
+            total_count: 9,
+            processed_count: 0,
+            updated_count: 0,
+            failed_count: 0,
+            last_error: None,
+            last_error_appid: None,
+        };
+        let idle = crate::ai_batch_refresh_task::AiBatchRefreshRuntimeSnapshot::default();
+
+        assert_eq!(visible_ai_batch_refresh_concurrency(&running, 10), 5);
+        assert_eq!(visible_ai_batch_refresh_concurrency(&idle, 10), 10);
+        assert_eq!(
+            visible_ai_batch_refresh_concurrency(&idle, 0),
+            db::DEFAULT_AI_BATCH_REFRESH_CONCURRENCY
+        );
+    }
+
+    #[test]
+    fn start_batch_refresh_runtime_returns_existing_snapshot_when_already_running() {
+        let state = seeded_state();
+        {
+            let mut runtime = state.ai_batch_refresh.lock().expect("lock runtime");
+            assert!(runtime.start(12, 4));
+            runtime.mark_job_started();
+        }
+
+        let existing = start_ai_batch_refresh_runtime(&state, 30, 9)
+            .expect("start runtime")
+            .expect("existing snapshot");
+
+        assert!(existing.running);
+        assert_eq!(existing.total_count, 12);
+        assert_eq!(existing.concurrency, 4);
+        assert_eq!(existing.pending_count, 11);
     }
 
     #[tokio::test]

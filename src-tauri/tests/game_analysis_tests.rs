@@ -14,12 +14,13 @@ use tauri_app_lib::models::{
 };
 use tauri_app_lib::recommendation::DemoStatus;
 
-const EXPECTED_DIMENSION_KEYS: [&str; 5] = [
-    "approachability",
-    "multiplayer_fun",
-    "content_depth",
-    "reputation_stability",
+const EXPECTED_DIMENSION_KEYS: [&str; 6] = [
+    "review_quality",
+    "multiplayer_fit",
     "activity_health",
+    "content_depth",
+    "accessibility",
+    "discovery_value",
 ];
 
 fn rich_fixture_game() -> GameCard {
@@ -103,6 +104,142 @@ fn late_negative_fixture_game() -> GameCard {
     game
 }
 
+fn missing_multiplayer_modes_fixture_game() -> GameCard {
+    let mut game = rich_fixture_game();
+    game.multiplayer_modes.clear();
+    game
+}
+
+fn breakout_coop_fixture_game() -> GameCard {
+    GameCard {
+        appid: 3124540,
+        name: "Breakout Frontier".to_string(),
+        short_description: Some(
+            "A loud four-player co-op extraction shooter with western fantasy combat."
+                .to_string(),
+        ),
+        section: "new".to_string(),
+        release_date: Some("2026-04-28".to_string()),
+        release_date_text: "2026-04-28".to_string(),
+        release_state: StoreReleaseState::Released,
+        demo_status: DemoStatus::Released,
+        supported_languages: vec![
+            "English".to_string(),
+            "Simplified Chinese".to_string(),
+        ],
+        is_adult_content: false,
+        price_text: Some("$19.99".to_string()),
+        discount_percent: None,
+        positive_review_pct: Some(98.1),
+        total_reviews: Some(5672),
+        current_players: Some(23_379),
+        recommendation_score: 0.0,
+        ai_score: None,
+        ai_summary: String::new(),
+        capsule_url: "https://example.com/breakout-frontier.jpg".to_string(),
+        store_screenshot_urls: vec!["https://example.com/breakout-frontier-1.jpg".to_string()],
+        tags: vec![
+            "Action".to_string(),
+            "Adventure".to_string(),
+            "Early Access".to_string(),
+            "Controller".to_string(),
+        ],
+        multiplayer_modes: vec![
+            "Multi-player".to_string(),
+            "Co-op".to_string(),
+            "Online Co-op".to_string(),
+        ],
+        review_snippets: vec![
+            ReviewSnippet {
+                voted_up: true,
+                review: "Great four-player chaos with friends and the western magic theme stands out."
+                    .to_string(),
+                playtime_hours: Some(4.9),
+            },
+            ReviewSnippet {
+                voted_up: true,
+                review: "The team extraction loop is easy to jump into and our group kept laughing."
+                    .to_string(),
+                playtime_hours: Some(14.0),
+            },
+            ReviewSnippet {
+                voted_up: true,
+                review: "Easy to convince friends to hop into another co-op run and the controller support feels good."
+                    .to_string(),
+                playtime_hours: Some(8.3),
+            },
+            ReviewSnippet {
+                voted_up: false,
+                review: "Fantastic with friends, but content is still thin and some runs have bugs or crashes."
+                    .to_string(),
+                playtime_hours: Some(5.6),
+            },
+        ],
+        user_state: UserGameState::default(),
+    }
+}
+
+fn optional_social_focus_fixture_game() -> GameCard {
+    GameCard {
+        appid: 2943180,
+        name: "Quiet Study Rooms".to_string(),
+        short_description: Some(
+            "Study alone or occasionally with friends in a cozy room while using built-in productivity tools."
+                .to_string(),
+        ),
+        section: "new".to_string(),
+        release_date: Some("2026-04-24".to_string()),
+        release_date_text: "2026-04-24".to_string(),
+        release_state: StoreReleaseState::Released,
+        demo_status: DemoStatus::Released,
+        supported_languages: vec![
+            "English".to_string(),
+            "Simplified Chinese".to_string(),
+        ],
+        is_adult_content: false,
+        price_text: Some("$11.99".to_string()),
+        discount_percent: None,
+        positive_review_pct: Some(97.5),
+        total_reviews: Some(281),
+        current_players: Some(254),
+        recommendation_score: 0.0,
+        ai_score: None,
+        ai_summary: String::new(),
+        capsule_url: "https://example.com/quiet-study-rooms.jpg".to_string(),
+        store_screenshot_urls: vec!["https://example.com/quiet-study-rooms-1.jpg".to_string()],
+        tags: vec![
+            "Casual".to_string(),
+            "Simulation".to_string(),
+            "Single-player".to_string(),
+            "Multi-player".to_string(),
+        ],
+        multiplayer_modes: vec![
+            "Multi-player".to_string(),
+            "Co-op".to_string(),
+            "Online Co-op".to_string(),
+        ],
+        review_snippets: vec![
+            ReviewSnippet {
+                voted_up: true,
+                review: "The room art is lovely and the timer UI is clean.".to_string(),
+                playtime_hours: Some(125.1),
+            },
+            ReviewSnippet {
+                voted_up: true,
+                review: "I mostly use it alone to focus and decorate my space.".to_string(),
+                playtime_hours: Some(126.8),
+            },
+            ReviewSnippet {
+                voted_up: false,
+                review: "It still feels content-thin and the unlock pacing is frustrating."
+                    .to_string(),
+                playtime_hours: Some(17.8),
+            },
+        ],
+        user_state: UserGameState::default(),
+    }
+}
+
 fn local_test_client() -> Client {
     Client::builder()
         .build()
@@ -172,7 +309,7 @@ fn build_rule_report_returns_rich_rule_report() {
 
     assert_eq!(report.source, AnalysisSource::Rule);
     assert_eq!(report.confidence, AnalysisConfidence::High);
-    assert_eq!(report.dimension_scores.len(), 5);
+    assert_eq!(report.dimension_scores.len(), 6);
     assert_eq!(
         report
             .dimension_scores
@@ -192,6 +329,79 @@ fn build_rule_report_returns_rich_rule_report() {
 }
 
 #[test]
+fn build_rule_report_normalizes_schinese_into_accessibility_support() {
+    let mut game = rich_fixture_game();
+    game.supported_languages = vec!["schinese".to_string()];
+    let report = build_rule_report(&game, "2026-04-30T12:00:00Z".to_string())
+        .expect("rule report should build");
+
+    let dimension = report
+        .dimension_scores
+        .iter()
+        .find(|dimension| dimension.key == "accessibility")
+        .expect("accessibility dimension");
+
+    assert!(
+        dimension.score >= 60.0,
+        "accessibility score was {}",
+        dimension.score
+    );
+    assert!(dimension.reason.contains("中文支持"));
+}
+
+#[test]
+fn build_rule_report_scores_pvp_and_local_multiplayer_as_multiplayer_fun() {
+    let mut game = rich_fixture_game();
+    game.multiplayer_modes = vec![
+        "Multi-player".to_string(),
+        "PvP".to_string(),
+        "Shared/Split Screen".to_string(),
+        "Cross-Platform Multiplayer".to_string(),
+    ];
+
+    let report = build_rule_report(&game, "2026-04-30T12:00:00Z".to_string()).expect("rule report");
+
+    let dimension = report
+        .dimension_scores
+        .iter()
+        .find(|dimension| dimension.key == "multiplayer_fit")
+        .expect("multiplayer_fit dimension");
+
+    assert!(
+        dimension.score >= 70.0,
+        "multiplayer_fit score was {}",
+        dimension.score
+    );
+    assert!(dimension.reason.contains("对抗模式"));
+    assert!(dimension.reason.contains("本地/分屏"));
+}
+
+#[test]
+fn build_rule_report_marks_missing_multiplayer_modes_as_low_confidence() {
+    let report = build_rule_report(
+        &missing_multiplayer_modes_fixture_game(),
+        "2026-04-30T12:00:00Z".to_string(),
+    )
+    .expect("rule report should build");
+
+    let dimension = report
+        .dimension_scores
+        .iter()
+        .find(|dimension| dimension.key == "multiplayer_fit")
+        .expect("multiplayer_fit dimension");
+
+    assert_eq!(report.confidence, AnalysisConfidence::Low);
+    assert!(
+        dimension.score < 45.0,
+        "multiplayer_fit score was {}",
+        dimension.score
+    );
+    assert!(dimension.reason.contains("多人模式标签缺失"));
+    assert!(report.overview.contains("多人模式标签缺失"));
+    assert!(report.risks.iter().any(|item| item.title == "多人标签缺失"));
+}
+
+#[test]
 fn build_rule_report_review_evidence_keeps_both_stances_when_negative_is_late() {
     let report = build_rule_report(
         &late_negative_fixture_game(),
@@ -207,6 +417,86 @@ fn build_rule_report_review_evidence_keeps_both_stances_when_negative_is_late() 
         .review_evidence
         .iter()
         .any(|item| item.stance == AnalysisReviewStance::Risk));
+}
+
+#[test]
+fn build_rule_report_penalizes_chinese_thin_content_feedback() {
+    let mut game = rich_fixture_game();
+    game.review_snippets = vec![
+        ReviewSnippet {
+            voted_up: true,
+            review: "和朋友开黑确实很好玩。".to_string(),
+            playtime_hours: Some(8.4),
+        },
+        ReviewSnippet {
+            voted_up: false,
+            review: "内容太少，后期重复，玩久了会无聊。".to_string(),
+            playtime_hours: Some(14.0),
+        },
+    ];
+
+    let report = build_rule_report(&game, "2026-04-30T12:00:00Z".to_string())
+        .expect("rule report should build");
+
+    let dimension = report
+        .dimension_scores
+        .iter()
+        .find(|dimension| dimension.key == "content_depth")
+        .expect("content_depth dimension");
+
+    assert!(
+        dimension.score <= 58.0,
+        "content_depth score was {}",
+        dimension.score
+    );
+}
+
+#[test]
+fn build_rule_report_keeps_breakout_coop_games_above_burial_threshold() {
+    let report = build_rule_report(
+        &breakout_coop_fixture_game(),
+        "2026-05-01T12:00:00Z".to_string(),
+    )
+    .expect("rule report should build");
+
+    assert!(
+        report.recommendation_score >= 72.0,
+        "recommendation_score was {}, quality_score was {}, dimensions were {:?}",
+        report.recommendation_score,
+        report.quality_score,
+        report.dimension_scores
+    );
+    assert!(
+        report.quality_score >= 64.0,
+        "quality_score was {}",
+        report.quality_score
+    );
+}
+
+#[test]
+fn build_rule_report_does_not_overrate_optional_social_productivity_games() {
+    let report = build_rule_report(
+        &optional_social_focus_fixture_game(),
+        "2026-05-01T12:00:00Z".to_string(),
+    )
+    .expect("rule report should build");
+
+    let multiplayer_dimension = report
+        .dimension_scores
+        .iter()
+        .find(|dimension| dimension.key == "multiplayer_fit")
+        .expect("multiplayer_fit dimension");
+
+    assert!(
+        multiplayer_dimension.score < 55.0,
+        "multiplayer_fit score was {}",
+        multiplayer_dimension.score
+    );
+    assert!(
+        report.recommendation_score < 60.0,
+        "recommendation_score was {}",
+        report.recommendation_score
+    );
 }
 
 #[test]
@@ -232,7 +522,7 @@ fn apply_narrative_patch_updates_text_without_changing_evidence_shape() {
             }],
             dimension_reasons: vec![
                 (
-                    "approachability".to_string(),
+                    "accessibility".to_string(),
                     "上手说明直白，前几局就能理解核心循环。".to_string(),
                 ),
                 (
@@ -261,8 +551,8 @@ fn apply_narrative_patch_updates_text_without_changing_evidence_shape() {
     assert!(patched
         .dimension_scores
         .iter()
-        .find(|dimension| dimension.key == "approachability")
-        .expect("approachability dimension")
+        .find(|dimension| dimension.key == "accessibility")
+        .expect("accessibility dimension")
         .reason
         .contains("上手说明直白"));
     assert!(patched
@@ -292,7 +582,7 @@ fn apply_narrative_patch_with_valid_content_flips_source_to_hybrid() {
                 reason: "负面反馈主要集中在中后期循环变化不足。".to_string(),
             }],
             dimension_reasons: vec![(
-                "approachability".to_string(),
+                "accessibility".to_string(),
                 "教程和合作目标都比较清楚，新玩家较快能加入节奏。".to_string(),
             )],
         },
@@ -325,7 +615,7 @@ fn apply_narrative_patch_rejects_degraded_narrative_and_keeps_rule_report() {
             }],
             dimension_reasons: vec![
                 ("unknown_key".to_string(), "   ".to_string()),
-                ("approachability".to_string(), " ".to_string()),
+                ("accessibility".to_string(), " ".to_string()),
             ],
         },
     );
@@ -385,7 +675,7 @@ async fn generate_game_analysis_keeps_rule_report_when_narrative_is_unusable() {
     let client = local_test_client();
     let base_url = spawn_chat_completion_server(
         "HTTP/1.1 200 OK",
-        r#"{"choices":[{"message":{"content":"{\"overview\":\"   \",\"strengths\":[{\"title\":\"\",\"reason\":\" \"},{\"title\":\" \",\"reason\":\"\"},{\"title\":\"\",\"reason\":\"\"},{\"title\":\"\",\"reason\":\"\"},{\"title\":\"\",\"reason\":\"\"}],\"risks\":[{\"title\":\" \",\"reason\":\" \"}],\"dimensionReasons\":[[\"approachability\",\" \"],[\"unknown_key\",\"still bad\"]]}"}}]}"#,
+        r#"{"choices":[{"message":{"content":"{\"overview\":\"   \",\"strengths\":[{\"title\":\"\",\"reason\":\" \"},{\"title\":\" \",\"reason\":\"\"},{\"title\":\"\",\"reason\":\"\"},{\"title\":\"\",\"reason\":\"\"},{\"title\":\"\",\"reason\":\"\"}],\"risks\":[{\"title\":\" \",\"reason\":\" \"}],\"dimensionReasons\":[[\"accessibility\",\" \"],[\"unknown_key\",\"still bad\"]]}"}}]}"#,
     );
     let config = LlmRuntimeConfig {
         api_key: Some("test-key".to_string()),
@@ -420,7 +710,7 @@ async fn generate_analysis_narrative_uses_single_v1_suffix_for_openai_compatible
     let client = local_test_client();
     let (base_url, request_rx) = spawn_recording_server(
         "HTTP/1.1 200 OK",
-        r#"{"choices":[{"message":{"content":"{\"overview\":\"兼容 /v1 基地址。\",\"strengths\":[{\"title\":\"请求成功\",\"reason\":\"不应重复拼接 /v1。\"}],\"risks\":[{\"title\":\"无\",\"reason\":\"测试夹具。\"}],\"dimensionReasons\":[[\"approachability\",\"路径归一化正确。\"]]}"}}]}"#,
+        r#"{"choices":[{"message":{"content":"{\"overview\":\"兼容 /v1 基地址。\",\"strengths\":[{\"title\":\"请求成功\",\"reason\":\"不应重复拼接 /v1。\"}],\"risks\":[{\"title\":\"无\",\"reason\":\"测试夹具。\"}],\"dimensionReasons\":[[\"accessibility\",\"路径归一化正确。\"]]}"}}]}"#,
     );
     let config = LlmRuntimeConfig {
         api_key: Some("test-key".to_string()),
@@ -451,7 +741,7 @@ async fn generate_analysis_narrative_supports_anthropic_messages_format() {
     let client = local_test_client();
     let (base_url, request_rx) = spawn_recording_server(
         "HTTP/1.1 200 OK",
-        r#"{"id":"msg_123","type":"message","role":"assistant","content":[{"type":"text","text":"{\"overview\":\"Anthropic 兼容路径可用。\",\"strengths\":[{\"title\":\"协议兼容\",\"reason\":\"messages 响应已成功解析。\"}],\"risks\":[{\"title\":\"无\",\"reason\":\"测试夹具。\"}],\"dimensionReasons\":[[\"approachability\",\"Anthropic content text 已正确提取。\"]]}"}]}"#,
+        r#"{"id":"msg_123","type":"message","role":"assistant","content":[{"type":"text","text":"{\"overview\":\"Anthropic 兼容路径可用。\",\"strengths\":[{\"title\":\"协议兼容\",\"reason\":\"messages 响应已成功解析。\"}],\"risks\":[{\"title\":\"无\",\"reason\":\"测试夹具。\"}],\"dimensionReasons\":[[\"accessibility\",\"Anthropic content text 已正确提取。\"]]}"}]}"#,
     );
     let config = LlmRuntimeConfig {
         api_key: Some("test-key".to_string()),
@@ -476,7 +766,10 @@ async fn generate_analysis_narrative_supports_anthropic_messages_format() {
     assert!(request.starts_with("POST /anthropic/v1/messages HTTP/1.1\r\n"));
     assert!(request_lower.contains("x-api-key: test-key"));
     assert!(request_lower.contains("anthropic-version: 2023-06-01"));
-    assert!(request.contains("\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\""));
-    assert!(request.contains("\"system\":\"You refine rule-based Steam multiplayer analyses. Return strict JSON only.\""));
+    assert!(request
+        .contains("\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\""));
+    assert!(request.contains(
+        "\"system\":\"You refine rule-based Steam multiplayer analyses. Return strict JSON only.\""
+    ));
     assert_eq!(narrative.overview, "Anthropic 兼容路径可用。");
 }

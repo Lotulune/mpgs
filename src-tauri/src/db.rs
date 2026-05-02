@@ -1,5 +1,6 @@
 use crate::backfill_task::BACKFILL_MAX_ATTEMPTS;
 use crate::discovery::{parse_saved_cursor, DISCOVERY_CURSOR_CONFIG_KEY};
+use crate::llm::AnalysisNarrative;
 use crate::models::{
     DashboardPayload, DashboardStats, DiscoveryFailureItem, DiscoveryRunSnapshot,
     DiscoveryRunStatus, DiscoveryTaskRequest, GameAnalysisReport, GameCard, PublicConfig,
@@ -17,6 +18,10 @@ use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 const DEFAULT_LLM_BASE_URL: &str = "https://api.deepseek.com";
 const DEFAULT_LLM_MODEL: &str = "deepseek-v4-flash";
 const MAX_SQLITE_U32: i64 = u32::MAX as i64;
+pub const DEFAULT_AI_BATCH_REFRESH_CONCURRENCY: u8 = 5;
+pub const MIN_AI_BATCH_REFRESH_CONCURRENCY: u8 = 1;
+pub const MAX_AI_BATCH_REFRESH_CONCURRENCY: u8 = 10;
+const AI_BATCH_REFRESH_CONCURRENCY_CONFIG_KEY: &str = "ai_batch_refresh_concurrency";
 
 #[derive(Debug, Clone)]
 pub struct GameSeed {
@@ -211,6 +216,17 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS analysis_narrative_cache (
+            cache_key TEXT PRIMARY KEY NOT NULL,
+            appid INTEGER NOT NULL CHECK (appid >= 0 AND appid <= 4294967295),
+            score_version TEXT NOT NULL,
+            base_url TEXT NOT NULL,
+            model TEXT NOT NULL,
+            narrative_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
         "#,
     )?;
     ensure_games_metadata_columns(conn)?;
@@ -223,6 +239,11 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     set_config_if_missing(conn, "llm_model", DEFAULT_LLM_MODEL)?;
     set_config_if_missing(conn, "country", "US")?;
     set_config_if_missing(conn, "language", "schinese")?;
+    set_config_if_missing(
+        conn,
+        AI_BATCH_REFRESH_CONCURRENCY_CONFIG_KEY,
+        &DEFAULT_AI_BATCH_REFRESH_CONCURRENCY.to_string(),
+    )?;
     migrate_default_language_to_schinese(conn)?;
     Ok(())
 }
@@ -414,6 +435,16 @@ pub fn load_dashboard(conn: &Connection) -> Result<DashboardPayload> {
                 .as_ref()
                 .map(|record| record.error.clone()),
             backfill_last_error_appid: backfill_last_error.map(|record| record.appid),
+            ai_batch_refresh_running: false,
+            ai_batch_refresh_concurrency: 0,
+            ai_batch_refresh_pending_count: 0,
+            ai_batch_refresh_active_count: 0,
+            ai_batch_refresh_total_count: 0,
+            ai_batch_refresh_processed_count: 0,
+            ai_batch_refresh_updated_count: 0,
+            ai_batch_refresh_failed_count: 0,
+            ai_batch_refresh_last_error: None,
+            ai_batch_refresh_last_error_appid: None,
             data_source: if get_secret(conn, "steam_api_key")?.is_some() {
                 if total_games == 0 {
                     "Steam API Key 已配置；当前库为空，可开始导入和发现多人游戏。".to_string()
@@ -603,7 +634,26 @@ pub fn load_game_analysis(conn: &Connection, appid: u32) -> Result<Option<GameAn
         .flatten();
 
     match report_json {
-        Some(report_json) => Ok(Some(serde_json::from_str(&report_json)?)),
+        Some(report_json) => {
+            let mut report: GameAnalysisReport = serde_json::from_str(&report_json)?;
+            if report.score_version.trim().is_empty() || report.score_version == "v1_compat" {
+                report.score_version = "v1_compat".to_string();
+                if report.quality_score <= 0.0 {
+                    report.quality_score = report.overall_score;
+                }
+                if report.recommendation_score <= 0.0 {
+                    report.recommendation_score = report.overall_score;
+                }
+                if report.confidence_score <= 0.0 {
+                    report.confidence_score = match report.confidence.clone() {
+                        crate::models::AnalysisConfidence::High => 0.8,
+                        crate::models::AnalysisConfidence::Medium => 0.55,
+                        crate::models::AnalysisConfidence::Low => 0.3,
+                    };
+                }
+            }
+            Ok(Some(report))
+        }
         None => Ok(None),
     }
 }
@@ -920,7 +970,23 @@ pub fn public_config(conn: &Connection) -> Result<PublicConfig> {
         llm_model: get_config(conn, "llm_model")?.unwrap_or_else(|| DEFAULT_LLM_MODEL.to_string()),
         country: get_config(conn, "country")?.unwrap_or_else(|| "US".to_string()),
         language: get_config(conn, "language")?.unwrap_or_else(|| "schinese".to_string()),
+        ai_batch_refresh_concurrency: load_ai_batch_refresh_concurrency(conn)?,
     })
+}
+
+pub fn load_ai_batch_refresh_concurrency(conn: &Connection) -> Result<u8> {
+    Ok(get_config(conn, AI_BATCH_REFRESH_CONCURRENCY_CONFIG_KEY)?
+        .as_deref()
+        .and_then(|value| value.trim().parse::<u8>().ok())
+        .map(clamp_ai_batch_refresh_concurrency)
+        .unwrap_or(DEFAULT_AI_BATCH_REFRESH_CONCURRENCY))
+}
+
+pub fn clamp_ai_batch_refresh_concurrency(value: u8) -> u8 {
+    value.clamp(
+        MIN_AI_BATCH_REFRESH_CONCURRENCY,
+        MAX_AI_BATCH_REFRESH_CONCURRENCY,
+    )
 }
 
 pub fn set_config(conn: &Connection, key: &str, value: &str) -> Result<()> {
@@ -1387,6 +1453,69 @@ fn ensure_discovery_run_columns(conn: &Connection) -> Result<()> {
             [],
         )?;
     }
+
+    Ok(())
+}
+
+pub fn load_analysis_narrative_cache(
+    conn: &Connection,
+    cache_key: &str,
+) -> Result<Option<AnalysisNarrative>> {
+    let narrative_json = conn
+        .query_row(
+            "SELECT narrative_json FROM analysis_narrative_cache WHERE cache_key = ?1",
+            params![cache_key],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+
+    match narrative_json {
+        Some(narrative_json) => Ok(Some(serde_json::from_str(&narrative_json)?)),
+        None => Ok(None),
+    }
+}
+
+pub fn save_analysis_narrative_cache(
+    conn: &Connection,
+    cache_key: &str,
+    appid: u32,
+    score_version: &str,
+    base_url: &str,
+    model: &str,
+    narrative: &AnalysisNarrative,
+) -> Result<()> {
+    let now = OffsetDateTime::now_utc().format(&Rfc3339)?;
+    conn.execute(
+        r#"
+        INSERT INTO analysis_narrative_cache (
+            cache_key,
+            appid,
+            score_version,
+            base_url,
+            model,
+            narrative_json,
+            created_at,
+            updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
+        ON CONFLICT(cache_key) DO UPDATE SET
+            appid = excluded.appid,
+            score_version = excluded.score_version,
+            base_url = excluded.base_url,
+            model = excluded.model,
+            narrative_json = excluded.narrative_json,
+            updated_at = excluded.updated_at
+        "#,
+        params![
+            cache_key,
+            appid,
+            score_version,
+            base_url,
+            model,
+            serde_json::to_string(narrative)?,
+            now,
+        ],
+    )?;
 
     Ok(())
 }
@@ -1907,4 +2036,25 @@ fn i64_to_u8(value: i64) -> Result<u8> {
 
 fn now_rfc3339() -> Result<String> {
     Ok(OffsetDateTime::now_utc().format(&Rfc3339)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{get_config, migrate, public_config};
+    use rusqlite::Connection;
+
+    #[test]
+    fn public_config_exposes_default_ai_batch_refresh_concurrency() {
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        migrate(&conn).expect("migrate");
+
+        let config = serde_json::to_value(public_config(&conn).expect("load public config"))
+            .expect("serialize public config");
+
+        assert_eq!(config["aiBatchRefreshConcurrency"], 5);
+        assert_eq!(
+            get_config(&conn, "ai_batch_refresh_concurrency").expect("load concurrency config"),
+            Some("5".to_string())
+        );
+    }
 }

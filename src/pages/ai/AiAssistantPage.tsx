@@ -1,4 +1,5 @@
 import type { AiAssessment, GameCard } from "../../types";
+import { getDisplayedGameScore } from "../../features/library/gameScoreDisplay";
 
 export function AiAssistantPage({
   games,
@@ -27,25 +28,29 @@ export function AiAssistantPage({
       <div className="chat-bubble bot">好的！根据你的需求，我为你找到了以下游戏推荐：</div>
 
       <div className="recommend-list">
-        {games.map((game) => (
-          <article className="recommend-row" key={game.appid}>
-            <img src={game.capsuleUrl} alt="" />
-            <div>
-              <h3>{game.name}</h3>
-              <p>
-                {game.tags.join(" · ")} · {formatPct(game.positiveReviewPct)} 好评
-              </p>
-              <span>{game.aiSummary}</span>
-            </div>
-            <strong>
-              {Math.round(game.recommendationScore)}
-              <small>推荐值</small>
-            </strong>
-            <button type="button" disabled={isBusy} onClick={() => onAssess(game)}>
-              {isBusy && selectedGame?.appid === game.appid ? "评估中" : "评估"}
-            </button>
-          </article>
-        ))}
+        {games.map((game) => {
+          const scoreDisplay = getDisplayedGameScore(game);
+
+          return (
+            <article className="recommend-row" key={game.appid}>
+              <img src={game.capsuleUrl} alt="" />
+              <div>
+                <h3>{game.name}</h3>
+                <p>
+                  {game.tags.join(" · ")} · {formatPct(game.positiveReviewPct)} 好评
+                </p>
+                <span>{game.aiSummary}</span>
+              </div>
+              <strong>
+                {Math.round(scoreDisplay.value)}
+                <small>{scoreDisplay.label}</small>
+              </strong>
+              <button type="button" disabled={isBusy} onClick={() => onAssess(game)}>
+                {isBusy && selectedGame?.appid === game.appid ? "评估中" : "评估"}
+              </button>
+            </article>
+          );
+        })}
       </div>
 
       <div className="chat-input">

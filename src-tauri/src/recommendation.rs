@@ -43,29 +43,30 @@ pub struct GameFacts {
 }
 
 pub fn compute_recommendation_score(facts: &GameFacts, today_iso: &str) -> f64 {
-    let review_quality = facts.positive_review_pct.unwrap_or(0.0).clamp(0.0, 100.0) / 100.0 * 36.0;
-    let review_confidence = log_weight(facts.total_reviews.unwrap_or(0) as f64, 10_000.0) * 8.0;
-    let player_activity = log_weight(facts.current_players.unwrap_or(0) as f64, 10_000.0) * 14.0;
-    let multiplayer_fit = multiplayer_fit_score(&facts.multiplayer_modes);
-    let demo_bonus = match facts.demo_status {
-        DemoStatus::DemoOnly => 4.0,
-        DemoStatus::ReleasedWithDemo => 4.0,
-        DemoStatus::Released => 1.5,
-        DemoStatus::Unknown => 0.0,
-    };
+    if let Some(ai_score) = facts.ai_score {
+        return round_one(ai_score.clamp(0.0, 100.0));
+    }
+
+    let review_quality = lightweight_review_quality(facts);
+    let multiplayer_fit = lightweight_multiplayer_fit(&facts.multiplayer_modes);
     let freshness = freshness_score(facts.release_date.as_deref(), today_iso);
-    let ai_score = facts.ai_score.unwrap_or(72.0).clamp(0.0, 100.0) / 100.0 * 20.0;
+    let discovery_value = lightweight_discovery_value(facts, review_quality, freshness);
+    let confidence = lightweight_confidence(facts);
+    let uncertainty_penalty = (1.0 - confidence) * 10.0;
+    let preanalysis_penalty = 4.0;
+
+    let lightweight_quality_proxy =
+        0.45 * review_quality + 0.30 * multiplayer_fit + 0.15 * freshness + 0.10 * discovery_value;
 
     round_one(
-        review_quality
-            + review_confidence
-            + player_activity
-            + multiplayer_fit
-            + demo_bonus
-            + freshness
-            + ai_score,
+        (0.55 * lightweight_quality_proxy
+            + 0.20 * multiplayer_fit
+            + 0.15 * discovery_value
+            + 0.10 * freshness
+            - uncertainty_penalty
+            - preanalysis_penalty)
+            .clamp(0.0, 100.0),
     )
-    .clamp(0.0, 100.0)
 }
 
 pub fn bucket_game(facts: &GameFacts, today_iso: &str) -> ReleaseBucket {
@@ -87,9 +88,21 @@ pub fn today_iso_utc() -> String {
         .unwrap_or_else(|_| "2026-04-26".to_string())
 }
 
-fn multiplayer_fit_score(modes: &[String]) -> f64 {
+fn lightweight_review_quality(facts: &GameFacts) -> f64 {
+    let raw_positive_rate = facts.positive_review_pct.unwrap_or(0.0).clamp(0.0, 100.0) / 100.0;
+    let total_reviews = facts.total_reviews.unwrap_or(0) as f64;
+    let positive = total_reviews * raw_positive_rate;
+    let bayes_positive_rate = (positive + 35.0) / (total_reviews + 35.0 + 15.0);
+    let confidence = 1.0 - (-(total_reviews) / 120.0).exp();
+
+    (100.0 * (bayes_positive_rate * 0.85 + raw_positive_rate * 0.15) * confidence
+        + 55.0 * (1.0 - confidence))
+        .clamp(0.0, 100.0)
+}
+
+fn lightweight_multiplayer_fit(modes: &[String]) -> f64 {
     if modes.is_empty() {
-        return 0.0;
+        return 25.0;
     }
 
     let normalized = modes
@@ -98,41 +111,82 @@ fn multiplayer_fit_score(modes: &[String]) -> f64 {
         .collect::<Vec<_>>()
         .join(" ");
 
-    let mut score: f64 = 8.0;
+    let mut score: f64 = 48.0;
     if normalized.contains("co-op") || normalized.contains("cooperative") {
-        score += 4.0;
+        score += 18.0;
     }
-    if normalized.contains("online")
-        || normalized.contains("lan")
-        || normalized.contains("multi-player")
-    {
-        score += 2.0;
+    if normalized.contains("online") || normalized.contains("lan") {
+        score += 12.0;
+    }
+    if normalized.contains("local") || normalized.contains("split screen") {
+        score += 12.0;
+    }
+    if normalized.contains("pvp") {
+        score += 8.0;
+    }
+    if modes.len() >= 2 {
+        score += 5.0;
     }
 
-    score.clamp(0.0, 14.0)
+    score.clamp(0.0, 100.0)
 }
 
 fn freshness_score(release_date: Option<&str>, today_iso: &str) -> f64 {
     match days_since_release(release_date, today_iso) {
-        Some(days) if (0..=7).contains(&days) => 5.0,
-        Some(days) if (8..=30).contains(&days) => 4.0,
-        Some(days) if (31..=180).contains(&days) => 1.5,
-        _ => 0.0,
+        Some(days) if (0..=30).contains(&days) => 100.0,
+        Some(days) if (31..=90).contains(&days) => 75.0,
+        Some(days) if (91..=365).contains(&days) => 45.0,
+        Some(_) => 25.0,
+        None => 35.0,
     }
+}
+
+fn lightweight_discovery_value(facts: &GameFacts, review_quality: f64, freshness: f64) -> f64 {
+    let positive_review_pct = facts.positive_review_pct.unwrap_or(0.0);
+    let total_reviews = facts.total_reviews.unwrap_or(0);
+    let current_players = facts.current_players.unwrap_or(0);
+    let sleeper_score = if review_quality >= 78.0 && total_reviews < 500 {
+        25.0
+    } else {
+        0.0
+    } + if current_players < 300 && positive_review_pct >= 85.0 {
+        20.0
+    } else {
+        0.0
+    } + if matches!(
+        facts.demo_status,
+        DemoStatus::DemoOnly | DemoStatus::ReleasedWithDemo
+    ) {
+        15.0
+    } else {
+        0.0
+    } + if freshness >= 75.0 { 10.0 } else { 0.0 };
+    let demo_potential = match facts.demo_status {
+        DemoStatus::DemoOnly => 60.0,
+        DemoStatus::ReleasedWithDemo => 45.0,
+        DemoStatus::Released => 15.0,
+        DemoStatus::Unknown => 10.0,
+    };
+
+    (0.45 * freshness + 0.40 * sleeper_score + 0.15 * demo_potential).clamp(0.0, 100.0)
+}
+
+fn lightweight_confidence(facts: &GameFacts) -> f64 {
+    let review_confidence = 1.0 - (-(facts.total_reviews.unwrap_or(0) as f64) / 120.0).exp();
+    let mode_confidence = (facts.multiplayer_modes.len() as f64 / 3.0).min(1.0);
+    let activity_confidence = if facts.current_players.is_some() {
+        1.0
+    } else {
+        0.35
+    };
+
+    (0.60 * review_confidence + 0.25 * activity_confidence + 0.15 * mode_confidence).clamp(0.0, 1.0)
 }
 
 fn days_since_release(release_date: Option<&str>, today_iso: &str) -> Option<i64> {
     let release = Date::parse(release_date?, ISO_DATE).ok()?;
     let today = Date::parse(today_iso, ISO_DATE).ok()?;
     Some((today - release).whole_days())
-}
-
-fn log_weight(value: f64, max_reference: f64) -> f64 {
-    if value <= 0.0 {
-        return 0.0;
-    }
-
-    ((value + 1.0).log10() / (max_reference + 1.0).log10()).clamp(0.0, 1.0)
 }
 
 fn round_one(value: f64) -> f64 {

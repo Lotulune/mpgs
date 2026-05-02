@@ -47,23 +47,33 @@ export function FilterPage({
   const [draft, setDraft] = useState<LibraryFilters>(filters);
   const categoryOptions = useMemo<FilterChipOption[]>(
     () =>
-      [...new Set([...defaultTagOptions, ...availableTags])]
-        .slice(0, 8)
-        .map((tag) => ({ label: tag, value: tag })),
+      Array.isArray(availableTags)
+        ? [...new Set([...defaultTagOptions, ...availableTags])]
+            .slice(0, 8)
+            .map((tag) => ({ label: tag, value: tag }))
+        : defaultTagOptions.slice(0, 8).map((tag) => ({ label: tag, value: tag })),
     [availableTags, defaultTagOptions],
   );
   const tagOptions = useMemo<FilterChipOption[]>(
-    () => availableTags.map((tag) => ({ label: tag, value: tag })),
+    () =>
+      Array.isArray(availableTags)
+        ? availableTags.map((tag) => ({ label: tag, value: tag }))
+        : [],
     [availableTags],
   );
 
   function toggleDraftTag(tag: string) {
-    setDraft((current) => ({
-      ...current,
-      selectedTags: current.selectedTags.includes(tag)
-        ? current.selectedTags.filter((item) => item !== tag)
-        : [...current.selectedTags, tag],
-    }));
+    setDraft((current) => {
+      const selectedTags = Array.isArray(current.selectedTags)
+        ? current.selectedTags
+        : [];
+      return {
+        ...current,
+        selectedTags: selectedTags.includes(tag)
+          ? selectedTags.filter((item) => item !== tag)
+          : [...selectedTags, tag],
+      };
+    });
   }
 
   return (
@@ -120,19 +130,38 @@ export function FilterPage({
       />
 
       <label className="wide-range">
-        Steam 好评度
-        <input
-          max="100"
-          min="0"
-          value={draft.minReviewPct}
-          onChange={(event) =>
-            setDraft((current) => ({
-              ...current,
-              minReviewPct: Number(event.currentTarget.value),
-            }))
-          }
-          type="range"
-        />
+        <span>
+          Steam 好评度
+          <b className="range-current">{draft.minReviewPct}%</b>
+        </span>
+        <div className="range-control-row">
+          <input
+            max="100"
+            min="0"
+            value={draft.minReviewPct}
+            onChange={(event) => {
+              const value = Number(event.currentTarget.value);
+              setDraft((current) => ({ ...current, minReviewPct: value }));
+            }}
+            type="range"
+          />
+          <input
+            className="range-number-input"
+            max="100"
+            min="0"
+            type="number"
+            value={draft.minReviewPct}
+            onChange={(event) => {
+              const value = Number(event.currentTarget.value);
+              setDraft((current) => ({
+                ...current,
+                minReviewPct: Number.isFinite(value)
+                  ? Math.max(0, Math.min(100, value))
+                  : 0,
+              }));
+            }}
+          />
+        </div>
         <span>
           <b>0%</b>
           <b>100%</b>
@@ -140,23 +169,41 @@ export function FilterPage({
       </label>
 
       <label className="wide-range">
-        当前在线人数下限
-        <input
-          max="16"
-          min="0"
-          value={draft.minPlayers}
-          onChange={(event) =>
-            setDraft((current) => ({
-              ...current,
-              minPlayers: Number(event.currentTarget.value),
-            }))
-          }
-          type="range"
-        />
+        <span>
+          当前在线人数下限
+          <b className="range-current">{draft.minPlayers}</b>
+        </span>
+        <div className="range-control-row">
+          <input
+            max="1000"
+            min="0"
+            value={draft.minPlayers}
+            onChange={(event) => {
+              const value = Number(event.currentTarget.value);
+              setDraft((current) => ({ ...current, minPlayers: value }));
+            }}
+            type="range"
+          />
+          <input
+            className="range-number-input"
+            max="1000"
+            min="0"
+            type="number"
+            value={draft.minPlayers}
+            onChange={(event) => {
+              const value = Number(event.currentTarget.value);
+              setDraft((current) => ({
+                ...current,
+                minPlayers: Number.isFinite(value)
+                  ? Math.max(0, Math.min(1000, value))
+                  : 0,
+              }));
+            }}
+          />
+        </div>
         <span>
           <b>0</b>
-          <b>8</b>
-          <b>16+</b>
+          <b>1000+</b>
         </span>
       </label>
 
@@ -214,7 +261,8 @@ function FilterChipGroup({
       <h3>{title}</h3>
       <div>
         {chips.map((chip) => {
-          const isActive = selectedValues.includes(chip.value);
+          const isActive =
+            Array.isArray(selectedValues) && selectedValues.includes(chip.value);
           return (
             <button
               aria-pressed={isActive}

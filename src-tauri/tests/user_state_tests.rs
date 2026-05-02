@@ -179,6 +179,19 @@ fn dashboard_stats_reflect_library_counts_and_discovery_cursor() {
 }
 
 #[test]
+fn dashboard_stats_expose_idle_ai_batch_refresh_progress_fields() {
+    let conn = seeded_memory_db();
+    let dashboard = db::load_dashboard(&conn).expect("dashboard");
+    let stats_json = serde_json::to_value(&dashboard.stats).expect("serialize stats");
+
+    assert_eq!(stats_json["aiBatchRefreshRunning"], false);
+    assert_eq!(stats_json["aiBatchRefreshTotalCount"], 0);
+    assert_eq!(stats_json["aiBatchRefreshProcessedCount"], 0);
+    assert_eq!(stats_json["aiBatchRefreshUpdatedCount"], 0);
+    assert_eq!(stats_json["aiBatchRefreshFailedCount"], 0);
+}
+
+#[test]
 fn public_config_defaults_to_schinese_language() {
     let conn = Connection::open_in_memory().expect("open in-memory db");
     db::migrate(&conn).expect("migrate");
