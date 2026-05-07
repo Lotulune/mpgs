@@ -3,6 +3,9 @@ import { mockDashboard } from "../data/mockDashboard";
 import type {
   AiAssessment,
   AiBatchRefreshReport,
+  AiRecommendationRequest,
+  AiRecommendationResponse,
+  AiRecommendedGame,
   AnalysisConfidence,
   AnalysisDimensionScore,
   AnalysisEvidenceItem,
@@ -42,7 +45,12 @@ export function __resetMockGameAnalysisCacheForTests() {
 }
 
 function allMockGames() {
-  return [...mockDashboard.upcoming, ...mockDashboard.newGames, ...mockDashboard.classics];
+  return [
+    ...mockDashboard.upcoming,
+    ...mockDashboard.newGames,
+    ...mockDashboard.classics,
+    ...mockDashboard.hiddenGames,
+  ];
 }
 
 function cloneAnalysisPoint(point: AnalysisPoint): AnalysisPoint {
@@ -283,6 +291,16 @@ export async function assessGameWithAi(appid: number): Promise<AiAssessment> {
     };
   }
   return invoke<AiAssessment>("assess_game_with_ai", { appid });
+}
+
+export async function recommendGamesWithAi(
+  request: AiRecommendationRequest,
+): Promise<AiRecommendationResponse> {
+  if (!isTauriRuntime()) {
+    return buildMockRecommendationResponse(request);
+  }
+
+  return invoke<AiRecommendationResponse>("recommend_games_with_ai", { request });
 }
 
 export async function refreshAllGameAnalyses(
@@ -599,5 +617,103 @@ function refreshMockCollections() {
     wishlist: games.filter((game) => game.userState.wishlist),
     followed: games.filter((game) => game.userState.followed),
     history: games.filter((game) => game.userState.viewed),
+  };
+}
+
+function buildMockRecommendationResponse(
+  request: AiRecommendationRequest,
+): AiRecommendationResponse {
+  const query = [
+    ...request.contextMessages.slice(-4).map((message) => message.content),
+    request.prompt,
+  ]
+    .join(" ")
+    .toLocaleLowerCase();
+  const wantsLocal = /本地|同屏|分屏|local|couch/.test(query);
+  const wantsCasual = /轻松|休闲|可爱|casual|cozy|cute/.test(query);
+  const wantsSurvival = /生存|survival/.test(query);
+  const excludePixel = /不要像素|非像素|no pixel/.test(query);
+
+  const items = allMockGames()
+    .filter((game) => game.releaseState === "released")
+    .filter((game) => !excludePixel || !game.tags.join(" ").toLocaleLowerCase().includes("pixel"))
+    .map((game): AiRecommendedGame => {
+      const corpus = [
+        game.name,
+        game.aiSummary,
+        game.tags.join(" "),
+        game.multiplayerModes.join(" "),
+      ]
+        .join(" ")
+        .toLocaleLowerCase();
+      const matchedTraits: string[] = [];
+      const missingTraits: string[] = [];
+
+      if (wantsLocal) {
+        if (/local|split|本地|同屏|分屏/.test(corpus)) {
+          matchedTraits.push("本地合作");
+        } else {
+          missingTraits.push("本地合作");
+        }
+      }
+      if (wantsCasual) {
+        if (/casual|cute|cozy|轻松|休闲|解谜|派对/.test(corpus)) {
+          matchedTraits.push("轻松休闲");
+        } else {
+          missingTraits.push("轻松休闲");
+        }
+      }
+      if (wantsSurvival) {
+        if (/survival|生存/.test(corpus)) {
+          matchedTraits.push("生存玩法");
+        } else {
+          missingTraits.push("生存玩法");
+        }
+      }
+
+      const matchScore = Math.min(
+        100,
+        Math.max(
+          0,
+          (game.aiScore ?? game.recommendationScore) +
+            matchedTraits.length * 8 -
+            missingTraits.length * 5,
+        ),
+      );
+
+      return {
+        game,
+        matchScore,
+        reason:
+          matchedTraits.length > 0
+            ? `匹配${matchedTraits.join("、")}，${game.aiSummary}`
+            : game.aiSummary,
+        matchedTraits,
+        missingTraits,
+        caveats:
+          missingTraits.length > 0
+            ? [`缺少：${missingTraits.join("、")}`]
+            : ["浏览器预览使用本地模拟推荐"],
+        exactMatch: matchedTraits.length > 0 && missingTraits.length === 0,
+      };
+    })
+    .filter((item) => item.matchedTraits.length > 0 || item.missingTraits.length === 0)
+    .sort((left, right) => right.matchScore - left.matchScore)
+    .slice(0, request.limit ?? 5);
+
+  const exactMatchCount = items.filter((item) => item.exactMatch).length;
+
+  return {
+    reply:
+      exactMatchCount === items.length
+        ? `浏览器预览模式：找到 ${items.length} 个已入库已发售候选。`
+        : "浏览器预览模式：没有完全匹配，我先按最接近的条件推荐。",
+    followUpQuestion:
+      exactMatchCount < items.length ? "你更愿意放宽人数、玩法还是联机方式？" : null,
+    exactMatchCount,
+    source: "rule",
+    llmUsed: false,
+    diagnostic: "浏览器预览模式使用本地规则匹配，没有调用真实 LLM。",
+    items,
   };
 }

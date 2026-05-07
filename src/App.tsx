@@ -18,6 +18,7 @@ import {
   getDashboard,
   getDiscoveryTaskSnapshot,
   isTauriRuntime,
+  recommendGamesWithAi,
   refreshAllGameAnalyses,
   retryAiAnalysisJob,
   saveConfig,
@@ -26,7 +27,10 @@ import {
   syncSeedGames,
 } from "./api/client";
 import { buildDashboardSections, filterGames } from "./features/library/gameFilters";
-import { AiAssistantPage } from "./pages/ai/AiAssistantPage";
+import {
+  AiAssistantPage,
+  INITIAL_AI_MESSAGES,
+} from "./pages/ai/AiAssistantPage";
 import { AboutPage } from "./pages/about/AboutPage";
 import { CollectionsHubPage } from "./pages/collections/CollectionsHubPage";
 import { HistoryPage } from "./pages/collections/HistoryPage";
@@ -42,6 +46,9 @@ import { UpcomingPage } from "./pages/upcoming/UpcomingPage";
 import type { LibraryFilters, ViewId, LibrarySortMode } from "./pages/types";
 import type {
   AiAssessment,
+  AiRecommendationMessage,
+  AiRecommendationRequest,
+  AiRecommendationResponse,
   DashboardStats,
   DashboardPayload,
   DiscoveryRunSnapshot,
@@ -60,6 +67,34 @@ const DEFAULT_MIN_REVIEW_PCT = 0;
 const DASHBOARD_POLL_INTERVAL_MS = 2_000;
 const DISCOVERY_TASK_EVENT = "discovery-task-updated";
 const MAX_VISIBLE_TASK_TOASTS = 4;
+
+type AiConversation = {
+  id: number;
+  title: string;
+  messages: AiRecommendationMessage[];
+  recommendation: AiRecommendationResponse | null;
+  updatedAt: number;
+};
+
+function createAiConversation(id: number): AiConversation {
+  return {
+    id,
+    title: "新对话",
+    messages: INITIAL_AI_MESSAGES,
+    recommendation: null,
+    updatedAt: Date.now(),
+  };
+}
+
+function getAiConversationTitle(messages: AiRecommendationMessage[]) {
+  const prompt = messages.find((message) => message.role === "user")?.content.trim();
+
+  if (!prompt) {
+    return "新对话";
+  }
+
+  return prompt.length > 18 ? `${prompt.slice(0, 18)}...` : prompt;
+}
 
 const navPrimary: Array<{ id: ViewId; label: string; icon: string; badge?: string }> = [
   { id: "home", label: "首页", icon: "⌂" },
@@ -132,6 +167,11 @@ function App() {
   const [status, setStatus] = useState("正在打开 Co-Play 多人游戏雷达……");
   const [isBusy, setIsBusy] = useState(false);
   const [assessment, setAssessment] = useState<AiAssessment | null>(null);
+  const aiConversationIdRef = useRef(1);
+  const [aiConversations, setAiConversations] = useState<AiConversation[]>(() => [
+    createAiConversation(1),
+  ]);
+  const [activeAiConversationId, setActiveAiConversationId] = useState(1);
   const [taskToasts, setTaskToasts] = useState<TaskToastItem[]>([]);
   const [sectionPages, setSectionPages] =
     useState<DashboardSectionPageState>(DEFAULT_SECTION_PAGES);
@@ -280,6 +320,7 @@ function App() {
       ...nextPayload.upcoming,
       ...nextPayload.newGames,
       ...nextPayload.classics,
+      ...nextPayload.hiddenGames,
     ];
     setDashboard(nextPayload);
     setSelectedGame(
@@ -348,6 +389,68 @@ function App() {
     } finally {
       setIsBusy(false);
     }
+  }
+
+  async function handleAiRecommend(
+    request: AiRecommendationRequest,
+  ): Promise<AiRecommendationResponse> {
+    setIsBusy(true);
+    setStatus("正在从已入库游戏里匹配你的需求……");
+    try {
+      const response = await recommendGamesWithAi(request);
+      setStatus(response.reply);
+      return response;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setStatus(message);
+      throw error;
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  function handleAiMessagesChange(messages: AiRecommendationMessage[]) {
+    setAiConversations((current) =>
+      current.map((conversation) =>
+        conversation.id === activeAiConversationId
+          ? {
+              ...conversation,
+              messages,
+              title: getAiConversationTitle(messages),
+              updatedAt: Date.now(),
+            }
+          : conversation,
+      ),
+    );
+  }
+
+  function handleAiRecommendationChange(
+    recommendation: AiRecommendationResponse | null,
+  ) {
+    setAiConversations((current) =>
+      current.map((conversation) =>
+        conversation.id === activeAiConversationId
+          ? {
+              ...conversation,
+              recommendation,
+              updatedAt: Date.now(),
+            }
+          : conversation,
+      ),
+    );
+  }
+
+  function handleNewAiConversation() {
+    aiConversationIdRef.current += 1;
+    const nextConversation = createAiConversation(aiConversationIdRef.current);
+    setAiConversations((current) => [nextConversation, ...current]);
+    setActiveAiConversationId(nextConversation.id);
+    setAssessment(null);
+  }
+
+  function handleSelectAiConversation(id: number) {
+    setActiveAiConversationId(id);
+    setAssessment(null);
   }
 
   async function handleRefreshAllAnalyses(concurrency: number) {
@@ -670,6 +773,11 @@ function App() {
     [dashboard?.upcoming, filters, query, sortMode],
   );
 
+  const activeAiConversation =
+    aiConversations.find((conversation) => conversation.id === activeAiConversationId) ??
+    aiConversations[0] ??
+    createAiConversation(1);
+
   if (!dashboard) {
     return (
       <main className="loading-shell">
@@ -737,13 +845,29 @@ function App() {
 
         {activeView === "ai" && (
           <AiAssistantPage
+            activeConversationId={activeAiConversation.id}
             assessment={assessment}
+            conversations={aiConversations.map((conversation) => ({
+              id: conversation.id,
+              title: conversation.title,
+              messageCount: conversation.messages.filter((message) => message.role === "user")
+                .length,
+              updatedAt: conversation.updatedAt,
+            }))}
             games={[...visibleNewGames, ...visibleClassics].slice(0, 4)}
             isBusy={isBusy}
+            messages={activeAiConversation.messages}
             onAssess={(game) => {
               setSelectedGame(game);
               void handleAiAssess(game);
             }}
+            onMessagesChange={handleAiMessagesChange}
+            onNewConversation={handleNewAiConversation}
+            onOpen={openDetail}
+            onRecommend={handleAiRecommend}
+            onRecommendationChange={handleAiRecommendationChange}
+            onSelectConversation={handleSelectAiConversation}
+            recommendation={activeAiConversation.recommendation}
             selectedGame={selectedGame}
           />
         )}

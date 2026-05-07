@@ -1,4 +1,8 @@
-use crate::models::{AiAssessment, AnalysisPoint, GameAnalysisReport, GameCard};
+use crate::models::{
+    AiAssessment, AiRecommendationRequest, AiRecommendationResponse, AnalysisPoint,
+    AnalysisSource,
+    GameAnalysisReport, GameCard,
+};
 use anyhow::{Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -80,6 +84,30 @@ pub async fn generate_analysis_narrative(
     Ok(serde_json::from_str(trim_json_content(&content)?)?)
 }
 
+pub async fn enhance_recommendation_response(
+    client: &Client,
+    config: &LlmRuntimeConfig,
+    request: &AiRecommendationRequest,
+    local_response: AiRecommendationResponse,
+) -> AiRecommendationResponse {
+    match request_recommendation_enhancement(client, config, request, &local_response).await {
+        Ok(enhancement) => {
+            let mut response = apply_recommendation_enhancement(local_response, enhancement);
+            response.source = AnalysisSource::Hybrid;
+            response.llm_used = true;
+            response.diagnostic = Some("已调用配置的 LLM，对本地候选的回复、理由和风险提示做了增强。".to_string());
+            response
+        }
+        Err(error) => {
+            let mut response = local_response;
+            response.source = AnalysisSource::Rule;
+            response.llm_used = false;
+            response.diagnostic = Some(format!("LLM 增强失败，已回退到规则匹配：{error}"));
+            response
+        }
+    }
+}
+
 pub fn build_analysis_narrative_cache_key(
     config: &LlmRuntimeConfig,
     game: &GameCard,
@@ -98,6 +126,86 @@ pub fn build_analysis_narrative_cache_key(
     .to_string();
 
     stable_cache_hex(&fingerprint_payload)
+}
+
+async fn request_recommendation_enhancement(
+    client: &Client,
+    config: &LlmRuntimeConfig,
+    request: &AiRecommendationRequest,
+    local_response: &AiRecommendationResponse,
+) -> Result<RecommendationEnhancement> {
+    let api_key = config
+        .api_key
+        .clone()
+        .context("LLM API key is required for recommendation enhancement")?;
+    let base_url = config.base_url.trim_end_matches('/').to_string();
+    let prompt = build_recommendation_enhancement_prompt(request, local_response);
+    let content = request_chat_completion_content(
+        client,
+        &api_key,
+        &base_url,
+        &config.model,
+        "You polish rule-based Steam game recommendations. Return strict JSON only.",
+        prompt,
+        0.15,
+    )
+    .await?;
+
+    Ok(serde_json::from_str(trim_json_content(&content)?)?)
+}
+
+fn apply_recommendation_enhancement(
+    mut local_response: AiRecommendationResponse,
+    enhancement: RecommendationEnhancement,
+) -> AiRecommendationResponse {
+    if !enhancement.reply.trim().is_empty() {
+        local_response.reply = enhancement.reply.trim().to_string();
+    }
+    local_response.follow_up_question = enhancement
+        .follow_up_question
+        .filter(|value| !value.trim().is_empty())
+        .or(local_response.follow_up_question);
+
+    for item in &mut local_response.items {
+        if let Some(enhanced_item) = enhancement
+            .items
+            .iter()
+            .find(|candidate| candidate.appid == item.game.appid)
+        {
+            if !enhanced_item.reason.trim().is_empty() {
+                item.reason = enhanced_item.reason.trim().to_string();
+            }
+            let caveats = enhanced_item
+                .caveats
+                .iter()
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty())
+                .take(3)
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>();
+            if !caveats.is_empty() {
+                item.caveats = caveats;
+            }
+        }
+    }
+
+    local_response
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RecommendationEnhancement {
+    reply: String,
+    follow_up_question: Option<String>,
+    items: Vec<RecommendationEnhancementItem>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RecommendationEnhancementItem {
+    appid: u32,
+    reason: String,
+    caveats: Vec<String>,
 }
 
 fn heuristic_assessment(game: &GameCard) -> AiAssessment {
@@ -237,6 +345,56 @@ fn build_analysis_narrative_prompt(game: &GameCard, rule_report: &GameAnalysisRe
             "review_snippets": game.review_snippets,
         },
         "rule_report": normalized_rule_report,
+    })
+    .to_string()
+}
+
+fn build_recommendation_enhancement_prompt(
+    request: &AiRecommendationRequest,
+    local_response: &AiRecommendationResponse,
+) -> String {
+    let items = local_response
+        .items
+        .iter()
+        .map(|item| {
+            serde_json::json!({
+                "appid": item.game.appid,
+                "name": item.game.name,
+                "matchScore": item.match_score,
+                "reason": item.reason,
+                "matchedTraits": item.matched_traits,
+                "missingTraits": item.missing_traits,
+                "caveats": item.caveats,
+                "tags": item.game.tags,
+                "multiplayerModes": item.game.multiplayer_modes,
+                "positiveReviewPct": item.game.positive_review_pct,
+                "totalReviews": item.game.total_reviews,
+                "currentPlayers": item.game.current_players,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    serde_json::json!({
+        "task": "Polish an already-ranked in-library game recommendation response in Simplified Chinese.",
+        "rules": [
+            "Do not add, remove, reorder, or replace games.",
+            "Use only the provided appids and facts.",
+            "Be clear when games are near matches rather than exact matches.",
+            "Keep each reason and caveat concise."
+        ],
+        "output_schema": {
+            "reply": "one concise Chinese paragraph",
+            "followUpQuestion": "optional one concise Chinese question or null",
+            "items": [{"appid": "same existing appid", "reason": "Chinese reason", "caveats": ["1-3 Chinese caveats"]}]
+        },
+        "user_request": request.prompt,
+        "context_messages": request.context_messages,
+        "local_response": {
+            "reply": local_response.reply,
+            "followUpQuestion": local_response.follow_up_question,
+            "exactMatchCount": local_response.exact_match_count,
+            "items": items,
+        }
     })
     .to_string()
 }

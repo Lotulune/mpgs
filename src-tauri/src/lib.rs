@@ -1,4 +1,5 @@
 pub mod ai_batch_refresh_task;
+pub mod ai_recommendation;
 pub mod auto_scheduler;
 pub mod backfill_task;
 pub mod classic_discovery_task;
@@ -55,6 +56,7 @@ pub fn run() {
             commands::sync_seed_games,
             commands::discover_steam_games,
             commands::assess_game_with_ai,
+            commands::recommend_games_with_ai,
             commands::get_game_analysis,
             commands::generate_game_analysis,
             commands::refresh_all_game_analyses,

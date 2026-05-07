@@ -4,12 +4,13 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 import { mockDashboard } from "./data/mockDashboard";
-import type { GameAnalysisReport } from "./types";
+import type { AiRecommendationResponse, GameAnalysisReport } from "./types";
 
 const assessGameWithAiMock = vi.fn();
 const getDashboardMock = vi.fn();
 const getGameAnalysisMock = vi.fn();
 const generateGameAnalysisMock = vi.fn();
+const recommendGamesWithAiMock = vi.fn();
 const retryAiAnalysisJobMock = vi.fn();
 const startClassicDiscoveryTaskMock = vi.fn();
 const syncSeedGamesMock = vi.fn();
@@ -31,6 +32,7 @@ vi.mock("./api/client", async () => {
     generateGameAnalysis: (...args: unknown[]) => generateGameAnalysisMock(...args),
     isTauriRuntime: () => isTauriRuntimeMock(),
     previewSteamAppList: vi.fn(),
+    recommendGamesWithAi: (...args: unknown[]) => recommendGamesWithAiMock(...args),
     retryAiAnalysisJob: (...args: unknown[]) => retryAiAnalysisJobMock(...args),
     saveConfig: vi.fn(),
     setGameUserState: vi.fn(),
@@ -291,6 +293,15 @@ describe("App dashboard interactions", () => {
     generateGameAnalysisMock.mockImplementation(async (appid: number) =>
       buildAnalysisReport(appid),
     );
+    recommendGamesWithAiMock.mockResolvedValue({
+      reply: "我在已入库且已发售的游戏里找到了 1 个匹配候选。",
+      followUpQuestion: null,
+      exactMatchCount: 1,
+      source: "rule",
+      llmUsed: false,
+      diagnostic: "测试默认使用规则匹配。",
+      items: [],
+    });
     retryAiAnalysisJobMock.mockResolvedValue({
       totalGames: 1,
       updatedGames: 0,
@@ -1053,6 +1064,318 @@ describe("App dashboard interactions", () => {
     expect(within(getAiCard()).getByText("97")).toBeInTheDocument();
     expect(within(getAiCard()).getByText("综合推荐")).toBeInTheDocument();
     expect(within(getAiCard()).queryByText("61")).not.toBeInTheDocument();
+  });
+
+  it("lets the AI assistant recommend from a user prompt with reasons and gaps", async () => {
+    const dashboard = buildDashboard();
+    const target = dashboard.newGames[0];
+    recommendGamesWithAiMock.mockResolvedValueOnce({
+      reply: "没有完全匹配，我先按本地合作和轻松氛围给你近似推荐。",
+      followUpQuestion: "你愿意把人数放宽到 4 人吗？",
+      exactMatchCount: 0,
+      source: "rule",
+      llmUsed: false,
+      diagnostic: "未配置 LLM Key，使用本地规则匹配。",
+      items: [
+        {
+          game: target,
+          matchScore: 82,
+          reason: "支持本地合作，适合轻松开局。",
+          matchedTraits: ["本地合作", "轻松休闲"],
+          missingTraits: ["6 人以上"],
+          caveats: ["最多 4 人"],
+          exactMatch: false,
+        },
+      ],
+    });
+    getDashboardMock.mockResolvedValue(dashboard);
+
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "新游区" });
+    fireEvent.click(screen.getByRole("button", { name: "✦ 让 AI 帮我找游戏" }));
+
+    fireEvent.change(
+      screen.getByPlaceholderText("描述你想要的游戏，例如：本地合作、轻松、不要恐怖"),
+      {
+        target: { value: "想找 6 人以上 本地合作 轻松一点" },
+      },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "发送需求" }));
+
+    await waitFor(() =>
+      expect(recommendGamesWithAiMock).toHaveBeenCalledWith({
+        prompt: "想找 6 人以上 本地合作 轻松一点",
+        contextMessages: expect.any(Array),
+        limit: 5,
+      }),
+    );
+    expect(await screen.findByText("支持本地合作，适合轻松开局。")).toBeInTheDocument();
+    expect(screen.getByText("82%")).toBeInTheDocument();
+    expect(screen.getByText("近似匹配")).toBeInTheDocument();
+    expect(screen.getByText("规则匹配")).toBeInTheDocument();
+    expect(screen.getByText("未配置 LLM Key，使用本地规则匹配。")).toBeInTheDocument();
+    expect(screen.getByText("缺口：6 人以上")).toBeInTheDocument();
+    expect(screen.getByText("你愿意把人数放宽到 4 人吗？")).toBeInTheDocument();
+    expect(
+      screen.getByLabelText("AI 推荐对话").textContent?.match(/你愿意把人数放宽到 4 人吗？/g) ?? [],
+    ).toHaveLength(0);
+  });
+
+  it("shows an animated thinking indicator while the AI recommendation is pending", async () => {
+    const dashboard = buildDashboard();
+    const target = dashboard.newGames[0];
+    const pendingRecommendation = createDeferred<AiRecommendationResponse>();
+    recommendGamesWithAiMock.mockImplementationOnce(() => pendingRecommendation.promise);
+    getDashboardMock.mockResolvedValue(dashboard);
+
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "新游区" });
+    fireEvent.click(screen.getByRole("button", { name: "✦ 让 AI 帮我找游戏" }));
+
+    fireEvent.change(
+      screen.getByPlaceholderText("描述你想要的游戏，例如：本地合作、轻松、不要恐怖"),
+      {
+        target: { value: "想找一个本地合作派对游戏" },
+      },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "发送需求" }));
+
+    expect(await screen.findByText("AI 正在思考")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "发送需求" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "新对话" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "对话历史" })).toBeDisabled();
+
+    await act(async () => {
+      pendingRecommendation.resolve({
+        reply: "我按本地合作和派对氛围找到了候选。",
+        followUpQuestion: null,
+        exactMatchCount: 1,
+        source: "hybrid",
+        llmUsed: true,
+        diagnostic: "LLM 已基于库内候选润色推荐理由。",
+        items: [
+          {
+            game: target,
+            matchScore: 93,
+            reason: "适合本地合作派对，节奏轻松。",
+            matchedTraits: ["本地合作", "派对"],
+            missingTraits: [],
+            caveats: [],
+            exactMatch: true,
+          },
+        ],
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await waitFor(() =>
+      expect(screen.queryByText("AI 正在思考")).not.toBeInTheDocument(),
+    );
+    expect(screen.getByText("适合本地合作派对，节奏轻松。")).toBeInTheDocument();
+  });
+
+  it("starts a new AI conversation and restores the previous one from in-memory history", async () => {
+    const dashboard = buildDashboard();
+    const firstTarget = dashboard.newGames[0];
+    const secondTarget = dashboard.classics[0];
+    recommendGamesWithAiMock
+      .mockResolvedValueOnce({
+        reply: "第一轮已找到候选。",
+        followUpQuestion: null,
+        exactMatchCount: 1,
+        source: "hybrid",
+        llmUsed: true,
+        diagnostic: "LLM 已基于库内候选润色推荐理由。",
+        items: [
+          {
+            game: firstTarget,
+            matchScore: 91,
+            reason: "第一轮理由：本地合作且轻松。",
+            matchedTraits: ["本地合作", "轻松休闲"],
+            missingTraits: [],
+            caveats: [],
+            exactMatch: true,
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        reply: "第二轮已找到候选。",
+        followUpQuestion: null,
+        exactMatchCount: 1,
+        source: "rule",
+        llmUsed: false,
+        diagnostic: "测试默认使用规则匹配。",
+        items: [
+          {
+            game: secondTarget,
+            matchScore: 84,
+            reason: "第二轮理由：适合生存开黑。",
+            matchedTraits: ["生存玩法"],
+            missingTraits: [],
+            caveats: [],
+            exactMatch: true,
+          },
+        ],
+      });
+    getDashboardMock.mockResolvedValue(dashboard);
+
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "新游区" });
+    fireEvent.click(screen.getByRole("button", { name: "✦ 让 AI 帮我找游戏" }));
+
+    const promptInput = screen.getByPlaceholderText(
+      "描述你想要的游戏，例如：本地合作、轻松、不要恐怖",
+    );
+    fireEvent.change(promptInput, {
+      target: { value: "想找本地合作轻松一点" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "发送需求" }));
+
+    expect(await screen.findByText("第一轮理由：本地合作且轻松。")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "新对话" }));
+
+    expect(screen.getByText("告诉我人数、联机方式、氛围、想排除的类型，我会只从已入库且已发售的游戏里找。")).toBeInTheDocument();
+    expect(screen.queryByText("想找本地合作轻松一点")).not.toBeInTheDocument();
+    expect(screen.queryByText("第一轮理由：本地合作且轻松。")).not.toBeInTheDocument();
+
+    fireEvent.change(promptInput, {
+      target: { value: "这次想找生存开黑" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "发送需求" }));
+
+    expect(await screen.findByText("第二轮理由：适合生存开黑。")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "对话历史" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: /继续对话 想找本地合作轻松一点/ }),
+    );
+
+    expect(screen.getByText("想找本地合作轻松一点")).toBeInTheDocument();
+    expect(screen.getByText("第一轮理由：本地合作且轻松。")).toBeInTheDocument();
+    expect(screen.queryByText("这次想找生存开黑")).not.toBeInTheDocument();
+    expect(screen.queryByText("第二轮理由：适合生存开黑。")).not.toBeInTheDocument();
+  });
+
+  it("opens a recommended game detail and returns to the preserved AI answer", async () => {
+    const dashboard = buildDashboard();
+    const target = dashboard.newGames[0];
+    recommendGamesWithAiMock.mockResolvedValueOnce({
+      reply: "我按本地合作和轻松氛围给你找到了一个候选。",
+      followUpQuestion: null,
+      exactMatchCount: 1,
+      source: "hybrid",
+      llmUsed: true,
+      diagnostic: "LLM 已基于库内候选润色推荐理由。",
+      items: [
+        {
+          game: target,
+          matchScore: 91,
+          reason: "支持本地合作，口碑也比较稳。",
+          matchedTraits: ["本地合作", "轻松休闲"],
+          missingTraits: [],
+          caveats: ["仍建议看近期评测"],
+          exactMatch: true,
+        },
+      ],
+    });
+    getDashboardMock.mockResolvedValue(dashboard);
+    getGameAnalysisMock.mockImplementation(async (appid: number) =>
+      buildAnalysisReport(appid),
+    );
+    generateGameAnalysisMock.mockImplementation(async (appid: number) =>
+      buildAnalysisReport(appid),
+    );
+
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "新游区" });
+    fireEvent.click(screen.getByRole("button", { name: "✦ 让 AI 帮我找游戏" }));
+    fireEvent.change(
+      screen.getByPlaceholderText("描述你想要的游戏，例如：本地合作、轻松、不要恐怖"),
+      {
+        target: { value: "想找本地合作轻松一点" },
+      },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "发送需求" }));
+
+    expect(await screen.findByText("支持本地合作，口碑也比较稳。")).toBeInTheDocument();
+    const aiCard = screen
+      .getByRole("heading", { name: target.name })
+      .closest(".recommend-row") as HTMLElement;
+    fireEvent.click(within(aiCard).getByRole("button", { name: "详情" }));
+
+    expect(await screen.findByText("打开详情页后应直接显示缓存分析。")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "← 返回" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "AI 智能推荐助手 Beta" })).toBeInTheDocument();
+      expect(screen.getByText("想找本地合作轻松一点")).toBeInTheDocument();
+      expect(screen.getByText("支持本地合作，口碑也比较稳。")).toBeInTheDocument();
+      expect(screen.getByText("LLM 已增强")).toBeInTheDocument();
+    });
+  });
+
+  it("keeps a hidden recommended game selected after opening detail triggers a dashboard reload", async () => {
+    const { dashboard, hiddenGame } = buildDashboardWithClassicHidden();
+    recommendGamesWithAiMock.mockResolvedValueOnce({
+      reply: "我在隐藏候选里找到了一个更接近的游戏。",
+      followUpQuestion: null,
+      exactMatchCount: 1,
+      source: "hybrid",
+      llmUsed: true,
+      diagnostic: "LLM 已基于库内候选润色推荐理由。",
+      items: [
+        {
+          game: hiddenGame,
+          matchScore: 94,
+          reason: "隐藏候选也应该能正确打开自己的详情。",
+          matchedTraits: ["本地合作"],
+          missingTraits: [],
+          caveats: [],
+          exactMatch: true,
+        },
+      ],
+    });
+    getDashboardMock.mockResolvedValue(dashboard);
+    getGameAnalysisMock.mockImplementation(async (appid: number) =>
+      buildAnalysisReport(appid),
+    );
+    generateGameAnalysisMock.mockImplementation(async (appid: number) =>
+      buildAnalysisReport(appid),
+    );
+
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "新游区" });
+    fireEvent.click(screen.getByRole("button", { name: "✦ 让 AI 帮我找游戏" }));
+    fireEvent.change(
+      screen.getByPlaceholderText("描述你想要的游戏，例如：本地合作、轻松、不要恐怖"),
+      {
+        target: { value: "想找一个隐藏候选" },
+      },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "发送需求" }));
+
+    expect(await screen.findByText("隐藏候选也应该能正确打开自己的详情。")).toBeInTheDocument();
+
+    const aiCard = screen
+      .getByRole("heading", { name: hiddenGame.name })
+      .closest(".recommend-row") as HTMLElement;
+    fireEvent.click(within(aiCard).getByRole("button", { name: "详情" }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { level: 1, name: hiddenGame.name }),
+      ).toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByRole("heading", { level: 1, name: dashboard.newGames[0].name }),
+    ).not.toBeInTheDocument();
   });
 
   it("returns to the previously browsed page instead of resetting pagination", async () => {

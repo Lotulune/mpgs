@@ -1,4 +1,5 @@
 use crate::ai_batch_refresh_task;
+use crate::ai_recommendation;
 use crate::backfill_task;
 use crate::classic_discovery_task;
 use crate::db;
@@ -11,10 +12,11 @@ use crate::discovery_task::{emit_snapshot, spawn_discovery_worker, DiscoveryCont
 use crate::game_analysis;
 use crate::llm::{self, LlmRuntimeConfig};
 use crate::models::{
-    AiAnalysisQueueSource, AiAssessment, AiBatchRefreshReport, ClassicDiscoveryRunSnapshot,
-    ClassicDiscoveryTaskRequest, DashboardPayload, DiscoveryRunSnapshot, DiscoveryRunStatus,
-    DiscoveryTaskRequest, GameAnalysisReport, PublicConfig, SaveConfigRequest, SyncMode,
-    SyncReport, SyncRequest, UserCollections, UserGameState, UserGameStatePatch,
+    AiAnalysisQueueSource, AiAssessment, AiBatchRefreshReport, AiRecommendationRequest,
+    AiRecommendationResponse, ClassicDiscoveryRunSnapshot, ClassicDiscoveryTaskRequest,
+    DashboardPayload, DiscoveryRunSnapshot, DiscoveryRunStatus, DiscoveryTaskRequest,
+    GameAnalysisReport, PublicConfig, SaveConfigRequest, SyncMode, SyncReport, SyncRequest,
+    UserCollections, UserGameState, UserGameStatePatch,
 };
 use crate::recommendation::{bucket_game, ReleaseBucket};
 use crate::state::AppState;
@@ -300,6 +302,16 @@ pub async fn assess_game_with_ai(
     appid: u32,
 ) -> Result<AiAssessment, String> {
     generate_assessment_from_report_pipeline(state.inner(), appid)
+        .await
+        .map_err(to_command_error)
+}
+
+#[tauri::command]
+pub async fn recommend_games_with_ai(
+    state: State<'_, AppState>,
+    request: AiRecommendationRequest,
+) -> Result<AiRecommendationResponse, String> {
+    recommend_games_pipeline(state.inner(), request)
         .await
         .map_err(to_command_error)
 }
@@ -762,9 +774,11 @@ pub fn start_classic_discovery_task(
 fn resolve_manual_classic_discovery_start_offset(
     conn: &rusqlite::Connection,
 ) -> anyhow::Result<u32> {
-    Ok(db::get_config(conn, db::CLASSIC_DISCOVERY_LAST_OFFSET_CONFIG_KEY)?
-        .and_then(|value| value.parse::<u32>().ok())
-        .unwrap_or(0))
+    Ok(
+        db::get_config(conn, db::CLASSIC_DISCOVERY_LAST_OFFSET_CONFIG_KEY)?
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(0),
+    )
 }
 
 #[tauri::command]
@@ -915,6 +929,37 @@ async fn generate_assessment_from_report_pipeline(
 ) -> anyhow::Result<AiAssessment> {
     let report = generate_or_load_game_analysis(state, appid, true).await?;
     Ok(summarize_analysis_report_as_assessment(report))
+}
+
+async fn recommend_games_pipeline(
+    state: &AppState,
+    request: AiRecommendationRequest,
+) -> anyhow::Result<AiRecommendationResponse> {
+    let (games, config) = {
+        let conn = state
+            .db
+            .lock()
+            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+        let dashboard = db::load_dashboard(&conn)?;
+        let games = dashboard
+            .new_games
+            .into_iter()
+            .chain(dashboard.classics.into_iter())
+            .chain(dashboard.hidden_games.into_iter())
+            .collect::<Vec<_>>();
+        let config = load_llm_runtime_config(&conn)?;
+        (games, config)
+    };
+
+    let local_response = ai_recommendation::recommend_games_locally(&games, &request);
+    if config.api_key.is_none() {
+        let mut response = local_response;
+        response.diagnostic =
+            Some("未配置 LLM Key，本次使用本地规则匹配和库内质量指标排序。".to_string());
+        return Ok(response);
+    }
+
+    Ok(llm::enhance_recommendation_response(&state.http, &config, &request, local_response).await)
 }
 
 async fn generate_game_analysis_with_narrative_cache(
@@ -1164,23 +1209,24 @@ fn sync_mode_label(mode: SyncMode) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        enqueue_full_refresh_ai_jobs,
-        generate_assessment_from_report_pipeline, generate_or_load_game_analysis,
-        load_cached_game_analysis, refresh_all_game_analyses_pipeline,
-        merge_snapshot, resolve_manual_classic_discovery_start_offset,
-        start_ai_batch_refresh_runtime, visible_ai_batch_refresh_concurrency,
+        enqueue_full_refresh_ai_jobs, generate_assessment_from_report_pipeline,
+        generate_or_load_game_analysis, load_cached_game_analysis, merge_snapshot,
+        recommend_games_pipeline, refresh_all_game_analyses_pipeline,
+        resolve_manual_classic_discovery_start_offset, start_ai_batch_refresh_runtime,
+        visible_ai_batch_refresh_concurrency,
     };
     use crate::backfill_task::BackfillRuntimeState;
     use crate::db;
     use crate::discovery_task::DiscoveryRuntimeState;
     use crate::models::{
-        AnalysisConfidence, AnalysisDimensionScore, AnalysisEvidenceItem, AnalysisEvidenceKind,
-        AnalysisPoint, AnalysisReviewEvidenceItem, AnalysisReviewStance, AnalysisSource,
-        GameAnalysisReport, GameCard, ReviewSnippet, StoreReleaseState, UserGameState,
+        AiRecommendationRequest, AnalysisConfidence, AnalysisDimensionScore, AnalysisEvidenceItem,
+        AnalysisEvidenceKind, AnalysisPoint, AnalysisReviewEvidenceItem, AnalysisReviewStance,
+        AnalysisSource, GameAnalysisReport, GameCard, ReviewSnippet, StoreReleaseState,
+        UserGameState,
     };
     use crate::recommendation::DemoStatus;
-    use crate::steam::SteamGameSnapshot;
     use crate::state::AppState;
+    use crate::steam::SteamGameSnapshot;
     use crate::sync_task::SyncRuntimeState;
     use reqwest::Client;
     use rusqlite::Connection;
@@ -1857,5 +1903,109 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         assert_ne!(assessment.summary, stale.overview);
+    }
+
+    #[tokio::test]
+    async fn ai_recommendation_pipeline_uses_released_hidden_games_from_dashboard() {
+        let state = seeded_state();
+        {
+            let conn = state.db.lock().expect("lock db");
+            db::upsert_game(
+                &conn,
+                &GameCard {
+                    appid: 9_777,
+                    name: "Hidden Couch Puzzle".to_string(),
+                    short_description: Some(
+                        "A cute local co-op puzzle game for relaxed couch sessions.".to_string(),
+                    ),
+                    section: "classic_hidden".to_string(),
+                    release_date: Some("2025-05-01".to_string()),
+                    release_date_text: "2025-05-01".to_string(),
+                    release_state: StoreReleaseState::Released,
+                    demo_status: DemoStatus::Released,
+                    supported_languages: vec!["Simplified Chinese".to_string()],
+                    is_adult_content: false,
+                    is_free: false,
+                    price_text: Some("$9.99".to_string()),
+                    discount_percent: None,
+                    positive_review_pct: Some(90.0),
+                    total_reviews: Some(600),
+                    current_players: Some(120),
+                    recommendation_score: 71.0,
+                    ai_score: None,
+                    ai_summary: "hidden local co-op puzzle".to_string(),
+                    capsule_url: "https://example.com/hidden-couch-puzzle.jpg".to_string(),
+                    store_screenshot_urls: vec![],
+                    tags: vec![
+                        "Cute".to_string(),
+                        "Puzzle".to_string(),
+                        "Casual".to_string(),
+                    ],
+                    multiplayer_modes: vec!["Local Co-op".to_string()],
+                    review_snippets: vec![],
+                    user_state: UserGameState::default(),
+                },
+            )
+            .expect("seed hidden recommendation game");
+        }
+
+        let response = recommend_games_pipeline(
+            &state,
+            AiRecommendationRequest {
+                prompt: "想找本地合作、可爱、轻松解谜".to_string(),
+                context_messages: vec![],
+                limit: Some(5),
+            },
+        )
+        .await
+        .expect("recommend games");
+
+        assert_eq!(response.items[0].game.appid, 9_777);
+        assert!(response
+            .items
+            .iter()
+            .all(|item| item.game.release_state == StoreReleaseState::Released));
+    }
+
+    #[tokio::test]
+    async fn ai_recommendation_pipeline_calls_llm_when_local_rules_find_no_items() {
+        let state = seeded_state();
+        let base_url = spawn_single_use_chat_completion_server(
+            r#"{"choices":[{"message":{"content":"{\"reply\":\"我理解你的需求，但当前库内候选不足。\",\"followUpQuestion\":\"你愿意放宽题材或联机方式吗？\",\"items\":[]}"}}]}"#,
+        );
+        {
+            let conn = state.db.lock().expect("lock db");
+            db::delete_game_and_related_state(&conn, 7_301).expect("clear seeded game");
+            db::set_config(&conn, "llm_api_key", "test-key").expect("set llm api key");
+            db::set_config(&conn, "llm_base_url", &base_url).expect("set llm base url");
+            db::set_config(&conn, "llm_model", "deepseek-v4-flash").expect("set llm model");
+            let dashboard = db::load_dashboard(&conn).expect("load dashboard after clear");
+            assert!(dashboard.new_games.is_empty());
+            assert!(dashboard.classics.is_empty());
+            assert!(dashboard.hidden_games.is_empty());
+        }
+
+        let response = recommend_games_pipeline(
+            &state,
+            AiRecommendationRequest {
+                prompt: "想找完全没有规则覆盖的实验性叙事玩法".to_string(),
+                context_messages: vec![],
+                limit: Some(5),
+            },
+        )
+        .await
+        .expect("recommend games");
+
+        assert_eq!(response.source, AnalysisSource::Hybrid);
+        assert!(response.llm_used);
+        assert!(response.items.is_empty());
+        assert_eq!(
+            response.reply,
+            "我理解你的需求，但当前库内候选不足。"
+        );
+        assert_eq!(
+            response.follow_up_question.as_deref(),
+            Some("你愿意放宽题材或联机方式吗？")
+        );
     }
 }

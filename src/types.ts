@@ -186,6 +186,37 @@ export interface AiAssessment {
   risks: string[];
 }
 
+export interface AiRecommendationMessage {
+  role: "user" | "assistant" | string;
+  content: string;
+}
+
+export interface AiRecommendationRequest {
+  prompt: string;
+  contextMessages: AiRecommendationMessage[];
+  limit?: number;
+}
+
+export interface AiRecommendedGame {
+  game: GameCard;
+  matchScore: number;
+  reason: string;
+  matchedTraits: string[];
+  missingTraits: string[];
+  caveats: string[];
+  exactMatch: boolean;
+}
+
+export interface AiRecommendationResponse {
+  reply: string;
+  followUpQuestion?: string | null;
+  exactMatchCount: number;
+  source: "hybrid" | "rule";
+  llmUsed: boolean;
+  diagnostic?: string | null;
+  items: AiRecommendedGame[];
+}
+
 export type AnalysisSource = "hybrid" | "rule";
 
 export type AnalysisConfidence = "high" | "medium" | "low";

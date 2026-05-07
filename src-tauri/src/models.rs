@@ -221,6 +221,46 @@ pub struct AiAssessment {
     pub risks: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiRecommendationMessage {
+    pub role: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiRecommendationRequest {
+    pub prompt: String,
+    #[serde(default)]
+    pub context_messages: Vec<AiRecommendationMessage>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiRecommendedGame {
+    pub game: GameCard,
+    pub match_score: f64,
+    pub reason: String,
+    pub matched_traits: Vec<String>,
+    pub missing_traits: Vec<String>,
+    pub caveats: Vec<String>,
+    pub exact_match: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiRecommendationResponse {
+    pub reply: String,
+    pub follow_up_question: Option<String>,
+    pub exact_match_count: usize,
+    pub source: AnalysisSource,
+    pub llm_used: bool,
+    pub diagnostic: Option<String>,
+    pub items: Vec<AiRecommendedGame>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AnalysisSource {
