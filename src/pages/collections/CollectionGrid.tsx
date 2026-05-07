@@ -26,7 +26,12 @@ export function CollectionGrid({
     <>
       <div className="favorite-toolbar">
         <button type="button">{countLabel}</button>
-        <button type="button">最近添加⌄</button>
+        <button type="button" style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
+          最近添加
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="m6 9 6 6 6-6" />
+          </svg>
+        </button>
         <button type="button">▦</button>
         <button type="button">☷</button>
       </div>

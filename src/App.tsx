@@ -634,19 +634,12 @@ function App() {
   }
 
   function openDetail(game: GameCard) {
+    setSelectedGame(game);
     rememberCurrentViewScroll(activeView);
     detailReturnViewRef.current = activeView;
-    setSelectedGame(game);
     setActiveView("detail");
     scrollCurrentViewToTop();
     void handleUserState(game.appid, { viewed: true }, `已打开《${game.name}》详情。`);
-  }
-
-  function openSelectedGameDetail() {
-    rememberCurrentViewScroll(activeView);
-    detailReturnViewRef.current = activeView;
-    setActiveView("detail");
-    scrollCurrentViewToTop();
   }
 
   function returnFromDetail() {
@@ -808,7 +801,6 @@ function App() {
           query={query}
           selectedGame={selectedGame}
           setQuery={setQuery}
-          onDetail={openSelectedGameDetail}
         />
 
         {activeView === "filter" && (
@@ -1185,13 +1177,11 @@ function TopBar({
   query,
   setQuery,
   selectedGame,
-  onDetail,
 }: {
   activeView: ViewId;
   query: string;
   setQuery: (value: string) => void;
   selectedGame: GameCard | null;
-  onDetail: () => void;
 }) {
   const title =
     activeView === "filter"
@@ -1230,13 +1220,6 @@ function TopBar({
           />
           <span>⌕</span>
         </label>
-        <button className="icon-button" type="button" aria-label="通知">
-          ♧
-        </button>
-        <button className="profile-button" type="button" onClick={onDetail}>
-          <span>👩🏻</span>
-          <b>⌄</b>
-        </button>
       </div>
     </header>
   );

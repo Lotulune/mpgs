@@ -12,6 +12,14 @@ import type {
 type SectionKey = "apiKeys" | "llmConfig" | "sync" | "aiBatch" | "discovery";
 const DEFAULT_CLASSIC_DISCOVERY_MAX_PAGES = 3;
 
+let globalExpandedState: Record<SectionKey, boolean> = {
+  apiKeys: false,
+  llmConfig: false,
+  sync: false,
+  aiBatch: false,
+  discovery: false,
+};
+
 function SettingsSection({
   title,
   status,
@@ -84,16 +92,14 @@ export function SettingsPage({
   const [classicDiscoveryMaxPages, setClassicDiscoveryMaxPages] = useState(
     DEFAULT_CLASSIC_DISCOVERY_MAX_PAGES,
   );
-  const [expanded, setExpanded] = useState<Record<SectionKey, boolean>>({
-    apiKeys: false,
-    llmConfig: true,
-    sync: false,
-    aiBatch: false,
-    discovery: false,
-  });
+  const [expanded, setExpanded] = useState<Record<SectionKey, boolean>>(globalExpandedState);
 
   const toggle = (key: SectionKey) =>
-    setExpanded((prev) => ({ ...prev, [key]: !prev[key] }));
+    setExpanded((prev) => {
+      const next = { ...prev, [key]: !prev[key] };
+      globalExpandedState = next;
+      return next;
+    });
 
   const hasSyncResume = !stats.syncRunning && stats.syncPendingCount > 0;
   const hasSyncActivity =
