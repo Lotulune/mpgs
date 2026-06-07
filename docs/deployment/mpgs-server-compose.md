@@ -41,7 +41,7 @@ cp deploy/config/active/secrets.toml.example deploy/config/active/secrets.toml
 Edit:
 
 - `deploy/config/active/service.toml` for non-sensitive service identity and bind settings.
-- `deploy/config/active/secrets.toml` for the Postgres URL and future server-side secrets.
+- `deploy/config/active/secrets.toml` for the Postgres URL, admin token hash, session secret, and future server-side secrets.
 
 For the default Compose network, `deploy/config/active/secrets.toml` should use:
 
@@ -51,6 +51,14 @@ url = "postgres://mpgs:change-this-postgres-password@postgres:5432/mpgs"
 ```
 
 Keep the database password in `deploy/.env` and `deploy/config/active/secrets.toml` in sync.
+
+Set `admin.token_hash` to a SHA-256 hash in the format expected by `mpgs-server`:
+
+```text
+sha256:<base64-no-padding sha256(admin-token)>
+```
+
+Set `admin.session_secret` to a long random value used to sign short-lived admin session cookies. Do not put the raw admin token in `.env`, Postgres, docs, or logs.
 
 Do not put Steam, LLM, R2, or admin token secrets in Postgres.
 

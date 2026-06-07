@@ -9,6 +9,106 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/api/v1/admin/diagnostics": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "admin_diagnostics",
+        "responses": {
+          "200": {
+            "description": "Admin diagnostics",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminDiagnosticsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Admin session required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/overview": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "admin_overview",
+        "responses": {
+          "200": {
+            "description": "Admin overview",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminOverviewResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Admin session required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/session": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "admin_session",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminSessionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Admin session established",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminSessionResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid admin token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/discovery-home": {
       "get": {
         "tags": [
@@ -318,6 +418,62 @@
   },
   "components": {
     "schemas": {
+      "AdminDiagnosticsResponse": {
+        "type": "object",
+        "required": [
+          "postgres",
+          "activeConfig",
+          "safeMode"
+        ],
+        "properties": {
+          "activeConfig": {
+            "type": "string"
+          },
+          "postgres": {
+            "type": "string"
+          },
+          "safeMode": {
+            "type": "boolean"
+          }
+        }
+      },
+      "AdminOverviewResponse": {
+        "type": "object",
+        "required": [
+          "serviceName",
+          "publicCatalogStatus"
+        ],
+        "properties": {
+          "publicCatalogStatus": {
+            "$ref": "#/components/schemas/PublicCatalogStatus"
+          },
+          "serviceName": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminSessionRequest": {
+        "type": "object",
+        "required": [
+          "token"
+        ],
+        "properties": {
+          "token": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminSessionResponse": {
+        "type": "object",
+        "required": [
+          "authenticated"
+        ],
+        "properties": {
+          "authenticated": {
+            "type": "boolean"
+          }
+        }
+      },
       "DiscoveryHomeResponse": {
         "type": "object",
         "required": [

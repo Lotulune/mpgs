@@ -7,6 +7,7 @@ $caddyCompose = Get-Content -Raw -Path (Join-Path $root "deploy\compose.caddy.ym
 $caddyfile = Get-Content -Raw -Path (Join-Path $root "deploy\Caddyfile")
 $dockerfile = Get-Content -Raw -Path (Join-Path $root "Dockerfile.mpgs-server")
 $deploymentDoc = Get-Content -Raw -Path (Join-Path $root "docs\deployment\mpgs-server-compose.md")
+$secretsExample = Get-Content -Raw -Path (Join-Path $root "deploy\config\active\secrets.toml.example")
 
 if ($compose -notmatch 'postgres:16-bookworm') {
     throw "compose.yml must define Postgres 16."
@@ -43,6 +44,12 @@ if ($deploymentDoc -notmatch 'active/service.toml' -or $deploymentDoc -notmatch 
 }
 if ($deploymentDoc -notmatch 'only locates the config directory') {
     throw "deployment docs must state that .env only locates config, not service secrets."
+}
+if ($secretsExample -notmatch '\[admin\]' -or $secretsExample -notmatch 'token_hash' -or $secretsExample -notmatch 'session_secret') {
+    throw "secrets.toml.example must include admin token hash and session secret placeholders."
+}
+if ($deploymentDoc -notmatch 'Do not put the raw admin token') {
+    throw "deployment docs must forbid storing the raw admin token."
 }
 
 Write-Output "Deployment contract checks passed."

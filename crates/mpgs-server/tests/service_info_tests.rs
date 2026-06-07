@@ -45,6 +45,9 @@ fn openapi_includes_service_info_route() {
     assert!(value["paths"]["/api/v1/games"]["get"].is_object());
     assert!(value["paths"]["/api/v1/games/{appid}"]["get"].is_object());
     assert!(value["paths"]["/api/v1/games/{appid}/analysis"]["get"].is_object());
+    assert!(value["paths"]["/api/v1/admin/session"]["post"].is_object());
+    assert!(value["paths"]["/api/v1/admin/overview"]["get"].is_object());
+    assert!(value["paths"]["/api/v1/admin/diagnostics"]["get"].is_object());
 }
 
 #[test]

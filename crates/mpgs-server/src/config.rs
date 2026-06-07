@@ -3,7 +3,7 @@ use std::fs;
 use std::net::{AddrParseError, SocketAddr};
 use std::path::{Path, PathBuf};
 
-use crate::ServiceInfoConfig;
+use crate::{AdminAuthConfig, ServiceInfoConfig};
 use serde::Deserialize;
 use thiserror::Error;
 
@@ -13,6 +13,7 @@ pub struct ServerConfig {
     pub database_url: String,
     pub service_info: ServiceInfoConfig,
     pub config_health: ConfigHealth,
+    pub admin_auth: Option<AdminAuthConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -118,6 +119,7 @@ impl ServerConfig {
             database_url,
             service_info,
             config_health: ConfigHealth::HealthyForTest,
+            admin_auth: None,
         })
     }
 
@@ -150,6 +152,10 @@ impl ServerConfig {
             database_url: secrets_config.database.url,
             service_info,
             config_health: ConfigHealth::active_files(service_path, secrets_path),
+            admin_auth: Some(AdminAuthConfig::new(
+                secrets_config.admin.token_hash,
+                secrets_config.admin.session_secret,
+            )),
         })
     }
 }
@@ -239,9 +245,16 @@ struct ActiveServiceIdentityConfig {
 #[derive(Debug, Deserialize)]
 struct ActiveSecretsConfig {
     database: ActiveDatabaseConfig,
+    admin: ActiveAdminConfig,
 }
 
 #[derive(Debug, Deserialize)]
 struct ActiveDatabaseConfig {
     url: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ActiveAdminConfig {
+    token_hash: String,
+    session_secret: String,
 }

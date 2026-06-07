@@ -33,6 +33,10 @@ version = "2.0.0"
         r#"
 [database]
 url = "postgres://mpgs:secret@postgres:5432/mpgs"
+
+[admin]
+token_hash = "sha256:test-hash"
+session_secret = "test-session-secret"
 "#,
     )
     .unwrap();
@@ -53,6 +57,7 @@ url = "postgres://mpgs:secret@postgres:5432/mpgs"
     );
     assert_eq!(config.service_info.service_name, "MPGS TOML Service");
     assert_eq!(config.service_info.service_version, "2.0.0");
+    assert!(config.admin_auth.is_some());
 }
 
 #[test]

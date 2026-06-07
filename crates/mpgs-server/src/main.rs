@@ -16,16 +16,17 @@ async fn main() -> Result<()> {
         StartupConfig::Ready(config) => {
             let pool = db::connect_and_migrate(&config.database_url).await?;
             let public_catalog_status = db::public_catalog_status(&pool).await?;
-            (
-                config.bind_addr,
-                build_router_with_state(AppState::new_with_config_health(
-                    config
-                        .service_info
-                        .service_info_with_catalog_status(public_catalog_status),
-                    DatabaseHealth::Pool(pool),
-                    config.config_health,
-                )),
-            )
+            let mut app_state = AppState::new_with_config_health(
+                config
+                    .service_info
+                    .service_info_with_catalog_status(public_catalog_status),
+                DatabaseHealth::Pool(pool),
+                config.config_health,
+            );
+            if let Some(admin_auth) = config.admin_auth {
+                app_state = app_state.with_admin_auth(admin_auth);
+            }
+            (config.bind_addr, build_router_with_state(app_state))
         }
         StartupConfig::SafeMode {
             bind_addr,

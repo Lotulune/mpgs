@@ -1,13 +1,18 @@
+pub mod admin;
 pub mod config;
 pub mod db;
 pub mod health;
 pub mod public_catalog;
 
+pub use admin::AdminAuthConfig;
+use admin::{
+    AdminDiagnosticsResponse, AdminOverviewResponse, AdminSessionRequest, AdminSessionResponse,
+};
 use axum::{
     extract::{Path, Query, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
 pub use config::{ConfigError, ConfigHealth, ServerConfig, StartupConfig};
@@ -63,6 +68,7 @@ pub struct AppState {
     service_info: ServiceInfo,
     database_health: DatabaseHealth,
     config_health: ConfigHealth,
+    admin_auth: Option<AdminAuthConfig>,
 }
 
 impl AppState {
@@ -71,6 +77,7 @@ impl AppState {
             service_info,
             database_health,
             config_health: ConfigHealth::HealthyForTest,
+            admin_auth: None,
         }
     }
 
@@ -83,7 +90,26 @@ impl AppState {
             service_info,
             database_health,
             config_health,
+            admin_auth: None,
         }
+    }
+
+    pub fn new_with_admin_auth(
+        service_info: ServiceInfo,
+        database_health: DatabaseHealth,
+        admin_auth: AdminAuthConfig,
+    ) -> Self {
+        Self {
+            service_info,
+            database_health,
+            config_health: ConfigHealth::HealthyForTest,
+            admin_auth: Some(admin_auth),
+        }
+    }
+
+    pub fn with_admin_auth(mut self, admin_auth: AdminAuthConfig) -> Self {
+        self.admin_auth = Some(admin_auth);
+        self
     }
 
     pub fn safe_mode(config: ServiceInfoConfig) -> Self {
@@ -91,6 +117,7 @@ impl AppState {
             service_info: config.service_info_with_catalog_status(PublicCatalogStatus::Unavailable),
             database_health: DatabaseHealth::SafeMode,
             config_health: ConfigHealth::HealthyForTest,
+            admin_auth: None,
         }
     }
 }
@@ -139,6 +166,9 @@ pub fn build_router_with_state(state: AppState) -> Router {
         .route("/api/v1/games", get(games))
         .route("/api/v1/games/{appid}", get(game_detail))
         .route("/api/v1/games/{appid}/analysis", get(game_analysis))
+        .route("/api/v1/admin/session", post(admin_session))
+        .route("/api/v1/admin/overview", get(admin_overview))
+        .route("/api/v1/admin/diagnostics", get(admin_diagnostics))
         .route("/openapi.json", get(openapi_json))
         .with_state(state)
 }
@@ -335,6 +365,97 @@ async fn game_analysis(
 }
 
 #[utoipa::path(
+    post,
+    path = "/api/v1/admin/session",
+    tag = "admin",
+    request_body = AdminSessionRequest,
+    responses(
+        (status = 200, description = "Admin session established", body = AdminSessionResponse),
+        (status = 401, description = "Invalid admin token", body = ServiceErrorEnvelope)
+    )
+)]
+async fn admin_session(
+    State(state): State<AppState>,
+    Json(request): Json<AdminSessionRequest>,
+) -> Response {
+    let Some(admin_auth) = state.admin_auth.as_ref() else {
+        return service_error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "admin_auth_unconfigured",
+            "管理访问尚未配置。",
+        );
+    };
+
+    if !admin_auth.verify_token(&request.token) {
+        return service_error_response(
+            StatusCode::UNAUTHORIZED,
+            "admin_token_invalid",
+            "管理员令牌无效。",
+        );
+    }
+
+    let mut response = Json(AdminSessionResponse {
+        authenticated: true,
+    })
+    .into_response();
+    if let Ok(cookie) = HeaderValue::from_str(&admin_auth.session_cookie()) {
+        response.headers_mut().insert(header::SET_COOKIE, cookie);
+    }
+    response
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/admin/overview",
+    tag = "admin",
+    responses(
+        (status = 200, description = "Admin overview", body = AdminOverviewResponse),
+        (status = 401, description = "Admin session required", body = ServiceErrorEnvelope)
+    )
+)]
+async fn admin_overview(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if !admin_session_is_valid(&state, &headers) {
+        return admin_session_required_response();
+    }
+
+    Json(AdminOverviewResponse {
+        service_name: state.service_info.service_name,
+        public_catalog_status: state.service_info.public_catalog_status,
+    })
+    .into_response()
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/admin/diagnostics",
+    tag = "admin",
+    responses(
+        (status = 200, description = "Admin diagnostics", body = AdminDiagnosticsResponse),
+        (status = 401, description = "Admin session required", body = ServiceErrorEnvelope)
+    )
+)]
+async fn admin_diagnostics(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if !admin_session_is_valid(&state, &headers) {
+        return admin_session_required_response();
+    }
+
+    Json(AdminDiagnosticsResponse {
+        postgres: if state.database_health.is_healthy().await {
+            "ok".to_string()
+        } else {
+            "unavailable".to_string()
+        },
+        active_config: if state.config_health.is_healthy() {
+            "ok".to_string()
+        } else {
+            "unavailable".to_string()
+        },
+        safe_mode: state.database_health.is_safe_mode(),
+    })
+    .into_response()
+}
+
+#[utoipa::path(
     get,
     path = "/healthz",
     tag = "system",
@@ -482,6 +603,28 @@ fn safe_mode_error_response() -> Response {
     )
 }
 
+fn admin_session_is_valid(state: &AppState, headers: &HeaderMap) -> bool {
+    state
+        .admin_auth
+        .as_ref()
+        .map(|admin_auth| {
+            admin_auth.verify_cookie_header(
+                headers
+                    .get(header::COOKIE)
+                    .and_then(|value| value.to_str().ok()),
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn admin_session_required_response() -> Response {
+    service_error_response(
+        StatusCode::UNAUTHORIZED,
+        "admin_session_required",
+        "需要管理员会话。",
+    )
+}
+
 fn json_with_etag<T>(payload: T, etag: String) -> Response
 where
     T: serde::Serialize,
@@ -541,9 +684,16 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         games,
         game_detail,
         game_analysis,
+        admin_session,
+        admin_overview,
+        admin_diagnostics,
         healthz
     ),
     components(schemas(
+        admin::AdminDiagnosticsResponse,
+        admin::AdminOverviewResponse,
+        admin::AdminSessionRequest,
+        admin::AdminSessionResponse,
         health::HealthResponse,
         health::HealthStatus,
         public_catalog::DiscoveryHomeResponse,
