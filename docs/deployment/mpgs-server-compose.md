@@ -48,7 +48,9 @@ The setup token allows the first-run setup API to write `deploy/config/active/se
 
 Do not put the raw setup token in `.env`, Postgres, docs, or logs.
 
-Management configuration changes are written under `deploy/config/pending` first and report `restartRequired=true`. The service does not copy active secrets into pending files for service identity edits, so saving non-secret settings must not clear Steam, LLM, R2, or admin credentials. On the next startup, the service validates pending service configuration before promoting it to active. A later managed-restart slice will add the authenticated self-exit endpoint that triggers the container restart.
+Management configuration changes are written under `deploy/config/pending` first and report `restartRequired=true`. The service does not copy active secrets into pending files for service identity edits, so saving non-secret settings must not clear Steam, LLM, R2, or admin credentials.
+
+`/api/v1/admin/restart` validates pending service configuration, requires admin authentication and explicit confirmation, then gracefully exits the service process so Docker Compose can restart it. It does not use the Docker socket, a restart-helper container, or arbitrary host commands. On the next startup, the service validates pending service configuration before promoting it to active.
 
 For manual offline configuration instead, create the active secrets file:
 
@@ -114,5 +116,6 @@ curl https://$CADDY_DOMAIN/api/v1/service-info
 - The VPS only runs `docker load` and `docker compose up`; it must not compile Rust or build the image.
 - The service container runs database migrations on startup.
 - The mounted config directory is writable so setup and later management APIs can write TOML configuration files; `.env` still must not contain service secrets.
+- Managed restart relies on the Compose `restart: unless-stopped` policy and service self-exit.
 - Public `/healthz` is intentionally minimal and does not expose configuration or secrets.
 - Empty public catalog state is healthy; public library population belongs to later discovery/admin slices.

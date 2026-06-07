@@ -50,6 +50,7 @@ fn openapi_includes_service_info_route() {
     assert!(value["paths"]["/api/v1/admin/diagnostics"]["get"].is_object());
     assert!(value["paths"]["/api/v1/admin/config-state"]["get"].is_object());
     assert!(value["paths"]["/api/v1/admin/config/pending/service-identity"]["post"].is_object());
+    assert!(value["paths"]["/api/v1/admin/restart"]["post"].is_object());
     assert!(value["paths"]["/api/v1/setup/status"]["get"].is_object());
     assert!(value["paths"]["/api/v1/setup/complete"]["post"].is_object());
 }
@@ -66,11 +67,9 @@ fn openapi_documents_public_read_conditional_cache_contract() {
     ] {
         let get = &value["paths"][path]["get"];
         let parameters = get["parameters"].as_array().unwrap();
-        assert!(
-            parameters
-                .iter()
-                .any(|parameter| parameter["name"] == "If-None-Match")
-        );
+        assert!(parameters
+            .iter()
+            .any(|parameter| parameter["name"] == "If-None-Match"));
         assert!(get["responses"]["304"].is_object());
     }
 }

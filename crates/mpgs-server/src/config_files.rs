@@ -100,6 +100,15 @@ version = "{version}"
         })
     }
 
+    pub fn validate_pending_service_config(&self) -> io::Result<bool> {
+        let path = pending_service_path(&self.config_dir);
+        if !path.is_file() {
+            return Ok(false);
+        }
+
+        read_service_config(&path).map(|_| true)
+    }
+
     pub fn active_config_version(&self) -> io::Result<String> {
         let service_toml = fs::read_to_string(active_service_path(&self.config_dir))?;
         let secrets_toml = fs::read_to_string(active_secrets_path(&self.config_dir))?;

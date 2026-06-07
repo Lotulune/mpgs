@@ -4,6 +4,7 @@ pub mod config_files;
 pub mod db;
 pub mod health;
 pub mod public_catalog;
+pub mod restart;
 pub mod setup;
 
 pub use admin::AdminAuthConfig;
@@ -27,6 +28,8 @@ use public_catalog::{
     DiscoveryHomeResponse, GamesQuery, PublicGameAnalysis, PublicGameDetail, PublicGamesPage,
     ServiceErrorEnvelope,
 };
+pub use restart::RestartCoordinator;
+use restart::{RestartRequest, RestartResponse};
 use setup::{SetupAccess, SetupCompleteRequest, SetupCompleteResponse, SetupStatusResponse};
 use sqlx_postgres::PgPool;
 use utoipa::OpenApi;
@@ -77,6 +80,7 @@ pub struct AppState {
     admin_auth: Option<AdminAuthConfig>,
     setup_access: Option<SetupAccess>,
     config_file_manager: Option<ConfigFileManager>,
+    restart: RestartCoordinator,
 }
 
 impl AppState {
@@ -88,6 +92,7 @@ impl AppState {
             admin_auth: None,
             setup_access: None,
             config_file_manager: None,
+            restart: RestartCoordinator::process_exit(),
         }
     }
 
@@ -103,6 +108,7 @@ impl AppState {
             admin_auth: None,
             setup_access: None,
             config_file_manager: None,
+            restart: RestartCoordinator::process_exit(),
         }
     }
 
@@ -118,6 +124,7 @@ impl AppState {
             admin_auth: Some(admin_auth),
             setup_access: None,
             config_file_manager: None,
+            restart: RestartCoordinator::process_exit(),
         }
     }
 
@@ -133,6 +140,11 @@ impl AppState {
 
     pub fn with_config_manager(mut self, config_file_manager: ConfigFileManager) -> Self {
         self.config_file_manager = Some(config_file_manager);
+        self
+    }
+
+    pub fn with_restart_coordinator(mut self, restart: RestartCoordinator) -> Self {
+        self.restart = restart;
         self
     }
 
@@ -158,6 +170,7 @@ impl AppState {
             admin_auth: None,
             setup_access: None,
             config_file_manager: None,
+            restart: RestartCoordinator::process_exit(),
         }
     }
 }
@@ -227,6 +240,7 @@ pub fn build_router_with_state(state: AppState) -> Router {
             "/api/v1/admin/config/pending/service-identity",
             post(admin_pending_service_identity),
         )
+        .route("/api/v1/admin/restart", post(admin_restart))
         .route("/api/v1/setup/status", get(setup_status))
         .route("/api/v1/setup/complete", post(setup_complete))
         .route("/openapi.json", get(openapi_json))
@@ -603,6 +617,69 @@ async fn admin_pending_service_identity(
 }
 
 #[utoipa::path(
+    post,
+    path = "/api/v1/admin/restart",
+    tag = "admin",
+    request_body = RestartRequest,
+    responses(
+        (status = 202, description = "Managed restart scheduled through service self-exit", body = RestartResponse),
+        (status = 400, description = "Restart confirmation required", body = ServiceErrorEnvelope),
+        (status = 401, description = "Admin session required", body = ServiceErrorEnvelope),
+        (status = 409, description = "Pending config required", body = ServiceErrorEnvelope),
+        (status = 503, description = "Config manager unavailable", body = ServiceErrorEnvelope)
+    )
+)]
+async fn admin_restart(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<RestartRequest>,
+) -> Response {
+    if !admin_session_is_valid(&state, &headers) {
+        return admin_session_required_response();
+    }
+
+    if !request.confirm {
+        return service_error_response(
+            StatusCode::BAD_REQUEST,
+            "restart_confirmation_required",
+            "需要确认后才能重启服务。",
+        );
+    }
+
+    let Some(config_file_manager) = state.config_file_manager.as_ref() else {
+        return service_error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "config_manager_unavailable",
+            "配置管理器不可用。",
+        );
+    };
+
+    match config_file_manager.validate_pending_service_config() {
+        Ok(true) => {
+            state.restart.request_restart();
+            (
+                StatusCode::ACCEPTED,
+                Json(RestartResponse {
+                    restart_scheduled: true,
+                    mode: "self_exit".to_string(),
+                }),
+            )
+                .into_response()
+        }
+        Ok(false) => service_error_response(
+            StatusCode::CONFLICT,
+            "pending_config_required",
+            "没有待生效配置可用于重启。",
+        ),
+        Err(_) => service_error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "pending_config_invalid",
+            "待生效配置校验失败。",
+        ),
+    }
+}
+
+#[utoipa::path(
     get,
     path = "/api/v1/setup/status",
     tag = "setup",
@@ -720,7 +797,9 @@ impl DatabaseHealth {
             .map(|(limit, offset)| format!(":limit={limit}:offset={offset}"))
             .unwrap_or_default();
 
-        Ok(format!("\"public-catalog:{endpoint}:rev={revision}{pagination_key}\""))
+        Ok(format!(
+            "\"public-catalog:{endpoint}:rev={revision}{pagination_key}\""
+        ))
     }
 
     async fn discovery_home(&self) -> Result<DiscoveryHomeResponse, sqlx_core::error::Error> {
@@ -784,9 +863,9 @@ impl DatabaseHealth {
         match self {
             Self::Pool(pool) => db::public_game_detail(pool, appid).await,
             Self::HealthyForTest => Ok(None),
-            Self::PublicCatalogFixture { detail, .. } => Ok(detail
-                .clone()
-                .filter(|detail| detail.game.appid == appid)),
+            Self::PublicCatalogFixture { detail, .. } => {
+                Ok(detail.clone().filter(|detail| detail.game.appid == appid))
+            }
             Self::SafeMode => Err(sqlx_core::error::Error::PoolClosed),
             Self::Unavailable => Err(sqlx_core::error::Error::PoolClosed),
         }
@@ -871,7 +950,12 @@ fn request_matches_etag(headers: &HeaderMap, etag: &str) -> bool {
     headers
         .get(header::IF_NONE_MATCH)
         .and_then(|value| value.to_str().ok())
-        .map(|value| value.split(',').map(str::trim).any(|candidate| candidate == etag))
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .any(|candidate| candidate == etag)
+        })
         .unwrap_or(false)
 }
 
@@ -910,6 +994,7 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         admin_diagnostics,
         admin_config_state,
         admin_pending_service_identity,
+        admin_restart,
         setup_status,
         setup_complete,
         healthz
@@ -922,6 +1007,8 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         config_files::ConfigStateResponse,
         config_files::PendingConfigResponse,
         config_files::PendingServiceIdentityRequest,
+        restart::RestartRequest,
+        restart::RestartResponse,
         setup::SetupCompleteRequest,
         setup::SetupCompleteResponse,
         setup::SetupStatusResponse,

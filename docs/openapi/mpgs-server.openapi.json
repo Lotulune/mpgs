@@ -159,6 +159,76 @@
         }
       }
     },
+    "/api/v1/admin/restart": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "admin_restart",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RestartRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Managed restart scheduled through service self-exit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RestartResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Restart confirmation required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Admin session required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Pending config required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config manager unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/admin/session": {
       "post": {
         "tags": [
@@ -867,6 +937,32 @@
           },
           "page": {
             "$ref": "#/components/schemas/PageMeta"
+          }
+        }
+      },
+      "RestartRequest": {
+        "type": "object",
+        "required": [
+          "confirm"
+        ],
+        "properties": {
+          "confirm": {
+            "type": "boolean"
+          }
+        }
+      },
+      "RestartResponse": {
+        "type": "object",
+        "required": [
+          "restartScheduled",
+          "mode"
+        ],
+        "properties": {
+          "mode": {
+            "type": "string"
+          },
+          "restartScheduled": {
+            "type": "boolean"
           }
         }
       },

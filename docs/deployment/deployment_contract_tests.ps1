@@ -61,6 +61,12 @@ if ($deploymentDoc -notmatch 'deploy/config/pending' -or $deploymentDoc -notmatc
 if ($deploymentDoc -notmatch 'validates pending service configuration before promoting it to active') {
     throw "deployment docs must describe startup pending config validation and promotion."
 }
+if ($deploymentDoc -notmatch '/api/v1/admin/restart' -or $deploymentDoc -notmatch 'restart: unless-stopped') {
+    throw "deployment docs must describe the managed restart API and Compose restart policy."
+}
+if ($deploymentDoc -notmatch 'does not use the Docker socket' -or $deploymentDoc -notmatch 'restart-helper' -or $deploymentDoc -notmatch 'host commands') {
+    throw "deployment docs must forbid Docker socket, restart-helper, and host command restart control."
+}
 if ($deploymentDoc -notmatch 'must not clear Steam, LLM, R2, or admin credentials') {
     throw "deployment docs must document pending secret inheritance boundaries."
 }
