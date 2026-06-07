@@ -52,6 +52,10 @@ export function buildServiceInfoUrl(baseUrl: string): string {
   return `${normalizeServiceBaseUrl(baseUrl)}/api/v1/service-info`;
 }
 
+export function buildDiscoveryHomeUrl(baseUrl: string): string {
+  return `${normalizeServiceBaseUrl(baseUrl)}/api/v1/discovery-home`;
+}
+
 export function evaluateServiceAddressPolicy(
   baseUrl: string,
   options: ServiceAddressPolicyOptions = {},
@@ -139,6 +143,7 @@ export async function validateServiceAddress(
   }
 
   const serviceInfoUrl = buildServiceInfoUrl(policy.normalizedBaseUrl);
+  const publicReadProbeUrl = buildDiscoveryHomeUrl(policy.normalizedBaseUrl);
   try {
     const response = await fetcher(serviceInfoUrl, { method: "GET" });
     if (!response.ok) {
@@ -172,11 +177,24 @@ export async function validateServiceAddress(
       };
     }
 
+    const publicReadProbe = await fetcher(publicReadProbeUrl, { method: "GET" });
+    if (!publicReadProbe.ok) {
+      return {
+        success: false,
+        message: `匿名公共读取验证失败：HTTP ${publicReadProbe.status}。`,
+        baseUrl: policy.normalizedBaseUrl,
+        serviceInfoUrl,
+        publicReadProbeUrl,
+        info: payload,
+      };
+    }
+
     return {
       success: true,
       message: "服务地址验证通过。",
       baseUrl: policy.normalizedBaseUrl,
       serviceInfoUrl,
+      publicReadProbeUrl,
       info: payload,
     };
   } catch (error) {

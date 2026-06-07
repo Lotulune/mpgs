@@ -99,6 +99,7 @@ export type ServiceAddressValidationResult =
       message: string;
       baseUrl: string;
       serviceInfoUrl: string;
+      publicReadProbeUrl: string;
       info: ServiceInfo;
     }
   | {
@@ -106,6 +107,7 @@ export type ServiceAddressValidationResult =
       message: string;
       baseUrl?: string;
       serviceInfoUrl?: string;
+      publicReadProbeUrl?: string;
       info?: ServiceInfo;
       diagnostic?: string;
     };

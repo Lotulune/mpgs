@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildDiscoveryHomeUrl,
   buildServiceInfoUrl,
   evaluateServiceAddressPolicy,
   evaluateServiceInfoCompatibility,
@@ -24,6 +25,9 @@ describe("service connection validation model", () => {
     );
     expect(buildServiceInfoUrl("https://mpgs.example.test/")).toBe(
       "https://mpgs.example.test/api/v1/service-info",
+    );
+    expect(buildDiscoveryHomeUrl("https://mpgs.example.test/")).toBe(
+      "https://mpgs.example.test/api/v1/discovery-home",
     );
   });
 
@@ -77,12 +81,20 @@ describe("service connection validation model", () => {
     });
   });
 
-  it("fetches service-info and returns a validation result", async () => {
+  it("fetches service-info and an anonymous public read endpoint before succeeding", async () => {
     const seenUrls: string[] = [];
     const result = await validateServiceAddress(
       "https://mpgs.example.test/",
       async (url) => {
         seenUrls.push(url);
+        if (url.endsWith("/api/v1/discovery-home")) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ status: "empty", totalGames: 0, sections: {} }),
+          };
+        }
+
         return {
           ok: true,
           status: 200,
@@ -91,11 +103,43 @@ describe("service connection validation model", () => {
       },
     );
 
-    expect(seenUrls).toEqual(["https://mpgs.example.test/api/v1/service-info"]);
+    expect(seenUrls).toEqual([
+      "https://mpgs.example.test/api/v1/service-info",
+      "https://mpgs.example.test/api/v1/discovery-home",
+    ]);
     expect(result).toMatchObject({
       success: true,
       message: "服务地址验证通过。",
       baseUrl: "https://mpgs.example.test",
+    });
+  });
+
+  it("rejects a service when the anonymous public read probe fails", async () => {
+    const result = await validateServiceAddress(
+      "https://mpgs.example.test/",
+      async (url) => {
+        if (url.endsWith("/api/v1/discovery-home")) {
+          return {
+            ok: false,
+            status: 503,
+            json: async () => ({}),
+          };
+        }
+
+        return {
+          ok: true,
+          status: 200,
+          json: async () => compatibleInfo,
+        };
+      },
+    );
+
+    expect(result).toMatchObject({
+      success: false,
+      message: "匿名公共读取验证失败：HTTP 503。",
+      baseUrl: "https://mpgs.example.test",
+      serviceInfoUrl: "https://mpgs.example.test/api/v1/service-info",
+      publicReadProbeUrl: "https://mpgs.example.test/api/v1/discovery-home",
     });
   });
 });
