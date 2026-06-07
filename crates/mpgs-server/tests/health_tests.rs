@@ -1,6 +1,8 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use mpgs_server::{build_router_with_state, AppState, DatabaseHealth, ServiceInfoConfig};
+use mpgs_server::{
+    build_router_with_state, AppState, ConfigHealth, DatabaseHealth, ServiceInfoConfig,
+};
 use serde_json::json;
 use tower::ServiceExt;
 
@@ -64,4 +66,37 @@ async fn healthz_returns_unavailable_without_leaking_dependency_details() {
     assert_eq!(value, json!({ "status": "unavailable" }));
     assert!(value.get("databaseUrl").is_none());
     assert!(value.get("details").is_none());
+}
+
+#[tokio::test]
+async fn healthz_returns_unavailable_when_active_config_files_are_not_readable() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let app = build_router_with_state(AppState::new_with_config_health(
+        test_config().service_info(),
+        DatabaseHealth::HealthyForTest,
+        ConfigHealth::ActiveFiles {
+            service_path: temp_dir.path().join("active/service.toml"),
+            secrets_path: temp_dir.path().join("active/secrets.toml"),
+        },
+    ));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/healthz")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(value, json!({ "status": "unavailable" }));
+    assert!(value.get("servicePath").is_none());
+    assert!(value.get("secretsPath").is_none());
 }

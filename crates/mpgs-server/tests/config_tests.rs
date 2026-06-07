@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use mpgs_server::{ConfigError, ServerConfig};
@@ -8,6 +9,50 @@ fn env(values: &[(&str, &str)]) -> HashMap<String, String> {
         .iter()
         .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
         .collect()
+}
+
+#[test]
+fn server_config_loads_active_toml_files_from_config_dir() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let active_dir = temp_dir.path().join("active");
+    fs::create_dir(&active_dir).unwrap();
+    fs::write(
+        active_dir.join("service.toml"),
+        r#"
+bind_addr = "0.0.0.0:4310"
+
+[service_identity]
+instance_id = "018fb770-8998-7699-a6e4-b7b59f2f9c01"
+name = "MPGS TOML Service"
+version = "2.0.0"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        active_dir.join("secrets.toml"),
+        r#"
+[database]
+url = "postgres://mpgs:secret@postgres:5432/mpgs"
+"#,
+    )
+    .unwrap();
+
+    let config = ServerConfig::from_env_vars(env(&[(
+        "MPGS_CONFIG_DIR",
+        temp_dir.path().to_str().unwrap(),
+    )]))
+    .unwrap();
+
+    assert_eq!(
+        config.bind_addr,
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 4310)
+    );
+    assert_eq!(
+        config.database_url,
+        "postgres://mpgs:secret@postgres:5432/mpgs"
+    );
+    assert_eq!(config.service_info.service_name, "MPGS TOML Service");
+    assert_eq!(config.service_info.service_version, "2.0.0");
 }
 
 #[test]

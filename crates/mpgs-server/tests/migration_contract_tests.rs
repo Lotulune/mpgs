@@ -33,3 +33,15 @@ fn initial_migration_is_embedded_for_binary_startup() {
         .sql
         .contains("CREATE SCHEMA IF NOT EXISTS public_catalog"));
 }
+
+#[test]
+fn database_health_checks_the_sqlx_migration_record() {
+    let source_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("db.rs");
+    let source = fs::read_to_string(&source_path).expect("db source should exist");
+
+    assert!(source.contains("FROM _sqlx_migrations"));
+    assert!(source.contains("description = 'public_catalog_ops'"));
+    assert!(source.contains("success = TRUE"));
+}

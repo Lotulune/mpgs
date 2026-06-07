@@ -9,7 +9,7 @@ use axum::{
     routing::get,
     Json, Router,
 };
-pub use config::{ConfigError, ServerConfig};
+pub use config::{ConfigError, ConfigHealth, ServerConfig};
 use health::{HealthResponse, HealthStatus};
 use mpgs_core::models::{PublicCatalogStatus, ServiceCapability, ServiceInfo};
 use public_catalog::{
@@ -61,6 +61,7 @@ impl ServiceInfoConfig {
 pub struct AppState {
     service_info: ServiceInfo,
     database_health: DatabaseHealth,
+    config_health: ConfigHealth,
 }
 
 impl AppState {
@@ -68,6 +69,19 @@ impl AppState {
         Self {
             service_info,
             database_health,
+            config_health: ConfigHealth::HealthyForTest,
+        }
+    }
+
+    pub fn new_with_config_health(
+        service_info: ServiceInfo,
+        database_health: DatabaseHealth,
+        config_health: ConfigHealth,
+    ) -> Self {
+        Self {
+            service_info,
+            database_health,
+            config_health,
         }
     }
 }
@@ -83,10 +97,7 @@ pub enum DatabaseHealth {
 impl DatabaseHealth {
     async fn is_healthy(&self) -> bool {
         match self {
-            Self::Pool(pool) => sqlx_core::query::query("SELECT 1")
-                .execute(pool)
-                .await
-                .is_ok(),
+            Self::Pool(pool) => db::migration_health_check(pool).await.unwrap_or(false),
             Self::HealthyForTest => true,
             Self::Unavailable => false,
         }
@@ -230,7 +241,7 @@ async fn game_analysis(State(state): State<AppState>, Path(appid): Path<u32>) ->
     )
 )]
 async fn healthz(State(state): State<AppState>) -> (axum::http::StatusCode, Json<HealthResponse>) {
-    if state.database_health.is_healthy().await {
+    if state.database_health.is_healthy().await && state.config_health.is_healthy() {
         (
             axum::http::StatusCode::OK,
             Json(HealthResponse::new(HealthStatus::Ok)),

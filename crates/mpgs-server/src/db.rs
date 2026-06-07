@@ -58,6 +58,22 @@ pub async fn public_catalog_status(
     }
 }
 
+pub async fn migration_health_check(pool: &PgPool) -> Result<bool, sqlx_core::error::Error> {
+    sqlx_core::query_scalar::query_scalar::<Postgres, bool>(
+        r#"
+        SELECT EXISTS (
+            SELECT 1
+            FROM _sqlx_migrations
+            WHERE version = 1
+              AND description = 'public_catalog_ops'
+              AND success = TRUE
+        )
+        "#,
+    )
+    .fetch_one(pool)
+    .await
+}
+
 pub async fn discovery_home(
     pool: &PgPool,
 ) -> Result<DiscoveryHomeResponse, sqlx_core::error::Error> {
