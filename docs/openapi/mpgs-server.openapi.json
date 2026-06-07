@@ -36,6 +36,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorEnvelope"
+                }
+              }
+            }
+          },
           "503": {
             "description": "Config manager unavailable",
             "content": {
@@ -86,6 +96,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorEnvelope"
+                }
+              }
+            }
+          },
           "503": {
             "description": "Config manager unavailable",
             "content": {
@@ -125,6 +145,16 @@
                 }
               }
             }
+          },
+          "429": {
+            "description": "Request rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorEnvelope"
+                }
+              }
+            }
           }
         }
       }
@@ -148,6 +178,16 @@
           },
           "401": {
             "description": "Admin session required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorEnvelope"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limited",
             "content": {
               "application/json": {
                 "schema": {
@@ -216,6 +256,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorEnvelope"
+                }
+              }
+            }
+          },
           "503": {
             "description": "Config manager unavailable",
             "content": {
@@ -265,6 +315,16 @@
                 }
               }
             }
+          },
+          "429": {
+            "description": "Request rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorEnvelope"
+                }
+              }
+            }
           }
         }
       }
@@ -302,6 +362,16 @@
           },
           "304": {
             "description": "Public catalog discovery home has not changed"
+          },
+          "429": {
+            "description": "Request rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorEnvelope"
+                }
+              }
+            }
           },
           "503": {
             "description": "Public catalog unavailable",
@@ -376,6 +446,16 @@
           "304": {
             "description": "Paginated public games have not changed"
           },
+          "429": {
+            "description": "Request rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorEnvelope"
+                }
+              }
+            }
+          },
           "503": {
             "description": "Public catalog unavailable",
             "content": {
@@ -444,6 +524,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorEnvelope"
+                }
+              }
+            }
+          },
           "503": {
             "description": "Public catalog unavailable",
             "content": {
@@ -504,6 +594,16 @@
           },
           "404": {
             "description": "Public game analysis not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorEnvelope"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limited",
             "content": {
               "application/json": {
                 "schema": {
@@ -592,6 +692,16 @@
               }
             }
           },
+          "429": {
+            "description": "Request rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorEnvelope"
+                }
+              }
+            }
+          },
           "503": {
             "description": "Setup is unavailable",
             "content": {
@@ -618,6 +728,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SetupStatusResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorEnvelope"
                 }
               }
             }

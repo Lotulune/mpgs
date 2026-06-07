@@ -1,9 +1,10 @@
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
-use mpgs_server::public_catalog::{
-    PublicGameAnalysis, PublicGameDetail, PublicGameListItem,
+use mpgs_server::public_catalog::{PublicGameAnalysis, PublicGameDetail, PublicGameListItem};
+use mpgs_server::{
+    build_router_with_state, AppState, DatabaseHealth, RateLimitConfig, RateLimiters,
+    ServiceInfoConfig,
 };
-use mpgs_server::{build_router_with_state, AppState, DatabaseHealth, ServiceInfoConfig};
 use serde_json::json;
 use tower::ServiceExt;
 
@@ -51,6 +52,13 @@ fn public_unavailable_app() -> axum::Router {
         test_config().service_info(),
         DatabaseHealth::Unavailable,
     ))
+}
+
+fn rate_limited_public_app() -> axum::Router {
+    build_router_with_state(
+        AppState::new(test_config().service_info(), DatabaseHealth::HealthyForTest)
+            .with_rate_limits(RateLimiters::new(RateLimitConfig::for_tests(1))),
+    )
 }
 
 async fn get_json(uri: &str) -> (StatusCode, serde_json::Value) {
@@ -251,4 +259,19 @@ async fn game_analysis_supports_etag_and_conditional_reads_for_public_analysis()
         .await
         .unwrap();
     assert!(body.is_empty());
+}
+
+#[tokio::test]
+async fn public_read_routes_are_rate_limited() {
+    let app = rate_limited_public_app();
+    let first_response = get_response_from(app.clone(), "/api/v1/discovery-home").await;
+    let second_response = get_response_from(app, "/api/v1/discovery-home").await;
+
+    assert_eq!(first_response.status(), StatusCode::OK);
+    assert_eq!(second_response.status(), StatusCode::TOO_MANY_REQUESTS);
+    let body = axum::body::to_bytes(second_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(value["error"]["code"], "rate_limited");
 }

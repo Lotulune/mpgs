@@ -1,8 +1,8 @@
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
 use mpgs_server::{
-    admin::hash_token, build_router_with_state, AppState, DatabaseHealth, ServerConfig,
-    ServiceInfoConfig,
+    admin::hash_token, build_router_with_state, AppState, DatabaseHealth, RateLimitConfig,
+    RateLimiters, ServerConfig, ServiceInfoConfig,
 };
 use serde_json::json;
 use std::path::Path;
@@ -20,6 +20,14 @@ fn setup_app(config_dir: &Path) -> axum::Router {
     build_router_with_state(
         AppState::new(test_config().service_info(), DatabaseHealth::HealthyForTest)
             .with_setup_access(config_dir, "correct-setup-token"),
+    )
+}
+
+fn rate_limited_setup_app(config_dir: &Path) -> axum::Router {
+    build_router_with_state(
+        AppState::new(test_config().service_info(), DatabaseHealth::HealthyForTest)
+            .with_setup_access(config_dir, "correct-setup-token")
+            .with_rate_limits(RateLimiters::new(RateLimitConfig::for_tests(1))),
     )
 }
 
@@ -198,4 +206,19 @@ async fn setup_status_reports_configured_after_active_files_exist() {
         request_json(app, Method::GET, "/api/v1/setup/status", json!({})).await;
     assert_eq!(final_status, StatusCode::OK);
     assert_eq!(final_value["configured"], true);
+}
+
+#[tokio::test]
+async fn setup_routes_are_rate_limited() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let app = rate_limited_setup_app(temp_dir.path());
+
+    let (first_status, _first_value, _) =
+        request_json(app.clone(), Method::GET, "/api/v1/setup/status", json!({})).await;
+    let (second_status, second_value, _) =
+        request_json(app, Method::GET, "/api/v1/setup/status", json!({})).await;
+
+    assert_eq!(first_status, StatusCode::OK);
+    assert_eq!(second_status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(second_value["error"]["code"], "rate_limited");
 }

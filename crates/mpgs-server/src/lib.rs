@@ -4,6 +4,7 @@ pub mod config_files;
 pub mod db;
 pub mod health;
 pub mod public_catalog;
+pub mod rate_limit;
 pub mod restart;
 pub mod setup;
 
@@ -28,6 +29,8 @@ use public_catalog::{
     DiscoveryHomeResponse, GamesQuery, PublicGameAnalysis, PublicGameDetail, PublicGamesPage,
     ServiceErrorEnvelope,
 };
+use rate_limit::RateLimitBucket;
+pub use rate_limit::{RateLimitConfig, RateLimiters};
 pub use restart::RestartCoordinator;
 use restart::{RestartRequest, RestartResponse};
 use setup::{SetupAccess, SetupCompleteRequest, SetupCompleteResponse, SetupStatusResponse};
@@ -83,6 +86,7 @@ pub struct AppState {
     config_file_manager: Option<ConfigFileManager>,
     restart: RestartCoordinator,
     audit: AuditSink,
+    rate_limits: RateLimiters,
 }
 
 impl AppState {
@@ -96,6 +100,7 @@ impl AppState {
             config_file_manager: None,
             restart: RestartCoordinator::process_exit(),
             audit: AuditSink::Noop,
+            rate_limits: RateLimiters::default(),
         }
     }
 
@@ -113,6 +118,7 @@ impl AppState {
             config_file_manager: None,
             restart: RestartCoordinator::process_exit(),
             audit: AuditSink::Noop,
+            rate_limits: RateLimiters::default(),
         }
     }
 
@@ -130,6 +136,7 @@ impl AppState {
             config_file_manager: None,
             restart: RestartCoordinator::process_exit(),
             audit: AuditSink::Noop,
+            rate_limits: RateLimiters::default(),
         }
     }
 
@@ -158,6 +165,11 @@ impl AppState {
         self
     }
 
+    pub fn with_rate_limits(mut self, rate_limits: RateLimiters) -> Self {
+        self.rate_limits = rate_limits;
+        self
+    }
+
     pub fn with_setup_access(
         mut self,
         config_dir: impl Into<std::path::PathBuf>,
@@ -182,6 +194,7 @@ impl AppState {
             config_file_manager: None,
             restart: RestartCoordinator::process_exit(),
             audit: AuditSink::Noop,
+            rate_limits: RateLimiters::default(),
         }
     }
 }
@@ -329,10 +342,15 @@ async fn service_info(State(state): State<AppState>) -> Json<ServiceInfo> {
     responses(
         (status = 200, description = "Public catalog discovery home summary", body = DiscoveryHomeResponse),
         (status = 304, description = "Public catalog discovery home has not changed"),
+        (status = 429, description = "Request rate limited", body = ServiceErrorEnvelope),
         (status = 503, description = "Public catalog unavailable", body = ServiceErrorEnvelope)
     )
 )]
 async fn discovery_home(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if !state.rate_limits.allow(RateLimitBucket::PublicRead) {
+        return rate_limited_response();
+    }
+
     let etag = match state
         .database_health
         .public_catalog_list_etag("discovery-home", None)
@@ -374,6 +392,7 @@ async fn discovery_home(State(state): State<AppState>, headers: HeaderMap) -> Re
     responses(
         (status = 200, description = "Paginated public games", body = PublicGamesPage),
         (status = 304, description = "Paginated public games have not changed"),
+        (status = 429, description = "Request rate limited", body = ServiceErrorEnvelope),
         (status = 503, description = "Public catalog unavailable", body = ServiceErrorEnvelope)
     )
 )]
@@ -382,6 +401,10 @@ async fn games(
     headers: HeaderMap,
     Query(query): Query<GamesQuery>,
 ) -> Response {
+    if !state.rate_limits.allow(RateLimitBucket::PublicRead) {
+        return rate_limited_response();
+    }
+
     let (limit, offset) = query.normalized();
     let etag = match state
         .database_health
@@ -428,6 +451,7 @@ async fn games(
         (status = 200, description = "Public game detail", body = PublicGameDetail),
         (status = 304, description = "Public game detail has not changed"),
         (status = 404, description = "Public game not found", body = ServiceErrorEnvelope),
+        (status = 429, description = "Request rate limited", body = ServiceErrorEnvelope),
         (status = 503, description = "Public catalog unavailable", body = ServiceErrorEnvelope)
     )
 )]
@@ -436,6 +460,10 @@ async fn game_detail(
     headers: HeaderMap,
     Path(appid): Path<u32>,
 ) -> Response {
+    if !state.rate_limits.allow(RateLimitBucket::PublicRead) {
+        return rate_limited_response();
+    }
+
     match state.database_health.public_game_detail(appid).await {
         Ok(Some(payload)) => {
             let etag = public_game_detail_etag(&payload);
@@ -470,6 +498,7 @@ async fn game_detail(
         (status = 200, description = "Public game analysis", body = PublicGameAnalysis),
         (status = 304, description = "Public game analysis has not changed"),
         (status = 404, description = "Public game analysis not found", body = ServiceErrorEnvelope),
+        (status = 429, description = "Request rate limited", body = ServiceErrorEnvelope),
         (status = 503, description = "Public catalog unavailable", body = ServiceErrorEnvelope)
     )
 )]
@@ -478,6 +507,10 @@ async fn game_analysis(
     headers: HeaderMap,
     Path(appid): Path<u32>,
 ) -> Response {
+    if !state.rate_limits.allow(RateLimitBucket::PublicRead) {
+        return rate_limited_response();
+    }
+
     match state.database_health.public_game_analysis(appid).await {
         Ok(Some(payload)) => {
             let etag = public_game_analysis_etag(&payload);
@@ -507,6 +540,7 @@ async fn game_analysis(
     request_body = AdminSessionRequest,
     responses(
         (status = 200, description = "Admin session established", body = AdminSessionResponse),
+        (status = 429, description = "Request rate limited", body = ServiceErrorEnvelope),
         (status = 401, description = "Invalid admin token", body = ServiceErrorEnvelope)
     )
 )]
@@ -514,6 +548,10 @@ async fn admin_session(
     State(state): State<AppState>,
     Json(request): Json<AdminSessionRequest>,
 ) -> Response {
+    if !state.rate_limits.allow(RateLimitBucket::Admin) {
+        return rate_limited_response();
+    }
+
     let Some(admin_auth) = state.admin_auth.as_ref() else {
         return service_error_response(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -554,10 +592,15 @@ async fn admin_session(
     tag = "admin",
     responses(
         (status = 200, description = "Admin overview", body = AdminOverviewResponse),
+        (status = 429, description = "Request rate limited", body = ServiceErrorEnvelope),
         (status = 401, description = "Admin session required", body = ServiceErrorEnvelope)
     )
 )]
 async fn admin_overview(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if !state.rate_limits.allow(RateLimitBucket::Admin) {
+        return rate_limited_response();
+    }
+
     if !admin_session_is_valid(&state, &headers) {
         return admin_session_required_response();
     }
@@ -575,10 +618,15 @@ async fn admin_overview(State(state): State<AppState>, headers: HeaderMap) -> Re
     tag = "admin",
     responses(
         (status = 200, description = "Admin diagnostics", body = AdminDiagnosticsResponse),
+        (status = 429, description = "Request rate limited", body = ServiceErrorEnvelope),
         (status = 401, description = "Admin session required", body = ServiceErrorEnvelope)
     )
 )]
 async fn admin_diagnostics(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if !state.rate_limits.allow(RateLimitBucket::Admin) {
+        return rate_limited_response();
+    }
+
     if !admin_session_is_valid(&state, &headers) {
         return admin_session_required_response();
     }
@@ -606,10 +654,15 @@ async fn admin_diagnostics(State(state): State<AppState>, headers: HeaderMap) ->
     responses(
         (status = 200, description = "Server configuration state", body = ConfigStateResponse),
         (status = 401, description = "Admin session required", body = ServiceErrorEnvelope),
+        (status = 429, description = "Request rate limited", body = ServiceErrorEnvelope),
         (status = 503, description = "Config manager unavailable", body = ServiceErrorEnvelope)
     )
 )]
 async fn admin_config_state(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if !state.rate_limits.allow(RateLimitBucket::Admin) {
+        return rate_limited_response();
+    }
+
     if !admin_session_is_valid(&state, &headers) {
         return admin_session_required_response();
     }
@@ -650,6 +703,7 @@ async fn admin_config_state(State(state): State<AppState>, headers: HeaderMap) -
     responses(
         (status = 200, description = "Pending service identity configuration", body = PendingConfigResponse),
         (status = 401, description = "Admin session required", body = ServiceErrorEnvelope),
+        (status = 429, description = "Request rate limited", body = ServiceErrorEnvelope),
         (status = 503, description = "Config manager unavailable", body = ServiceErrorEnvelope)
     )
 )]
@@ -658,6 +712,10 @@ async fn admin_pending_service_identity(
     headers: HeaderMap,
     Json(request): Json<PendingServiceIdentityRequest>,
 ) -> Response {
+    if !state.rate_limits.allow(RateLimitBucket::Admin) {
+        return rate_limited_response();
+    }
+
     if !admin_session_is_valid(&state, &headers) {
         return admin_session_required_response();
     }
@@ -700,6 +758,7 @@ async fn admin_pending_service_identity(
         (status = 400, description = "Restart confirmation required", body = ServiceErrorEnvelope),
         (status = 401, description = "Admin session required", body = ServiceErrorEnvelope),
         (status = 409, description = "Pending config required", body = ServiceErrorEnvelope),
+        (status = 429, description = "Request rate limited", body = ServiceErrorEnvelope),
         (status = 503, description = "Config manager unavailable", body = ServiceErrorEnvelope)
     )
 )]
@@ -708,6 +767,10 @@ async fn admin_restart(
     headers: HeaderMap,
     Json(request): Json<RestartRequest>,
 ) -> Response {
+    if !state.rate_limits.allow(RateLimitBucket::Restart) {
+        return rate_limited_response();
+    }
+
     if !admin_session_is_valid(&state, &headers) {
         return admin_session_required_response();
     }
@@ -762,10 +825,15 @@ async fn admin_restart(
     path = "/api/v1/setup/status",
     tag = "setup",
     responses(
-        (status = 200, description = "First-run setup status", body = SetupStatusResponse)
+        (status = 200, description = "First-run setup status", body = SetupStatusResponse),
+        (status = 429, description = "Request rate limited", body = ServiceErrorEnvelope)
     )
 )]
 async fn setup_status(State(state): State<AppState>) -> Response {
+    if !state.rate_limits.allow(RateLimitBucket::Setup) {
+        return rate_limited_response();
+    }
+
     Json(SetupStatusResponse {
         configured: state
             .setup_access
@@ -785,6 +853,7 @@ async fn setup_status(State(state): State<AppState>) -> Response {
         (status = 200, description = "First-run setup wrote active configuration", body = SetupCompleteResponse),
         (status = 401, description = "Invalid setup token", body = ServiceErrorEnvelope),
         (status = 409, description = "Setup is already configured", body = ServiceErrorEnvelope),
+        (status = 429, description = "Request rate limited", body = ServiceErrorEnvelope),
         (status = 503, description = "Setup is unavailable", body = ServiceErrorEnvelope)
     )
 )]
@@ -792,6 +861,10 @@ async fn setup_complete(
     State(state): State<AppState>,
     Json(request): Json<SetupCompleteRequest>,
 ) -> Response {
+    if !state.rate_limits.allow(RateLimitBucket::Setup) {
+        return rate_limited_response();
+    }
+
     let Some(setup_access) = state.setup_access.as_ref() else {
         return service_error_response(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -1000,6 +1073,14 @@ fn admin_session_required_response() -> Response {
         StatusCode::UNAUTHORIZED,
         "admin_session_required",
         "需要管理员会话。",
+    )
+}
+
+fn rate_limited_response() -> Response {
+    service_error_response(
+        StatusCode::TOO_MANY_REQUESTS,
+        "rate_limited",
+        "请求过于频繁，请稍后再试。",
     )
 }
 

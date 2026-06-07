@@ -1,8 +1,8 @@
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
 use mpgs_server::{
-    build_router_with_state, AdminAuthConfig, AppState, AuditSink, DatabaseHealth,
-    ServiceInfoConfig,
+    build_router_with_state, AdminAuthConfig, AppState, AuditSink, DatabaseHealth, RateLimitConfig,
+    RateLimiters, ServiceInfoConfig,
 };
 use serde_json::json;
 use tower::ServiceExt;
@@ -176,4 +176,38 @@ async fn admin_session_cookie_allows_overview_and_diagnostics() {
     assert_eq!(diagnostics_status, StatusCode::OK);
     assert_eq!(diagnostics["postgres"], "ok");
     assert!(diagnostics.get("adminToken").is_none());
+}
+
+#[tokio::test]
+async fn admin_routes_are_rate_limited() {
+    let app = build_router_with_state(
+        admin_state().with_rate_limits(RateLimiters::new(RateLimitConfig::for_tests(1))),
+    );
+
+    let first_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/admin/session")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({ "token": "wrong-token" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let second_response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/admin/session")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({ "token": "wrong-token" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(first_response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(second_response.status(), StatusCode::TOO_MANY_REQUESTS);
 }

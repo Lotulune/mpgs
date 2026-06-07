@@ -1,8 +1,8 @@
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
 use mpgs_server::{
-    build_router_with_state, AdminAuthConfig, AppState, AuditSink, DatabaseHealth,
-    RestartCoordinator, ServiceInfoConfig,
+    build_router_with_state, AdminAuthConfig, AppState, AuditSink, DatabaseHealth, RateLimitConfig,
+    RateLimiters, RestartCoordinator, ServiceInfoConfig,
 };
 use serde_json::json;
 use std::fs;
@@ -81,6 +81,25 @@ fn restart_app_with_audit(
         .with_config_file_manager(config_dir)
         .with_restart_coordinator(restart)
         .with_audit_sink(audit),
+    )
+}
+
+fn rate_limited_restart_app(config_dir: &Path, restart: RestartCoordinator) -> axum::Router {
+    let rate_limits = RateLimitConfig {
+        restart_limit: 1,
+        admin_limit: 10,
+        ..RateLimitConfig::for_tests(10)
+    };
+
+    build_router_with_state(
+        AppState::new_with_admin_auth(
+            test_config().service_info(),
+            DatabaseHealth::HealthyForTest,
+            AdminAuthConfig::for_test_token("correct-admin-token"),
+        )
+        .with_config_file_manager(config_dir)
+        .with_restart_coordinator(restart)
+        .with_rate_limits(RateLimiters::new(rate_limits)),
     )
 }
 
@@ -250,4 +269,37 @@ async fn restart_records_audit_event_when_scheduled() {
     assert!(records.iter().any(|record| {
         record.event_type == "admin.restart.requested" && record.outcome == "success"
     }));
+}
+
+#[tokio::test]
+async fn restart_route_is_rate_limited() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    write_active_config(temp_dir.path());
+    write_pending_service_config(temp_dir.path());
+    let restart = RestartCoordinator::for_test();
+    let app = rate_limited_restart_app(temp_dir.path(), restart.clone());
+    let cookie = admin_cookie(app.clone()).await;
+
+    let (first_status, first_value, _headers) = request_json(
+        app.clone(),
+        Method::POST,
+        "/api/v1/admin/restart",
+        json!({ "confirm": true }),
+        Some(&cookie),
+    )
+    .await;
+    let (second_status, second_value, _headers) = request_json(
+        app,
+        Method::POST,
+        "/api/v1/admin/restart",
+        json!({ "confirm": true }),
+        Some(&cookie),
+    )
+    .await;
+
+    assert_eq!(first_status, StatusCode::ACCEPTED);
+    assert_eq!(first_value["restartScheduled"], true);
+    assert_eq!(second_status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(second_value["error"]["code"], "rate_limited");
+    assert!(restart.was_requested());
 }
