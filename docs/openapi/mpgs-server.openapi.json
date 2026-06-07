@@ -1,0 +1,516 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "mpgs-server",
+    "description": "",
+    "license": {
+      "name": ""
+    },
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/api/v1/discovery-home": {
+      "get": {
+        "tags": [
+          "public"
+        ],
+        "operationId": "discovery_home",
+        "responses": {
+          "200": {
+            "description": "Public catalog discovery home summary",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiscoveryHomeResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Public catalog unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/games": {
+      "get": {
+        "tags": [
+          "public"
+        ],
+        "operationId": "games",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated public games",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicGamesPage"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Public catalog unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/games/{appid}": {
+      "get": {
+        "tags": [
+          "public"
+        ],
+        "operationId": "game_detail",
+        "parameters": [
+          {
+            "name": "appid",
+            "in": "path",
+            "description": "Steam AppID",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Public game detail",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicGameDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Public game not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Public catalog unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/games/{appid}/analysis": {
+      "get": {
+        "tags": [
+          "public"
+        ],
+        "operationId": "game_analysis",
+        "parameters": [
+          {
+            "name": "appid",
+            "in": "path",
+            "description": "Steam AppID",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Public game analysis",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicGameAnalysis"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Public game analysis not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Public catalog unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/service-info": {
+      "get": {
+        "tags": [
+          "public"
+        ],
+        "operationId": "service_info",
+        "responses": {
+          "200": {
+            "description": "Public MPGS service identity information",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceInfo"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/healthz": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "operationId": "healthz",
+        "responses": {
+          "200": {
+            "description": "Public service health check",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service dependency unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "DiscoveryHomeResponse": {
+        "type": "object",
+        "required": [
+          "status",
+          "totalGames",
+          "sections"
+        ],
+        "properties": {
+          "sections": {
+            "$ref": "#/components/schemas/DiscoveryHomeSections"
+          },
+          "status": {
+            "$ref": "#/components/schemas/PublicCatalogStatus"
+          },
+          "totalGames": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "DiscoveryHomeSections": {
+        "type": "object",
+        "required": [
+          "newlyPublished",
+          "highConfidence",
+          "recentlyAdded"
+        ],
+        "properties": {
+          "highConfidence": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PublicGameListItem"
+            }
+          },
+          "newlyPublished": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PublicGameListItem"
+            }
+          },
+          "recentlyAdded": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PublicGameListItem"
+            }
+          }
+        }
+      },
+      "HealthResponse": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "$ref": "#/components/schemas/HealthStatus"
+          }
+        }
+      },
+      "HealthStatus": {
+        "type": "string",
+        "enum": [
+          "ok",
+          "unavailable"
+        ]
+      },
+      "PageMeta": {
+        "type": "object",
+        "required": [
+          "limit",
+          "offset",
+          "total"
+        ],
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "offset": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "PublicCatalogStatus": {
+        "type": "string",
+        "enum": [
+          "empty",
+          "ready",
+          "updating",
+          "unavailable"
+        ]
+      },
+      "PublicGameAnalysis": {
+        "type": "object",
+        "required": [
+          "appid",
+          "report",
+          "generatedAt"
+        ],
+        "properties": {
+          "appid": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "generatedAt": {
+            "type": "string"
+          },
+          "report": {}
+        }
+      },
+      "PublicGameDetail": {
+        "type": "object",
+        "required": [
+          "game"
+        ],
+        "properties": {
+          "game": {
+            "$ref": "#/components/schemas/PublicGameListItem"
+          }
+        }
+      },
+      "PublicGameListItem": {
+        "type": "object",
+        "required": [
+          "appid",
+          "name",
+          "updatedAt"
+        ],
+        "properties": {
+          "appid": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string"
+          },
+          "recommendationScore": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "updatedAt": {
+            "type": "string"
+          }
+        }
+      },
+      "PublicGamesPage": {
+        "type": "object",
+        "required": [
+          "items",
+          "page"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PublicGameListItem"
+            }
+          },
+          "page": {
+            "$ref": "#/components/schemas/PageMeta"
+          }
+        }
+      },
+      "ServiceCapability": {
+        "type": "string",
+        "enum": [
+          "public_catalog_read"
+        ]
+      },
+      "ServiceErrorBody": {
+        "type": "object",
+        "required": [
+          "code",
+          "message",
+          "requestId",
+          "details"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "details": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "message": {
+            "type": "string"
+          },
+          "requestId": {
+            "type": "string"
+          }
+        }
+      },
+      "ServiceErrorEnvelope": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ServiceErrorBody"
+          }
+        }
+      },
+      "ServiceInfo": {
+        "type": "object",
+        "required": [
+          "serviceInstanceId",
+          "serviceName",
+          "serviceVersion",
+          "apiVersion",
+          "publicCatalogStatus",
+          "capabilities"
+        ],
+        "properties": {
+          "apiVersion": {
+            "type": "string"
+          },
+          "capabilities": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ServiceCapability"
+            }
+          },
+          "publicCatalogStatus": {
+            "$ref": "#/components/schemas/PublicCatalogStatus"
+          },
+          "serviceInstanceId": {
+            "type": "string"
+          },
+          "serviceName": {
+            "type": "string"
+          },
+          "serviceVersion": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,9 +1,9 @@
 use crate::models::{
-    AiAssessment, AiRecommendationRequest, AiRecommendationResponse, AnalysisPoint,
-    AnalysisSource,
+    AiAssessment, AiRecommendationRequest, AiRecommendationResponse, AnalysisSource,
     GameAnalysisReport, GameCard,
 };
 use anyhow::{Context, Result};
+pub use mpgs_core::analysis::AnalysisNarrative;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
@@ -18,15 +18,6 @@ pub struct LlmRuntimeConfig {
     pub api_key: Option<String>,
     pub base_url: String,
     pub model: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AnalysisNarrative {
-    pub overview: String,
-    pub strengths: Vec<AnalysisPoint>,
-    pub risks: Vec<AnalysisPoint>,
-    pub dimension_reasons: Vec<(String, String)>,
 }
 
 pub async fn assess_game(
@@ -95,7 +86,8 @@ pub async fn enhance_recommendation_response(
             let mut response = apply_recommendation_enhancement(local_response, enhancement);
             response.source = AnalysisSource::Hybrid;
             response.llm_used = true;
-            response.diagnostic = Some("已调用配置的 LLM，对本地候选的回复、理由和风险提示做了增强。".to_string());
+            response.diagnostic =
+                Some("已调用配置的 LLM，对本地候选的回复、理由和风险提示做了增强。".to_string());
             response
         }
         Err(error) => {

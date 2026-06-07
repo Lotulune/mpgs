@@ -1,0 +1,71 @@
+use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+use mpgs_server::{ConfigError, ServerConfig};
+
+fn env(values: &[(&str, &str)]) -> HashMap<String, String> {
+    values
+        .iter()
+        .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+        .collect()
+}
+
+#[test]
+fn server_config_loads_required_database_and_public_identity_env() {
+    let config = ServerConfig::from_env_vars(env(&[
+        ("MPGS_SERVER_BIND", "0.0.0.0:4310"),
+        (
+            "MPGS_DATABASE_URL",
+            "postgres://mpgs:secret@localhost:5432/mpgs",
+        ),
+        (
+            "MPGS_SERVICE_INSTANCE_ID",
+            "018fb770-8998-7699-a6e4-b7b59f2f9c01",
+        ),
+        ("MPGS_SERVICE_NAME", "MPGS Test Service"),
+        ("MPGS_SERVICE_VERSION", "9.8.7"),
+    ]))
+    .unwrap();
+
+    assert_eq!(
+        config.bind_addr,
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 4310)
+    );
+    assert_eq!(
+        config.database_url,
+        "postgres://mpgs:secret@localhost:5432/mpgs"
+    );
+    assert_eq!(
+        config.service_info.service_instance_id,
+        "018fb770-8998-7699-a6e4-b7b59f2f9c01"
+    );
+    assert_eq!(config.service_info.service_name, "MPGS Test Service");
+    assert_eq!(config.service_info.service_version, "9.8.7");
+}
+
+#[test]
+fn server_config_requires_database_url_with_clear_error() {
+    let error = ServerConfig::from_env_vars(env(&[("MPGS_SERVER_BIND", "127.0.0.1:4310")]))
+        .expect_err("database URL should be required for server startup");
+
+    assert!(matches!(
+        error,
+        ConfigError::MissingRequiredEnv("MPGS_DATABASE_URL")
+    ));
+    assert!(error.to_string().contains("MPGS_DATABASE_URL"));
+}
+
+#[test]
+fn server_config_rejects_invalid_bind_address() {
+    let error = ServerConfig::from_env_vars(env(&[
+        ("MPGS_SERVER_BIND", "not-a-socket"),
+        (
+            "MPGS_DATABASE_URL",
+            "postgres://mpgs:secret@localhost:5432/mpgs",
+        ),
+    ]))
+    .expect_err("invalid bind address should be rejected during config load");
+
+    assert!(matches!(error, ConfigError::InvalidBindAddr(_)));
+    assert!(error.to_string().contains("MPGS_SERVER_BIND"));
+}

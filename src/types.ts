@@ -64,6 +64,52 @@ export interface ConnectionValidationResult {
   appCount?: number | null;
 }
 
+export type PublicCatalogStatus =
+  | "empty"
+  | "ready"
+  | "updating"
+  | "unavailable";
+
+export type ServiceCapability = "public_catalog_read";
+
+export interface ServiceInfo {
+  serviceInstanceId: string;
+  serviceName: string;
+  serviceVersion: string;
+  apiVersion: string;
+  publicCatalogStatus: PublicCatalogStatus;
+  capabilities: ServiceCapability[];
+}
+
+export interface ServiceInfoCompatibilityResult {
+  compatible: boolean;
+  reason: string;
+  info: ServiceInfo;
+}
+
+export interface ServiceAddressPolicyResult {
+  allowed: boolean;
+  reason: string;
+  normalizedBaseUrl?: string;
+}
+
+export type ServiceAddressValidationResult =
+  | {
+      success: true;
+      message: string;
+      baseUrl: string;
+      serviceInfoUrl: string;
+      info: ServiceInfo;
+    }
+  | {
+      success: false;
+      message: string;
+      baseUrl?: string;
+      serviceInfoUrl?: string;
+      info?: ServiceInfo;
+      diagnostic?: string;
+    };
+
 export interface DashboardPayload {
   newGames: GameCard[];
   classics: GameCard[];

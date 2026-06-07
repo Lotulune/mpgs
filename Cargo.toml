@@ -1,0 +1,7 @@
+[workspace]
+members = [
+  "crates/mpgs-core",
+  "crates/mpgs-server",
+  "src-tauri",
+]
+resolver = "2"
