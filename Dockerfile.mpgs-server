@@ -1,0 +1,30 @@
+FROM rust:1-bookworm AS builder
+
+WORKDIR /workspace
+
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY src-tauri ./src-tauri
+
+RUN cargo build --release -p mpgs-server
+
+FROM debian:bookworm-slim AS runtime
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin mpgs
+
+COPY --from=builder /workspace/target/release/mpgs-server /usr/local/bin/mpgs-server
+
+ENV MPGS_SERVER_BIND=0.0.0.0:4310
+
+EXPOSE 4310
+
+USER mpgs
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD curl --fail --silent --show-error http://127.0.0.1:4310/healthz > /dev/null
+
+ENTRYPOINT ["/usr/local/bin/mpgs-server"]

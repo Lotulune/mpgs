@@ -299,6 +299,16 @@ npm run dev
 npm test
 ```
 
+## 公共发现服务部署
+
+服务端化后的 `mpgs-server` 使用 Rust + Axum + Postgres，部署基线在 [docs/deployment/mpgs-server-compose.md](D:/AI%20Coding/mpgs/docs/deployment/mpgs-server-compose.md)。
+
+关键约束：
+
+- 镜像必须在本地开发机或 CI 构建，再上传到服务器。
+- VPS 只执行 `docker load` 和 `docker compose up`，严禁在 VPS 上编译 Rust 或构建镜像。
+- 默认 Compose 只把服务端绑定到 `127.0.0.1:4310`，公网 HTTPS 通过可选 Caddy profile 或外部反代提供。
+
 ## 项目结构
 
 ```text

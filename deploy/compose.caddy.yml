@@ -1,0 +1,22 @@
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    profiles:
+      - caddy
+    depends_on:
+      mpgs-server:
+        condition: service_healthy
+    environment:
+      CADDY_DOMAIN: ${CADDY_DOMAIN:?CADDY_DOMAIN is required}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

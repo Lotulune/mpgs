@@ -1,0 +1,13 @@
+target/
+dist/
+node_modules/
+src-tauri/target/
+.git/
+.github/
+.ace-tool/
+.superpowers/
+.tmp-gh-artifacts-*/
+test-results/
+*.log
+*.local
+tmp_store_results.html

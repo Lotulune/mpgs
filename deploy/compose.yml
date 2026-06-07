@@ -1,0 +1,39 @@
+services:
+  postgres:
+    image: postgres:16-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-mpgs}
+      POSTGRES_USER: ${POSTGRES_USER:-mpgs}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  mpgs-server:
+    image: ${MPGS_IMAGE:-mpgs-server:local}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      MPGS_SERVER_BIND: ${MPGS_SERVER_BIND:-0.0.0.0:4310}
+      MPGS_DATABASE_URL: postgres://${POSTGRES_USER:-mpgs}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-mpgs}
+      MPGS_SERVICE_INSTANCE_ID: ${MPGS_SERVICE_INSTANCE_ID:?MPGS_SERVICE_INSTANCE_ID is required}
+      MPGS_SERVICE_NAME: ${MPGS_SERVICE_NAME:-MPGS Public Discovery Service}
+      MPGS_SERVICE_VERSION: ${MPGS_SERVICE_VERSION:-0.1.0}
+    ports:
+      - "127.0.0.1:4310:4310"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://127.0.0.1:4310/healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+volumes:
+  postgres_data:

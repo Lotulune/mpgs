@@ -1,0 +1,3 @@
+{$CADDY_DOMAIN} {
+    reverse_proxy mpgs-server:4310
+}
