@@ -28,9 +28,29 @@ cp deploy/mpgs-server.env.example deploy/.env
 Set at least:
 
 - `POSTGRES_PASSWORD`
-- `MPGS_SERVICE_INSTANCE_ID`
-- `MPGS_SERVICE_NAME`
 - `CADDY_DOMAIN` if using the Caddy profile
+
+The Compose `.env` only locates the config directory indirectly through the compose file and sets container-level values such as the Postgres container credentials. Service settings and service secrets live in active TOML files under `deploy/config`.
+
+Create the active secrets file:
+
+```bash
+cp deploy/config/active/secrets.toml.example deploy/config/active/secrets.toml
+```
+
+Edit:
+
+- `deploy/config/active/service.toml` for non-sensitive service identity and bind settings.
+- `deploy/config/active/secrets.toml` for the Postgres URL and future server-side secrets.
+
+For the default Compose network, `deploy/config/active/secrets.toml` should use:
+
+```toml
+[database]
+url = "postgres://mpgs:change-this-postgres-password@postgres:5432/mpgs"
+```
+
+Keep the database password in `deploy/.env` and `deploy/config/active/secrets.toml` in sync.
 
 Do not put Steam, LLM, R2, or admin token secrets in Postgres.
 

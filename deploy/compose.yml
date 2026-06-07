@@ -21,11 +21,9 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      MPGS_SERVER_BIND: ${MPGS_SERVER_BIND:-0.0.0.0:4310}
-      MPGS_DATABASE_URL: postgres://${POSTGRES_USER:-mpgs}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-mpgs}
-      MPGS_SERVICE_INSTANCE_ID: ${MPGS_SERVICE_INSTANCE_ID:?MPGS_SERVICE_INSTANCE_ID is required}
-      MPGS_SERVICE_NAME: ${MPGS_SERVICE_NAME:-MPGS Public Discovery Service}
-      MPGS_SERVICE_VERSION: ${MPGS_SERVICE_VERSION:-0.1.0}
+      MPGS_CONFIG_DIR: /var/lib/mpgs/config
+    volumes:
+      - ./config:/var/lib/mpgs/config:ro
     ports:
       - "127.0.0.1:4310:4310"
     healthcheck:

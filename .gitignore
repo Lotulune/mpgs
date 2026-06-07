@@ -29,3 +29,4 @@ tmp_store_results.html
 *.sw?
 .ace-tool/
 .superpowers/
+deploy/config/active/secrets.toml
