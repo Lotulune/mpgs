@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-use mpgs_server::{ConfigError, ServerConfig, StartupConfig};
+use mpgs_server::{admin::hash_token, ConfigError, ServerConfig, StartupConfig};
 
 fn env(values: &[(&str, &str)]) -> HashMap<String, String> {
     values
@@ -132,6 +132,7 @@ fn startup_config_enters_safe_mode_when_active_config_is_missing() {
     let StartupConfig::SafeMode {
         bind_addr,
         service_info,
+        ..
     } = config
     else {
         panic!("missing active config should enter safe mode");
@@ -139,4 +140,35 @@ fn startup_config_enters_safe_mode_when_active_config_is_missing() {
 
     assert_eq!(bind_addr, SocketAddr::from(([127, 0, 0, 1], 4310)));
     assert_eq!(service_info.service_name, "MPGS Public Discovery Service");
+}
+
+#[test]
+fn startup_config_keeps_setup_access_available_in_safe_mode() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    fs::write(
+        temp_dir.path().join("setup.toml"),
+        format!(
+            r#"
+[setup]
+token_hash = "{}"
+"#,
+            hash_token("repair-setup-token")
+        ),
+    )
+    .unwrap();
+
+    let config = StartupConfig::from_env_vars(env(&[(
+        "MPGS_CONFIG_DIR",
+        temp_dir.path().to_str().unwrap(),
+    )]))
+    .unwrap();
+
+    let StartupConfig::SafeMode { setup_access, .. } = config else {
+        panic!("missing active config should enter safe mode");
+    };
+
+    assert!(setup_access
+        .as_ref()
+        .unwrap()
+        .verify_token("repair-setup-token"));
 }

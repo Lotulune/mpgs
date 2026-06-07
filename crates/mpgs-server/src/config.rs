@@ -3,7 +3,7 @@ use std::fs;
 use std::net::{AddrParseError, SocketAddr};
 use std::path::{Path, PathBuf};
 
-use crate::{AdminAuthConfig, ServiceInfoConfig};
+use crate::{setup::SetupAccess, AdminAuthConfig, ServiceInfoConfig};
 use serde::Deserialize;
 use thiserror::Error;
 
@@ -14,6 +14,7 @@ pub struct ServerConfig {
     pub service_info: ServiceInfoConfig,
     pub config_health: ConfigHealth,
     pub admin_auth: Option<AdminAuthConfig>,
+    pub setup_access: Option<SetupAccess>,
 }
 
 #[derive(Debug, Clone)]
@@ -22,6 +23,7 @@ pub enum StartupConfig {
     SafeMode {
         bind_addr: SocketAddr,
         service_info: ServiceInfoConfig,
+        setup_access: Option<SetupAccess>,
     },
 }
 
@@ -120,11 +122,13 @@ impl ServerConfig {
             service_info,
             config_health: ConfigHealth::HealthyForTest,
             admin_auth: None,
+            setup_access: None,
         })
     }
 
     pub fn from_config_dir(config_dir: impl AsRef<Path>) -> Result<Self, ConfigError> {
-        let active_dir = config_dir.as_ref().join("active");
+        let config_dir = config_dir.as_ref();
+        let active_dir = config_dir.join("active");
         let service_path = active_dir.join("service.toml");
         let secrets_path = active_dir.join("secrets.toml");
 
@@ -156,6 +160,7 @@ impl ServerConfig {
                 secrets_config.admin.token_hash,
                 secrets_config.admin.session_secret,
             )),
+            setup_access: read_setup_access(config_dir)?,
         })
     }
 }
@@ -209,6 +214,11 @@ impl StartupConfig {
         Ok(Self::SafeMode {
             bind_addr,
             service_info,
+            setup_access: vars
+                .get("MPGS_CONFIG_DIR")
+                .map(|config_dir| read_setup_access(Path::new(config_dir)))
+                .transpose()?
+                .flatten(),
         })
     }
 }
@@ -227,6 +237,29 @@ where
         path: path.to_path_buf(),
         source,
     })
+}
+
+fn read_optional_toml<T>(path: &Path) -> Result<Option<T>, ConfigError>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    read_active_toml(path).map(Some)
+}
+
+fn read_setup_access(config_dir: &Path) -> Result<Option<SetupAccess>, ConfigError> {
+    let Some(setup_config) = read_optional_toml::<SetupConfig>(&config_dir.join("setup.toml"))?
+    else {
+        return Ok(None);
+    };
+
+    Ok(Some(SetupAccess::new(
+        config_dir.to_path_buf(),
+        setup_config.setup.token_hash,
+    )))
 }
 
 #[derive(Debug, Deserialize)]
@@ -257,4 +290,14 @@ struct ActiveDatabaseConfig {
 struct ActiveAdminConfig {
     token_hash: String,
     session_secret: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SetupConfig {
+    setup: SetupTokenConfig,
+}
+
+#[derive(Debug, Deserialize)]
+struct SetupTokenConfig {
+    token_hash: String,
 }

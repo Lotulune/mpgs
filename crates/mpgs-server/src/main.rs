@@ -26,15 +26,22 @@ async fn main() -> Result<()> {
             if let Some(admin_auth) = config.admin_auth {
                 app_state = app_state.with_admin_auth(admin_auth);
             }
+            if let Some(setup_access) = config.setup_access {
+                app_state = app_state.with_setup_config(setup_access);
+            }
             (config.bind_addr, build_router_with_state(app_state))
         }
         StartupConfig::SafeMode {
             bind_addr,
             service_info,
-        } => (
-            bind_addr,
-            build_router_with_state(AppState::safe_mode(service_info)),
-        ),
+            setup_access,
+        } => {
+            let mut app_state = AppState::safe_mode(service_info);
+            if let Some(setup_access) = setup_access {
+                app_state = app_state.with_setup_config(setup_access);
+            }
+            (bind_addr, build_router_with_state(app_state))
+        }
     };
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
 

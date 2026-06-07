@@ -3,6 +3,7 @@ pub mod config;
 pub mod db;
 pub mod health;
 pub mod public_catalog;
+pub mod setup;
 
 pub use admin::AdminAuthConfig;
 use admin::{
@@ -22,6 +23,7 @@ use public_catalog::{
     DiscoveryHomeResponse, GamesQuery, PublicGameAnalysis, PublicGameDetail, PublicGamesPage,
     ServiceErrorEnvelope,
 };
+use setup::{SetupAccess, SetupCompleteRequest, SetupCompleteResponse, SetupStatusResponse};
 use sqlx_postgres::PgPool;
 use utoipa::OpenApi;
 
@@ -69,6 +71,7 @@ pub struct AppState {
     database_health: DatabaseHealth,
     config_health: ConfigHealth,
     admin_auth: Option<AdminAuthConfig>,
+    setup_access: Option<SetupAccess>,
 }
 
 impl AppState {
@@ -78,6 +81,7 @@ impl AppState {
             database_health,
             config_health: ConfigHealth::HealthyForTest,
             admin_auth: None,
+            setup_access: None,
         }
     }
 
@@ -91,6 +95,7 @@ impl AppState {
             database_health,
             config_health,
             admin_auth: None,
+            setup_access: None,
         }
     }
 
@@ -104,11 +109,26 @@ impl AppState {
             database_health,
             config_health: ConfigHealth::HealthyForTest,
             admin_auth: Some(admin_auth),
+            setup_access: None,
         }
     }
 
     pub fn with_admin_auth(mut self, admin_auth: AdminAuthConfig) -> Self {
         self.admin_auth = Some(admin_auth);
+        self
+    }
+
+    pub fn with_setup_access(
+        mut self,
+        config_dir: impl Into<std::path::PathBuf>,
+        setup_token: &str,
+    ) -> Self {
+        self.setup_access = Some(SetupAccess::for_test_token(config_dir, setup_token));
+        self
+    }
+
+    pub fn with_setup_config(mut self, setup_access: SetupAccess) -> Self {
+        self.setup_access = Some(setup_access);
         self
     }
 
@@ -118,6 +138,7 @@ impl AppState {
             database_health: DatabaseHealth::SafeMode,
             config_health: ConfigHealth::HealthyForTest,
             admin_auth: None,
+            setup_access: None,
         }
     }
 }
@@ -169,6 +190,8 @@ pub fn build_router_with_state(state: AppState) -> Router {
         .route("/api/v1/admin/session", post(admin_session))
         .route("/api/v1/admin/overview", get(admin_overview))
         .route("/api/v1/admin/diagnostics", get(admin_diagnostics))
+        .route("/api/v1/setup/status", get(setup_status))
+        .route("/api/v1/setup/complete", post(setup_complete))
         .route("/openapi.json", get(openapi_json))
         .with_state(state)
 }
@@ -457,6 +480,80 @@ async fn admin_diagnostics(State(state): State<AppState>, headers: HeaderMap) ->
 
 #[utoipa::path(
     get,
+    path = "/api/v1/setup/status",
+    tag = "setup",
+    responses(
+        (status = 200, description = "First-run setup status", body = SetupStatusResponse)
+    )
+)]
+async fn setup_status(State(state): State<AppState>) -> Response {
+    Json(SetupStatusResponse {
+        configured: state
+            .setup_access
+            .as_ref()
+            .map(SetupAccess::is_configured)
+            .unwrap_or(true),
+    })
+    .into_response()
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/setup/complete",
+    tag = "setup",
+    request_body = SetupCompleteRequest,
+    responses(
+        (status = 200, description = "First-run setup wrote active configuration", body = SetupCompleteResponse),
+        (status = 401, description = "Invalid setup token", body = ServiceErrorEnvelope),
+        (status = 409, description = "Setup is already configured", body = ServiceErrorEnvelope),
+        (status = 503, description = "Setup is unavailable", body = ServiceErrorEnvelope)
+    )
+)]
+async fn setup_complete(
+    State(state): State<AppState>,
+    Json(request): Json<SetupCompleteRequest>,
+) -> Response {
+    let Some(setup_access) = state.setup_access.as_ref() else {
+        return service_error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "setup_unavailable",
+            "首次配置入口不可用。",
+        );
+    };
+
+    if setup_access.is_configured() {
+        return service_error_response(
+            StatusCode::CONFLICT,
+            "setup_already_configured",
+            "首次配置已经完成。",
+        );
+    }
+
+    if !setup_access.verify_token(&request.setup_token) {
+        return service_error_response(
+            StatusCode::UNAUTHORIZED,
+            "setup_token_invalid",
+            "引导令牌无效。",
+        );
+    }
+
+    if setup_access.complete(&request).is_err() {
+        return service_error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "setup_config_write_failed",
+            "首次配置写入失败。",
+        );
+    }
+
+    Json(SetupCompleteResponse {
+        configured: true,
+        restart_required: true,
+    })
+    .into_response()
+}
+
+#[utoipa::path(
+    get,
     path = "/healthz",
     tag = "system",
     responses(
@@ -687,6 +784,8 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         admin_session,
         admin_overview,
         admin_diagnostics,
+        setup_status,
+        setup_complete,
         healthz
     ),
     components(schemas(
@@ -694,6 +793,9 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         admin::AdminOverviewResponse,
         admin::AdminSessionRequest,
         admin::AdminSessionResponse,
+        setup::SetupCompleteRequest,
+        setup::SetupCompleteResponse,
+        setup::SetupStatusResponse,
         health::HealthResponse,
         health::HealthStatus,
         public_catalog::DiscoveryHomeResponse,

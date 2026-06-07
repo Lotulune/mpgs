@@ -8,6 +8,7 @@ $caddyfile = Get-Content -Raw -Path (Join-Path $root "deploy\Caddyfile")
 $dockerfile = Get-Content -Raw -Path (Join-Path $root "Dockerfile.mpgs-server")
 $deploymentDoc = Get-Content -Raw -Path (Join-Path $root "docs\deployment\mpgs-server-compose.md")
 $secretsExample = Get-Content -Raw -Path (Join-Path $root "deploy\config\active\secrets.toml.example")
+$setupExample = Get-Content -Raw -Path (Join-Path $root "deploy\config\setup.toml.example")
 
 if ($compose -notmatch 'postgres:16-bookworm') {
     throw "compose.yml must define Postgres 16."
@@ -21,8 +22,8 @@ if ($compose -notmatch '/healthz') {
 if ($compose -notmatch 'MPGS_CONFIG_DIR') {
     throw "compose.yml must locate the server config directory with MPGS_CONFIG_DIR."
 }
-if ($compose -notmatch './config:/var/lib/mpgs/config:ro') {
-    throw "compose.yml must mount the server config directory read-only."
+if ($compose -notmatch './config:/var/lib/mpgs/config' -or $compose -match './config:/var/lib/mpgs/config:ro') {
+    throw "compose.yml must mount the server config directory writable for setup-managed TOML files."
 }
 if ($compose -match 'MPGS_DATABASE_URL') {
     throw "compose.yml must not put service settings or database URL in environment variables."
@@ -48,8 +49,17 @@ if ($deploymentDoc -notmatch 'only locates the config directory') {
 if ($secretsExample -notmatch '\[admin\]' -or $secretsExample -notmatch 'token_hash' -or $secretsExample -notmatch 'session_secret') {
     throw "secrets.toml.example must include admin token hash and session secret placeholders."
 }
+if ($setupExample -notmatch '\[setup\]' -or $setupExample -notmatch 'token_hash') {
+    throw "setup.toml.example must include a setup token hash placeholder."
+}
+if ($deploymentDoc -notmatch 'setup.toml' -or $deploymentDoc -notmatch 'setup token') {
+    throw "deployment docs must describe setup token configuration."
+}
 if ($deploymentDoc -notmatch 'Do not put the raw admin token') {
     throw "deployment docs must forbid storing the raw admin token."
+}
+if ($deploymentDoc -notmatch 'Do not put the raw setup token') {
+    throw "deployment docs must forbid storing the raw setup token."
 }
 
 Write-Output "Deployment contract checks passed."

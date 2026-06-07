@@ -385,6 +385,86 @@
         }
       }
     },
+    "/api/v1/setup/complete": {
+      "post": {
+        "tags": [
+          "setup"
+        ],
+        "operationId": "setup_complete",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetupCompleteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "First-run setup wrote active configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetupCompleteResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid setup token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Setup is already configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Setup is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/setup/status": {
+      "get": {
+        "tags": [
+          "setup"
+        ],
+        "operationId": "setup_status",
+        "responses": {
+          "200": {
+            "description": "First-run setup status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetupStatusResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/healthz": {
       "get": {
         "tags": [
@@ -726,6 +806,59 @@
           },
           "serviceVersion": {
             "type": "string"
+          }
+        }
+      },
+      "SetupCompleteRequest": {
+        "type": "object",
+        "required": [
+          "setupToken",
+          "serviceName",
+          "databaseUrl",
+          "adminToken",
+          "steamApiKey"
+        ],
+        "properties": {
+          "adminToken": {
+            "type": "string"
+          },
+          "databaseUrl": {
+            "type": "string"
+          },
+          "serviceName": {
+            "type": "string"
+          },
+          "setupToken": {
+            "type": "string"
+          },
+          "steamApiKey": {
+            "type": "string"
+          }
+        }
+      },
+      "SetupCompleteResponse": {
+        "type": "object",
+        "required": [
+          "configured",
+          "restartRequired"
+        ],
+        "properties": {
+          "configured": {
+            "type": "boolean"
+          },
+          "restartRequired": {
+            "type": "boolean"
+          }
+        }
+      },
+      "SetupStatusResponse": {
+        "type": "object",
+        "required": [
+          "configured"
+        ],
+        "properties": {
+          "configured": {
+            "type": "boolean"
           }
         }
       }

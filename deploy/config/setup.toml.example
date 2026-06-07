@@ -1,0 +1,2 @@
+[setup]
+token_hash = "sha256:replace-with-setup-token-sha256-base64-no-padding"

@@ -30,9 +30,25 @@ Set at least:
 - `POSTGRES_PASSWORD`
 - `CADDY_DOMAIN` if using the Caddy profile
 
-The Compose `.env` only locates the config directory indirectly through the compose file and sets container-level values such as the Postgres container credentials. Service settings and service secrets live in active TOML files under `deploy/config`.
+The Compose `.env` only locates the config directory indirectly through the compose file and sets container-level values such as the Postgres container credentials. Service settings and service secrets live in TOML files under `deploy/config`.
 
-Create the active secrets file:
+For first-run browser setup, create a setup token config:
+
+```bash
+cp deploy/config/setup.toml.example deploy/config/setup.toml
+```
+
+Set `setup.token_hash` to a SHA-256 hash in the format expected by `mpgs-server`:
+
+```text
+sha256:<base64-no-padding sha256(setup-token)>
+```
+
+The setup token allows the first-run setup API to write `deploy/config/active/service.toml` and `deploy/config/active/secrets.toml`. After setup writes active config, normal management access must use the admin token, not the setup token.
+
+Do not put the raw setup token in `.env`, Postgres, docs, or logs.
+
+For manual offline configuration instead, create the active secrets file:
 
 ```bash
 cp deploy/config/active/secrets.toml.example deploy/config/active/secrets.toml
@@ -60,7 +76,7 @@ sha256:<base64-no-padding sha256(admin-token)>
 
 Set `admin.session_secret` to a long random value used to sign short-lived admin session cookies. Do not put the raw admin token in `.env`, Postgres, docs, or logs.
 
-Do not put Steam, LLM, R2, or admin token secrets in Postgres.
+Do not put Steam, LLM, R2, setup token, or admin token secrets in Postgres.
 
 ## Start Without Public HTTPS
 
@@ -95,5 +111,6 @@ curl https://$CADDY_DOMAIN/api/v1/service-info
 
 - The VPS only runs `docker load` and `docker compose up`; it must not compile Rust or build the image.
 - The service container runs database migrations on startup.
+- The mounted config directory is writable so setup and later management APIs can write TOML configuration files; `.env` still must not contain service secrets.
 - Public `/healthz` is intentionally minimal and does not expose configuration or secrets.
 - Empty public catalog state is healthy; public library population belongs to later discovery/admin slices.

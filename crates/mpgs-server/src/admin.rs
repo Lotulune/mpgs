@@ -57,7 +57,7 @@ impl AdminAuthConfig {
     }
 
     pub fn verify_token(&self, token: &str) -> bool {
-        constant_time_eq(&self.token_hash, &hash_admin_token(token))
+        verify_token_hash(&self.token_hash, token)
     }
 
     pub fn session_cookie(&self) -> String {
@@ -85,11 +85,19 @@ impl AdminAuthConfig {
 }
 
 pub fn hash_admin_token(token: &str) -> String {
+    hash_token(token)
+}
+
+pub fn hash_token(token: &str) -> String {
     let digest = Sha256::digest(token.as_bytes());
     format!(
         "sha256:{}",
         base64::engine::general_purpose::STANDARD_NO_PAD.encode(digest)
     )
+}
+
+pub fn verify_token_hash(expected_hash: &str, token: &str) -> bool {
+    constant_time_eq(expected_hash, &hash_token(token))
 }
 
 fn sign_session(payload: &str, secret: &str) -> String {

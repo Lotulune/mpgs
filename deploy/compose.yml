@@ -23,7 +23,7 @@ services:
     environment:
       MPGS_CONFIG_DIR: /var/lib/mpgs/config
     volumes:
-      - ./config:/var/lib/mpgs/config:ro
+      - ./config:/var/lib/mpgs/config
     ports:
       - "127.0.0.1:4310:4310"
     healthcheck:
