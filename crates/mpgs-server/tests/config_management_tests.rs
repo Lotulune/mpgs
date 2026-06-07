@@ -31,6 +31,9 @@ version = "0.1.0"
 
 [service_connection]
 public_base_url = "https://mpgs.example.test"
+
+[public_cors]
+allow_any_origin = true
 "#,
     )
     .unwrap();
@@ -160,6 +163,8 @@ async fn admin_pending_service_identity_writes_pending_config_and_preserves_acti
     assert!(pending_service.contains("018fb770-8998-7699-a6e4-b7b59f2f9c01"));
     assert!(pending_service.contains("[service_connection]"));
     assert!(pending_service.contains("public_base_url = \"https://mpgs.example.test\""));
+    assert!(pending_service.contains("[public_cors]"));
+    assert!(pending_service.contains("allow_any_origin = true"));
     assert!(active_secrets.contains("active-steam-key"));
     assert!(!temp_dir.path().join("pending/secrets.toml").exists());
 

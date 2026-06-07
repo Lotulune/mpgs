@@ -49,6 +49,7 @@ struct ActiveServiceConfig {
     bind_addr: Option<String>,
     service_identity: ActiveServiceIdentityConfig,
     service_connection: Option<ActiveServiceConnectionConfig>,
+    public_cors: Option<ActivePublicCorsConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -61,6 +62,11 @@ struct ActiveServiceIdentityConfig {
 #[derive(Debug, Deserialize)]
 struct ActiveServiceConnectionConfig {
     public_base_url: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ActivePublicCorsConfig {
+    allow_any_origin: Option<bool>,
 }
 
 impl ConfigFileManager {
@@ -125,6 +131,17 @@ public_base_url = "{public_base_url}"
             } else {
                 service_toml
             };
+        let service_toml = if let Some(public_cors) = active_service.public_cors.as_ref() {
+            format!(
+                r#"{service_toml}
+[public_cors]
+allow_any_origin = {allow_any_origin}
+"#,
+                allow_any_origin = public_cors.allow_any_origin.unwrap_or(false)
+            )
+        } else {
+            service_toml
+        };
         atomic_write(&pending_service_path(&self.config_dir), &service_toml)?;
 
         Ok(PendingConfigResponse {

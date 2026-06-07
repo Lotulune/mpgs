@@ -49,8 +49,14 @@ if ($deploymentDoc -notmatch 'active/service.toml' -or $deploymentDoc -notmatch 
 if ($serviceConfigExample -notmatch '\[service_connection\]' -or $serviceConfigExample -notmatch 'public_base_url') {
     throw "active service config example must include the public service connection URL."
 }
+if ($serviceConfigExample -notmatch '\[public_cors\]' -or $serviceConfigExample -notmatch 'allow_any_origin') {
+    throw "active service config example must include the public read CORS setting."
+}
 if ($deploymentDoc -notmatch 'service_connection\.public_base_url' -or $deploymentDoc -notmatch 'connection-share API') {
     throw "deployment docs must describe the public base URL used for keyless connection sharing."
+}
+if ($deploymentDoc -notmatch 'public_cors' -or $deploymentDoc -notmatch 'Management, setup, and restart routes stay same-origin') {
+    throw "deployment docs must describe public-only CORS boundaries."
 }
 if ($deploymentDoc -notmatch 'only locates the config directory') {
     throw "deployment docs must state that .env only locates config, not service secrets."

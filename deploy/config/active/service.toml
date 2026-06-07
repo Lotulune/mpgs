@@ -7,3 +7,6 @@ version = "0.1.0"
 
 [service_connection]
 public_base_url = "https://mpgs.example.com"
+
+[public_cors]
+allow_any_origin = true

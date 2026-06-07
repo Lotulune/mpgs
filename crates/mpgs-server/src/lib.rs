@@ -1,6 +1,7 @@
 pub mod admin;
 pub mod config;
 pub mod config_files;
+pub mod cors;
 pub mod db;
 pub mod health;
 pub mod public_catalog;
@@ -24,6 +25,7 @@ use config_files::{
     ConfigFileManager, ConfigStateResponse, PendingConfigResponse, PendingServiceIdentityRequest,
     ServiceConnectionFileResponse,
 };
+pub use cors::PublicCorsConfig;
 use health::{HealthResponse, HealthStatus};
 use mpgs_core::models::{PublicCatalogStatus, ServiceCapability, ServiceInfo};
 use public_catalog::{
@@ -88,6 +90,7 @@ pub struct AppState {
     restart: RestartCoordinator,
     audit: AuditSink,
     rate_limits: RateLimiters,
+    public_cors: PublicCorsConfig,
 }
 
 impl AppState {
@@ -102,6 +105,7 @@ impl AppState {
             restart: RestartCoordinator::process_exit(),
             audit: AuditSink::Noop,
             rate_limits: RateLimiters::default(),
+            public_cors: PublicCorsConfig::default(),
         }
     }
 
@@ -120,6 +124,7 @@ impl AppState {
             restart: RestartCoordinator::process_exit(),
             audit: AuditSink::Noop,
             rate_limits: RateLimiters::default(),
+            public_cors: PublicCorsConfig::default(),
         }
     }
 
@@ -138,6 +143,7 @@ impl AppState {
             restart: RestartCoordinator::process_exit(),
             audit: AuditSink::Noop,
             rate_limits: RateLimiters::default(),
+            public_cors: PublicCorsConfig::default(),
         }
     }
 
@@ -171,6 +177,11 @@ impl AppState {
         self
     }
 
+    pub fn with_public_cors(mut self, public_cors: PublicCorsConfig) -> Self {
+        self.public_cors = public_cors;
+        self
+    }
+
     pub fn with_setup_access(
         mut self,
         config_dir: impl Into<std::path::PathBuf>,
@@ -196,6 +207,7 @@ impl AppState {
             restart: RestartCoordinator::process_exit(),
             audit: AuditSink::Noop,
             rate_limits: RateLimiters::default(),
+            public_cors: PublicCorsConfig::default(),
         }
     }
 }
@@ -303,11 +315,23 @@ pub fn build_router(config: ServiceInfoConfig) -> Router {
 pub fn build_router_with_state(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
-        .route("/api/v1/service-info", get(service_info))
-        .route("/api/v1/discovery-home", get(discovery_home))
-        .route("/api/v1/games", get(games))
-        .route("/api/v1/games/{appid}", get(game_detail))
-        .route("/api/v1/games/{appid}/analysis", get(game_analysis))
+        .route(
+            "/api/v1/service-info",
+            get(service_info).options(public_preflight),
+        )
+        .route(
+            "/api/v1/discovery-home",
+            get(discovery_home).options(public_preflight),
+        )
+        .route("/api/v1/games", get(games).options(public_preflight))
+        .route(
+            "/api/v1/games/{appid}",
+            get(game_detail).options(public_preflight),
+        )
+        .route(
+            "/api/v1/games/{appid}/analysis",
+            get(game_analysis).options(public_preflight),
+        )
         .route("/api/v1/admin/session", post(admin_session))
         .route("/api/v1/admin/overview", get(admin_overview))
         .route("/api/v1/admin/diagnostics", get(admin_diagnostics))
@@ -335,8 +359,12 @@ pub fn build_router_with_state(state: AppState) -> Router {
         (status = 200, description = "Public MPGS service identity information", body = ServiceInfo)
     )
 )]
-async fn service_info(State(state): State<AppState>) -> Json<ServiceInfo> {
-    Json(state.service_info)
+async fn service_info(State(state): State<AppState>) -> Response {
+    public_response(&state, Json(state.service_info.clone()).into_response())
+}
+
+async fn public_preflight(State(state): State<AppState>) -> Response {
+    state.public_cors.preflight_response()
 }
 
 #[utoipa::path(
@@ -353,7 +381,7 @@ async fn service_info(State(state): State<AppState>) -> Json<ServiceInfo> {
 )]
 async fn discovery_home(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if !state.rate_limits.allow(RateLimitBucket::PublicRead) {
-        return rate_limited_response();
+        return public_response(&state, rate_limited_response());
     }
 
     let etag = match state
@@ -364,27 +392,35 @@ async fn discovery_home(State(state): State<AppState>, headers: HeaderMap) -> Re
         Ok(etag) => etag,
         Err(error) => {
             if state.database_health.is_safe_mode() {
-                return safe_mode_error_response();
+                return public_response(&state, safe_mode_error_response());
             }
-            return service_error_response(
-                axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                "public_catalog_unavailable",
-                public_catalog_error_message(error),
+            return public_response(
+                &state,
+                service_error_response(
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                    "public_catalog_unavailable",
+                    public_catalog_error_message(error),
+                ),
             );
         }
     };
 
     if request_matches_etag(&headers, &etag) {
-        return not_modified_response(etag);
+        return public_response(&state, not_modified_response(etag));
     }
 
     match state.database_health.discovery_home().await {
-        Ok(payload) => json_with_etag(payload, etag),
-        Err(error) if state.database_health.is_safe_mode() => safe_mode_error_response(),
-        Err(error) => service_error_response(
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            "public_catalog_unavailable",
-            public_catalog_error_message(error),
+        Ok(payload) => public_response(&state, json_with_etag(payload, etag)),
+        Err(error) if state.database_health.is_safe_mode() => {
+            public_response(&state, safe_mode_error_response())
+        }
+        Err(error) => public_response(
+            &state,
+            service_error_response(
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                "public_catalog_unavailable",
+                public_catalog_error_message(error),
+            ),
         ),
     }
 }
@@ -407,7 +443,7 @@ async fn games(
     Query(query): Query<GamesQuery>,
 ) -> Response {
     if !state.rate_limits.allow(RateLimitBucket::PublicRead) {
-        return rate_limited_response();
+        return public_response(&state, rate_limited_response());
     }
 
     let (limit, offset) = query.normalized();
@@ -419,27 +455,35 @@ async fn games(
         Ok(etag) => etag,
         Err(error) => {
             if state.database_health.is_safe_mode() {
-                return safe_mode_error_response();
+                return public_response(&state, safe_mode_error_response());
             }
-            return service_error_response(
-                axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                "public_catalog_unavailable",
-                public_catalog_error_message(error),
+            return public_response(
+                &state,
+                service_error_response(
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                    "public_catalog_unavailable",
+                    public_catalog_error_message(error),
+                ),
             );
         }
     };
 
     if request_matches_etag(&headers, &etag) {
-        return not_modified_response(etag);
+        return public_response(&state, not_modified_response(etag));
     }
 
     match state.database_health.public_games_page(limit, offset).await {
-        Ok(payload) => json_with_etag(payload, etag),
-        Err(error) if state.database_health.is_safe_mode() => safe_mode_error_response(),
-        Err(error) => service_error_response(
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            "public_catalog_unavailable",
-            public_catalog_error_message(error),
+        Ok(payload) => public_response(&state, json_with_etag(payload, etag)),
+        Err(error) if state.database_health.is_safe_mode() => {
+            public_response(&state, safe_mode_error_response())
+        }
+        Err(error) => public_response(
+            &state,
+            service_error_response(
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                "public_catalog_unavailable",
+                public_catalog_error_message(error),
+            ),
         ),
     }
 }
@@ -466,27 +510,35 @@ async fn game_detail(
     Path(appid): Path<u32>,
 ) -> Response {
     if !state.rate_limits.allow(RateLimitBucket::PublicRead) {
-        return rate_limited_response();
+        return public_response(&state, rate_limited_response());
     }
 
     match state.database_health.public_game_detail(appid).await {
         Ok(Some(payload)) => {
             let etag = public_game_detail_etag(&payload);
             if request_matches_etag(&headers, &etag) {
-                return not_modified_response(etag);
+                return public_response(&state, not_modified_response(etag));
             }
-            json_with_etag(payload, etag)
+            public_response(&state, json_with_etag(payload, etag))
         }
-        Ok(None) => service_error_response(
-            axum::http::StatusCode::NOT_FOUND,
-            "public_game_not_found",
-            "公开游戏不存在。",
+        Ok(None) => public_response(
+            &state,
+            service_error_response(
+                axum::http::StatusCode::NOT_FOUND,
+                "public_game_not_found",
+                "公开游戏不存在。",
+            ),
         ),
-        Err(error) if state.database_health.is_safe_mode() => safe_mode_error_response(),
-        Err(error) => service_error_response(
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            "public_catalog_unavailable",
-            public_catalog_error_message(error),
+        Err(error) if state.database_health.is_safe_mode() => {
+            public_response(&state, safe_mode_error_response())
+        }
+        Err(error) => public_response(
+            &state,
+            service_error_response(
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                "public_catalog_unavailable",
+                public_catalog_error_message(error),
+            ),
         ),
     }
 }
@@ -513,27 +565,35 @@ async fn game_analysis(
     Path(appid): Path<u32>,
 ) -> Response {
     if !state.rate_limits.allow(RateLimitBucket::PublicRead) {
-        return rate_limited_response();
+        return public_response(&state, rate_limited_response());
     }
 
     match state.database_health.public_game_analysis(appid).await {
         Ok(Some(payload)) => {
             let etag = public_game_analysis_etag(&payload);
             if request_matches_etag(&headers, &etag) {
-                return not_modified_response(etag);
+                return public_response(&state, not_modified_response(etag));
             }
-            json_with_etag(payload, etag)
+            public_response(&state, json_with_etag(payload, etag))
         }
-        Ok(None) => service_error_response(
-            axum::http::StatusCode::NOT_FOUND,
-            "public_game_analysis_not_found",
-            "公开游戏分析不存在。",
+        Ok(None) => public_response(
+            &state,
+            service_error_response(
+                axum::http::StatusCode::NOT_FOUND,
+                "public_game_analysis_not_found",
+                "公开游戏分析不存在。",
+            ),
         ),
-        Err(error) if state.database_health.is_safe_mode() => safe_mode_error_response(),
-        Err(error) => service_error_response(
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            "public_catalog_unavailable",
-            public_catalog_error_message(error),
+        Err(error) if state.database_health.is_safe_mode() => {
+            public_response(&state, safe_mode_error_response())
+        }
+        Err(error) => public_response(
+            &state,
+            service_error_response(
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                "public_catalog_unavailable",
+                public_catalog_error_message(error),
+            ),
         ),
     }
 }
@@ -1095,6 +1155,13 @@ fn safe_mode_error_response() -> Response {
         "service_safe_mode",
         "服务处于安全修复模式。",
     )
+}
+
+fn public_response(state: &AppState, mut response: Response) -> Response {
+    state
+        .public_cors
+        .insert_public_headers(response.headers_mut());
+    response
 }
 
 fn admin_session_is_valid(state: &AppState, headers: &HeaderMap) -> bool {

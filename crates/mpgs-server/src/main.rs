@@ -32,6 +32,7 @@ async fn main() -> Result<()> {
             if let Some(setup_access) = config.setup_access {
                 app_state = app_state.with_setup_config(setup_access);
             }
+            app_state = app_state.with_public_cors(config.public_cors);
             if let Some(config_file_manager) = config.config_file_manager {
                 if let Ok(active_config_version) = config_file_manager.active_config_version() {
                     db::record_active_config_startup(&pool, &active_config_version).await?;

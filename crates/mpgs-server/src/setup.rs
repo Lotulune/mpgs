@@ -17,6 +17,7 @@ pub struct SetupAccess {
 pub struct SetupCompleteRequest {
     pub setup_token: String,
     pub service_name: String,
+    pub public_base_url: String,
     pub database_url: String,
     pub admin_token: String,
     pub steam_api_key: String,
@@ -70,8 +71,16 @@ impl SetupAccess {
 instance_id = "{instance_id}"
 name = "{service_name}"
 version = "{version}"
+
+[service_connection]
+public_base_url = "{public_base_url}"
+
+[public_cors]
+allow_any_origin = true
 "#,
             service_name = escape_toml_string(&request.service_name),
+            public_base_url =
+                escape_toml_string(normalize_public_base_url(&request.public_base_url)),
             version = env!("CARGO_PKG_VERSION")
         );
         let secrets_toml = format!(
@@ -112,4 +121,8 @@ fn atomic_write(path: &Path, contents: &str) -> io::Result<()> {
 
 fn escape_toml_string(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn normalize_public_base_url(value: &str) -> &str {
+    value.trim().trim_end_matches('/')
 }

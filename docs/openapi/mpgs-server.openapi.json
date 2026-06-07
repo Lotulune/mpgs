@@ -1255,6 +1255,7 @@
         "required": [
           "setupToken",
           "serviceName",
+          "publicBaseUrl",
           "databaseUrl",
           "adminToken",
           "steamApiKey"
@@ -1264,6 +1265,9 @@
             "type": "string"
           },
           "databaseUrl": {
+            "type": "string"
+          },
+          "publicBaseUrl": {
             "type": "string"
           },
           "serviceName": {

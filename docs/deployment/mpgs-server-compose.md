@@ -92,6 +92,15 @@ public_base_url = "https://mpgs.example.com"
 
 The admin connection-share API uses this value to generate a keyless service connection file. It does not infer the public URL from request headers and it must not include setup or admin tokens.
 
+Enable public CORS for ordinary clients that fetch the anonymous REST API directly:
+
+```toml
+[public_cors]
+allow_any_origin = true
+```
+
+This only affects public read routes such as `/api/v1/service-info` and `/api/v1/discovery-home`. Management, setup, and restart routes stay same-origin and must be used through the served management surface.
+
 For the default Compose network, `deploy/config/active/secrets.toml` should use:
 
 ```toml

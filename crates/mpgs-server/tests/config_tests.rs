@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-use mpgs_server::{admin::hash_token, ConfigError, ServerConfig, StartupConfig};
+use mpgs_server::{admin::hash_token, ConfigError, PublicCorsConfig, ServerConfig, StartupConfig};
 
 fn env(values: &[(&str, &str)]) -> HashMap<String, String> {
     values
@@ -25,6 +25,9 @@ bind_addr = "0.0.0.0:4310"
 instance_id = "018fb770-8998-7699-a6e4-b7b59f2f9c01"
 name = "MPGS TOML Service"
 version = "2.0.0"
+
+[public_cors]
+allow_any_origin = true
 "#,
     )
     .unwrap();
@@ -57,6 +60,10 @@ session_secret = "test-session-secret"
     );
     assert_eq!(config.service_info.service_name, "MPGS TOML Service");
     assert_eq!(config.service_info.service_version, "2.0.0");
+    assert!(matches!(
+        config.public_cors,
+        PublicCorsConfig::AllowAnyOrigin
+    ));
     assert!(config.admin_auth.is_some());
 }
 

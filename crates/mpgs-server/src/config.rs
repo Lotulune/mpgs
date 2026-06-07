@@ -4,7 +4,8 @@ use std::net::{AddrParseError, SocketAddr};
 use std::path::{Path, PathBuf};
 
 use crate::{
-    config_files::ConfigFileManager, setup::SetupAccess, AdminAuthConfig, ServiceInfoConfig,
+    config_files::ConfigFileManager, setup::SetupAccess, AdminAuthConfig, PublicCorsConfig,
+    ServiceInfoConfig,
 };
 use serde::Deserialize;
 use thiserror::Error;
@@ -18,6 +19,7 @@ pub struct ServerConfig {
     pub admin_auth: Option<AdminAuthConfig>,
     pub setup_access: Option<SetupAccess>,
     pub config_file_manager: Option<ConfigFileManager>,
+    pub public_cors: PublicCorsConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -127,6 +129,7 @@ impl ServerConfig {
             admin_auth: None,
             setup_access: None,
             config_file_manager: None,
+            public_cors: PublicCorsConfig::default(),
         })
     }
 
@@ -167,6 +170,16 @@ impl ServerConfig {
             )),
             setup_access: read_setup_access(config_dir)?,
             config_file_manager: Some(ConfigFileManager::new(config_dir)),
+            public_cors: service_config
+                .public_cors
+                .map(|cors| {
+                    if cors.allow_any_origin {
+                        PublicCorsConfig::AllowAnyOrigin
+                    } else {
+                        PublicCorsConfig::Disabled
+                    }
+                })
+                .unwrap_or_default(),
         })
     }
 }
@@ -311,6 +324,7 @@ fn promote_pending_service_config(config_dir: &Path) -> Result<(), ConfigError> 
 struct ActiveServiceConfig {
     bind_addr: Option<String>,
     service_identity: ActiveServiceIdentityConfig,
+    public_cors: Option<ActivePublicCorsConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -318,6 +332,12 @@ struct ActiveServiceIdentityConfig {
     instance_id: String,
     name: String,
     version: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ActivePublicCorsConfig {
+    #[serde(default)]
+    allow_any_origin: bool,
 }
 
 #[derive(Debug, Deserialize)]
