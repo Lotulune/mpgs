@@ -1,7 +1,8 @@
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
 use mpgs_server::{
-    build_router_with_state, AdminAuthConfig, AppState, DatabaseHealth, ServiceInfoConfig,
+    build_router_with_state, AdminAuthConfig, AppState, AuditSink, DatabaseHealth,
+    ServiceInfoConfig,
 };
 use serde_json::json;
 use tower::ServiceExt;
@@ -14,12 +15,16 @@ fn test_config() -> ServiceInfoConfig {
     }
 }
 
-fn admin_app() -> axum::Router {
-    build_router_with_state(AppState::new_with_admin_auth(
+fn admin_state() -> AppState {
+    AppState::new_with_admin_auth(
         test_config().service_info(),
         DatabaseHealth::HealthyForTest,
         AdminAuthConfig::for_test_token("correct-admin-token"),
-    ))
+    )
+}
+
+fn admin_app() -> axum::Router {
+    build_router_with_state(admin_state())
 }
 
 async fn request_json(
@@ -97,6 +102,48 @@ async fn admin_session_sets_http_only_cookie_for_valid_token() {
     assert!(cookie.contains("mpgs_admin_session="));
     assert!(cookie.contains("HttpOnly"));
     assert!(cookie.contains("SameSite=Strict"));
+}
+
+#[tokio::test]
+async fn admin_session_records_login_audit_events() {
+    let audit = AuditSink::memory();
+    let app = build_router_with_state(admin_state().with_audit_sink(audit.clone()));
+
+    let bad_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/admin/session")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({ "token": "wrong-token" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bad_response.status(), StatusCode::UNAUTHORIZED);
+
+    let good_response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/admin/session")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({ "token": "correct-admin-token" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(good_response.status(), StatusCode::OK);
+
+    let records = audit.records_for_test();
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0].event_type, "admin.session.login");
+    assert_eq!(records[0].outcome, "failure");
+    assert_eq!(records[1].event_type, "admin.session.login");
+    assert_eq!(records[1].outcome, "success");
 }
 
 #[tokio::test]

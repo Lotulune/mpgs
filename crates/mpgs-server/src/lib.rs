@@ -32,6 +32,7 @@ pub use restart::RestartCoordinator;
 use restart::{RestartRequest, RestartResponse};
 use setup::{SetupAccess, SetupCompleteRequest, SetupCompleteResponse, SetupStatusResponse};
 use sqlx_postgres::PgPool;
+use std::sync::{Arc, Mutex};
 use utoipa::OpenApi;
 
 #[derive(Debug, Clone)]
@@ -81,6 +82,7 @@ pub struct AppState {
     setup_access: Option<SetupAccess>,
     config_file_manager: Option<ConfigFileManager>,
     restart: RestartCoordinator,
+    audit: AuditSink,
 }
 
 impl AppState {
@@ -93,6 +95,7 @@ impl AppState {
             setup_access: None,
             config_file_manager: None,
             restart: RestartCoordinator::process_exit(),
+            audit: AuditSink::Noop,
         }
     }
 
@@ -109,6 +112,7 @@ impl AppState {
             setup_access: None,
             config_file_manager: None,
             restart: RestartCoordinator::process_exit(),
+            audit: AuditSink::Noop,
         }
     }
 
@@ -125,6 +129,7 @@ impl AppState {
             setup_access: None,
             config_file_manager: None,
             restart: RestartCoordinator::process_exit(),
+            audit: AuditSink::Noop,
         }
     }
 
@@ -145,6 +150,11 @@ impl AppState {
 
     pub fn with_restart_coordinator(mut self, restart: RestartCoordinator) -> Self {
         self.restart = restart;
+        self
+    }
+
+    pub fn with_audit_sink(mut self, audit: AuditSink) -> Self {
+        self.audit = audit;
         self
     }
 
@@ -171,6 +181,58 @@ impl AppState {
             setup_access: None,
             config_file_manager: None,
             restart: RestartCoordinator::process_exit(),
+            audit: AuditSink::Noop,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub enum AuditSink {
+    Noop,
+    Pool(PgPool),
+    #[doc(hidden)]
+    Memory(Arc<Mutex<Vec<AuditRecord>>>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuditRecord {
+    pub event_type: String,
+    pub actor: String,
+    pub outcome: String,
+}
+
+impl AuditSink {
+    #[doc(hidden)]
+    pub fn memory() -> Self {
+        Self::Memory(Arc::new(Mutex::new(Vec::new())))
+    }
+
+    #[doc(hidden)]
+    pub fn records_for_test(&self) -> Vec<AuditRecord> {
+        match self {
+            Self::Memory(records) => records
+                .lock()
+                .map(|records| records.clone())
+                .unwrap_or_default(),
+            Self::Noop | Self::Pool(_) => Vec::new(),
+        }
+    }
+
+    async fn record(&self, event_type: &str, actor: &str, outcome: &str) {
+        match self {
+            Self::Noop => {}
+            Self::Pool(pool) => {
+                let _ = db::record_audit_event(pool, event_type, actor, outcome).await;
+            }
+            Self::Memory(records) => {
+                if let Ok(mut records) = records.lock() {
+                    records.push(AuditRecord {
+                        event_type: event_type.to_string(),
+                        actor: actor.to_string(),
+                        outcome: outcome.to_string(),
+                    });
+                }
+            }
         }
     }
 }
@@ -461,6 +523,10 @@ async fn admin_session(
     };
 
     if !admin_auth.verify_token(&request.token) {
+        state
+            .audit
+            .record("admin.session.login", "admin", "failure")
+            .await;
         return service_error_response(
             StatusCode::UNAUTHORIZED,
             "admin_token_invalid",
@@ -475,6 +541,10 @@ async fn admin_session(
     if let Ok(cookie) = HeaderValue::from_str(&admin_auth.session_cookie()) {
         response.headers_mut().insert(header::SET_COOKIE, cookie);
     }
+    state
+        .audit
+        .record("admin.session.login", "admin", "success")
+        .await;
     response
 }
 
@@ -606,6 +676,10 @@ async fn admin_pending_service_identity(
                 .database_health
                 .mark_pending_config(&payload.pending_config_version)
                 .await;
+            state
+                .audit
+                .record("admin.config.pending_service_identity", "admin", "success")
+                .await;
             Json(payload).into_response()
         }
         Err(_) => service_error_response(
@@ -656,6 +730,10 @@ async fn admin_restart(
 
     match config_file_manager.validate_pending_service_config() {
         Ok(true) => {
+            state
+                .audit
+                .record("admin.restart.requested", "admin", "success")
+                .await;
             state.restart.request_restart();
             (
                 StatusCode::ACCEPTED,

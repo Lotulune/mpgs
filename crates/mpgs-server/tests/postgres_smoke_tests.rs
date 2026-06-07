@@ -121,3 +121,27 @@ async fn records_pending_config_state_in_ops_schema() {
     assert!(state.restart_required);
     assert_eq!(state.last_startup_status, "ok");
 }
+
+#[tokio::test]
+async fn records_audit_events_in_ops_schema() {
+    let Ok(database_url) = std::env::var("MPGS_TEST_DATABASE_URL") else {
+        return;
+    };
+
+    let pool = db::connect_and_migrate(&database_url)
+        .await
+        .expect("connect to Postgres and run migrations");
+
+    db::record_audit_event(&pool, "admin.restart.requested", "admin", "success")
+        .await
+        .expect("record audit event");
+
+    let event = db::latest_audit_event(&pool)
+        .await
+        .expect("read latest audit event")
+        .expect("audit event should exist");
+
+    assert_eq!(event.event_type, "admin.restart.requested");
+    assert_eq!(event.actor, "admin");
+    assert_eq!(event.outcome, "success");
+}

@@ -1,8 +1,8 @@
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
 use mpgs_server::{
-    build_router_with_state, AdminAuthConfig, AppState, DatabaseHealth, RestartCoordinator,
-    ServiceInfoConfig,
+    build_router_with_state, AdminAuthConfig, AppState, AuditSink, DatabaseHealth,
+    RestartCoordinator, ServiceInfoConfig,
 };
 use serde_json::json;
 use std::fs;
@@ -64,6 +64,14 @@ version = "0.1.0"
 }
 
 fn restart_app(config_dir: &Path, restart: RestartCoordinator) -> axum::Router {
+    restart_app_with_audit(config_dir, restart, AuditSink::Noop)
+}
+
+fn restart_app_with_audit(
+    config_dir: &Path,
+    restart: RestartCoordinator,
+    audit: AuditSink,
+) -> axum::Router {
     build_router_with_state(
         AppState::new_with_admin_auth(
             test_config().service_info(),
@@ -71,7 +79,8 @@ fn restart_app(config_dir: &Path, restart: RestartCoordinator) -> axum::Router {
             AdminAuthConfig::for_test_token("correct-admin-token"),
         )
         .with_config_file_manager(config_dir)
-        .with_restart_coordinator(restart),
+        .with_restart_coordinator(restart)
+        .with_audit_sink(audit),
     )
 }
 
@@ -214,4 +223,31 @@ async fn restart_accepts_valid_pending_config_and_requests_self_exit() {
     assert_eq!(value["restartScheduled"], true);
     assert_eq!(value["mode"], "self_exit");
     assert!(restart.was_requested());
+}
+
+#[tokio::test]
+async fn restart_records_audit_event_when_scheduled() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    write_active_config(temp_dir.path());
+    write_pending_service_config(temp_dir.path());
+    let restart = RestartCoordinator::for_test();
+    let audit = AuditSink::memory();
+    let app = restart_app_with_audit(temp_dir.path(), restart.clone(), audit.clone());
+    let cookie = admin_cookie(app.clone()).await;
+
+    let (status, _value, _headers) = request_json(
+        app,
+        Method::POST,
+        "/api/v1/admin/restart",
+        json!({ "confirm": true }),
+        Some(&cookie),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert!(restart.was_requested());
+    let records = audit.records_for_test();
+    assert!(records.iter().any(|record| {
+        record.event_type == "admin.restart.requested" && record.outcome == "success"
+    }));
 }

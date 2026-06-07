@@ -1,5 +1,7 @@
 use anyhow::Result;
-use mpgs_server::{build_router_with_state, db, AppState, DatabaseHealth, StartupConfig};
+use mpgs_server::{
+    build_router_with_state, db, AppState, AuditSink, DatabaseHealth, StartupConfig,
+};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -22,7 +24,8 @@ async fn main() -> Result<()> {
                     .service_info_with_catalog_status(public_catalog_status),
                 DatabaseHealth::Pool(pool.clone()),
                 config.config_health,
-            );
+            )
+            .with_audit_sink(AuditSink::Pool(pool.clone()));
             if let Some(admin_auth) = config.admin_auth {
                 app_state = app_state.with_admin_auth(admin_auth);
             }

@@ -9,6 +9,7 @@ use sqlx_postgres::{PgPool, PgPoolOptions, Postgres};
 use std::borrow::Cow;
 
 const INITIAL_MIGRATION_SQL: &str = include_str!("../migrations/0001_public_catalog_ops.sql");
+const AUDIT_EVENTS_MIGRATION_SQL: &str = include_str!("../migrations/0002_ops_audit_events.sql");
 
 #[derive(Debug, Clone)]
 pub struct ServiceConfigState {
@@ -16,6 +17,13 @@ pub struct ServiceConfigState {
     pub pending_config_version: Option<String>,
     pub restart_required: bool,
     pub last_startup_status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuditEvent {
+    pub event_type: String,
+    pub actor: String,
+    pub outcome: String,
 }
 
 pub async fn connect(database_url: &str) -> Result<PgPool, sqlx_core::error::Error> {
@@ -27,13 +35,22 @@ pub async fn connect(database_url: &str) -> Result<PgPool, sqlx_core::error::Err
 
 pub fn migrator() -> Migrator {
     Migrator {
-        migrations: Cow::Owned(vec![Migration::new(
-            1,
-            Cow::Borrowed("public_catalog_ops"),
-            MigrationType::Simple,
-            Cow::Borrowed(INITIAL_MIGRATION_SQL),
-            false,
-        )]),
+        migrations: Cow::Owned(vec![
+            Migration::new(
+                1,
+                Cow::Borrowed("public_catalog_ops"),
+                MigrationType::Simple,
+                Cow::Borrowed(INITIAL_MIGRATION_SQL),
+                false,
+            ),
+            Migration::new(
+                2,
+                Cow::Borrowed("ops_audit_events"),
+                MigrationType::Simple,
+                Cow::Borrowed(AUDIT_EVENTS_MIGRATION_SQL),
+                false,
+            ),
+        ]),
         ignore_missing: false,
         locking: true,
         no_tx: false,
@@ -82,6 +99,12 @@ pub async fn migration_health_check(pool: &PgPool) -> Result<bool, sqlx_core::er
             FROM _sqlx_migrations
             WHERE version = 1
               AND description = 'public_catalog_ops'
+              AND success = TRUE
+        ) AND EXISTS (
+            SELECT 1
+            FROM _sqlx_migrations
+            WHERE version = 2
+              AND description = 'ops_audit_events'
               AND success = TRUE
         )
         "#,
@@ -152,6 +175,51 @@ pub async fn mark_pending_config(
     .await?;
 
     Ok(())
+}
+
+pub async fn record_audit_event(
+    pool: &PgPool,
+    event_type: &str,
+    actor: &str,
+    outcome: &str,
+) -> Result<(), sqlx_core::error::Error> {
+    sqlx_core::query::query::<Postgres>(
+        r#"
+        INSERT INTO ops.audit_events (event_type, actor, outcome)
+        VALUES ($1, $2, $3)
+        "#,
+    )
+    .bind(event_type)
+    .bind(actor)
+    .bind(outcome)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+pub async fn latest_audit_event(
+    pool: &PgPool,
+) -> Result<Option<AuditEvent>, sqlx_core::error::Error> {
+    let row = sqlx_core::query::query::<Postgres>(
+        r#"
+        SELECT event_type, actor, outcome
+        FROM ops.audit_events
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_optional(pool)
+    .await?;
+
+    row.map(|row| {
+        Ok(AuditEvent {
+            event_type: row.try_get("event_type")?,
+            actor: row.try_get("actor")?,
+            outcome: row.try_get("outcome")?,
+        })
+    })
+    .transpose()
 }
 
 pub async fn discovery_home(
