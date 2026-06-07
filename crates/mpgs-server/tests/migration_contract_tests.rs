@@ -16,9 +16,13 @@ fn initial_migration_creates_public_catalog_and_ops_boundaries() {
     assert!(sql.contains("CREATE TABLE IF NOT EXISTS public_catalog.game_analysis"));
     assert!(sql.contains("CREATE TABLE IF NOT EXISTS public_catalog.public_catalog_state"));
     assert!(sql.contains("CREATE TABLE IF NOT EXISTS ops.service_config_state"));
+    assert!(sql.contains("pending_config_version TEXT"));
+    assert!(sql.contains("restart_required BOOLEAN NOT NULL DEFAULT FALSE"));
     assert!(!sql.to_lowercase().contains("steam_key"));
     assert!(!sql.to_lowercase().contains("llm_key"));
     assert!(!sql.to_lowercase().contains("admin_token"));
+    assert!(!sql.to_lowercase().contains("token_hash"));
+    assert!(!sql.to_lowercase().contains("api_key"));
 }
 
 #[test]

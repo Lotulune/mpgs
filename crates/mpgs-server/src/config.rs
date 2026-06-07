@@ -3,7 +3,7 @@ use std::fs;
 use std::net::{AddrParseError, SocketAddr};
 use std::path::{Path, PathBuf};
 
-use crate::{setup::SetupAccess, AdminAuthConfig, ServiceInfoConfig};
+use crate::{config_files::ConfigFileManager, setup::SetupAccess, AdminAuthConfig, ServiceInfoConfig};
 use serde::Deserialize;
 use thiserror::Error;
 
@@ -15,6 +15,7 @@ pub struct ServerConfig {
     pub config_health: ConfigHealth,
     pub admin_auth: Option<AdminAuthConfig>,
     pub setup_access: Option<SetupAccess>,
+    pub config_file_manager: Option<ConfigFileManager>,
 }
 
 #[derive(Debug, Clone)]
@@ -123,6 +124,7 @@ impl ServerConfig {
             config_health: ConfigHealth::HealthyForTest,
             admin_auth: None,
             setup_access: None,
+            config_file_manager: None,
         })
     }
 
@@ -161,6 +163,7 @@ impl ServerConfig {
                 secrets_config.admin.session_secret,
             )),
             setup_access: read_setup_access(config_dir)?,
+            config_file_manager: Some(ConfigFileManager::new(config_dir)),
         })
     }
 }

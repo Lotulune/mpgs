@@ -1,5 +1,6 @@
 pub mod admin;
 pub mod config;
+pub mod config_files;
 pub mod db;
 pub mod health;
 pub mod public_catalog;
@@ -17,6 +18,9 @@ use axum::{
     Json, Router,
 };
 pub use config::{ConfigError, ConfigHealth, ServerConfig, StartupConfig};
+use config_files::{
+    ConfigFileManager, ConfigStateResponse, PendingConfigResponse, PendingServiceIdentityRequest,
+};
 use health::{HealthResponse, HealthStatus};
 use mpgs_core::models::{PublicCatalogStatus, ServiceCapability, ServiceInfo};
 use public_catalog::{
@@ -72,6 +76,7 @@ pub struct AppState {
     config_health: ConfigHealth,
     admin_auth: Option<AdminAuthConfig>,
     setup_access: Option<SetupAccess>,
+    config_file_manager: Option<ConfigFileManager>,
 }
 
 impl AppState {
@@ -82,6 +87,7 @@ impl AppState {
             config_health: ConfigHealth::HealthyForTest,
             admin_auth: None,
             setup_access: None,
+            config_file_manager: None,
         }
     }
 
@@ -96,6 +102,7 @@ impl AppState {
             config_health,
             admin_auth: None,
             setup_access: None,
+            config_file_manager: None,
         }
     }
 
@@ -110,11 +117,22 @@ impl AppState {
             config_health: ConfigHealth::HealthyForTest,
             admin_auth: Some(admin_auth),
             setup_access: None,
+            config_file_manager: None,
         }
     }
 
     pub fn with_admin_auth(mut self, admin_auth: AdminAuthConfig) -> Self {
         self.admin_auth = Some(admin_auth);
+        self
+    }
+
+    pub fn with_config_file_manager(mut self, config_dir: impl Into<std::path::PathBuf>) -> Self {
+        self.config_file_manager = Some(ConfigFileManager::new(config_dir));
+        self
+    }
+
+    pub fn with_config_manager(mut self, config_file_manager: ConfigFileManager) -> Self {
+        self.config_file_manager = Some(config_file_manager);
         self
     }
 
@@ -139,6 +157,7 @@ impl AppState {
             config_health: ConfigHealth::HealthyForTest,
             admin_auth: None,
             setup_access: None,
+            config_file_manager: None,
         }
     }
 }
@@ -170,6 +189,19 @@ impl DatabaseHealth {
     fn is_safe_mode(&self) -> bool {
         matches!(self, Self::SafeMode)
     }
+
+    async fn service_config_state(&self) -> Option<db::ServiceConfigState> {
+        match self {
+            Self::Pool(pool) => db::service_config_state(pool).await.ok(),
+            _ => None,
+        }
+    }
+
+    async fn mark_pending_config(&self, pending_config_version: &str) {
+        if let Self::Pool(pool) = self {
+            let _ = db::mark_pending_config(pool, pending_config_version).await;
+        }
+    }
 }
 
 pub fn build_router(config: ServiceInfoConfig) -> Router {
@@ -190,6 +222,11 @@ pub fn build_router_with_state(state: AppState) -> Router {
         .route("/api/v1/admin/session", post(admin_session))
         .route("/api/v1/admin/overview", get(admin_overview))
         .route("/api/v1/admin/diagnostics", get(admin_diagnostics))
+        .route("/api/v1/admin/config-state", get(admin_config_state))
+        .route(
+            "/api/v1/admin/config/pending/service-identity",
+            post(admin_pending_service_identity),
+        )
         .route("/api/v1/setup/status", get(setup_status))
         .route("/api/v1/setup/complete", post(setup_complete))
         .route("/openapi.json", get(openapi_json))
@@ -476,6 +513,93 @@ async fn admin_diagnostics(State(state): State<AppState>, headers: HeaderMap) ->
         safe_mode: state.database_health.is_safe_mode(),
     })
     .into_response()
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/admin/config-state",
+    tag = "admin",
+    responses(
+        (status = 200, description = "Server configuration state", body = ConfigStateResponse),
+        (status = 401, description = "Admin session required", body = ServiceErrorEnvelope),
+        (status = 503, description = "Config manager unavailable", body = ServiceErrorEnvelope)
+    )
+)]
+async fn admin_config_state(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if !admin_session_is_valid(&state, &headers) {
+        return admin_session_required_response();
+    }
+
+    let Some(config_file_manager) = state.config_file_manager.as_ref() else {
+        return service_error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "config_manager_unavailable",
+            "配置管理器不可用。",
+        );
+    };
+
+    match config_file_manager.state() {
+        Ok(mut payload) => {
+            if let Some(db_state) = state.database_health.service_config_state().await {
+                payload.active_config_version = db_state
+                    .active_config_version
+                    .unwrap_or(payload.active_config_version);
+                payload.pending_config_version = db_state.pending_config_version;
+                payload.restart_required = db_state.restart_required;
+                payload.last_startup_status = db_state.last_startup_status;
+            }
+            Json(payload).into_response()
+        }
+        Err(_) => service_error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "config_state_unavailable",
+            "配置状态暂不可用。",
+        ),
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/config/pending/service-identity",
+    tag = "admin",
+    request_body = PendingServiceIdentityRequest,
+    responses(
+        (status = 200, description = "Pending service identity configuration", body = PendingConfigResponse),
+        (status = 401, description = "Admin session required", body = ServiceErrorEnvelope),
+        (status = 503, description = "Config manager unavailable", body = ServiceErrorEnvelope)
+    )
+)]
+async fn admin_pending_service_identity(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<PendingServiceIdentityRequest>,
+) -> Response {
+    if !admin_session_is_valid(&state, &headers) {
+        return admin_session_required_response();
+    }
+
+    let Some(config_file_manager) = state.config_file_manager.as_ref() else {
+        return service_error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "config_manager_unavailable",
+            "配置管理器不可用。",
+        );
+    };
+
+    match config_file_manager.write_pending_service_identity(&request) {
+        Ok(payload) => {
+            state
+                .database_health
+                .mark_pending_config(&payload.pending_config_version)
+                .await;
+            Json(payload).into_response()
+        }
+        Err(_) => service_error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "pending_config_write_failed",
+            "待生效配置写入失败。",
+        ),
+    }
 }
 
 #[utoipa::path(
@@ -784,6 +908,8 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         admin_session,
         admin_overview,
         admin_diagnostics,
+        admin_config_state,
+        admin_pending_service_identity,
         setup_status,
         setup_complete,
         healthz
@@ -793,6 +919,9 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
         admin::AdminOverviewResponse,
         admin::AdminSessionRequest,
         admin::AdminSessionResponse,
+        config_files::ConfigStateResponse,
+        config_files::PendingConfigResponse,
+        config_files::PendingServiceIdentityRequest,
         setup::SetupCompleteRequest,
         setup::SetupCompleteResponse,
         setup::SetupStatusResponse,

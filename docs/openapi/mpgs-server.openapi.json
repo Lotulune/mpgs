@@ -9,6 +9,96 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/api/v1/admin/config-state": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "admin_config_state",
+        "responses": {
+          "200": {
+            "description": "Server configuration state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigStateResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Admin session required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config manager unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/config/pending/service-identity": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "admin_pending_service_identity",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PendingServiceIdentityRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Pending service identity configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PendingConfigResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Admin session required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config manager unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/admin/diagnostics": {
       "get": {
         "tags": [
@@ -554,6 +644,31 @@
           }
         }
       },
+      "ConfigStateResponse": {
+        "type": "object",
+        "required": [
+          "activeConfigVersion",
+          "restartRequired",
+          "lastStartupStatus"
+        ],
+        "properties": {
+          "activeConfigVersion": {
+            "type": "string"
+          },
+          "lastStartupStatus": {
+            "type": "string"
+          },
+          "pendingConfigVersion": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "restartRequired": {
+            "type": "boolean"
+          }
+        }
+      },
       "DiscoveryHomeResponse": {
         "type": "object",
         "required": [
@@ -641,6 +756,32 @@
           "total": {
             "type": "integer",
             "format": "int64"
+          }
+        }
+      },
+      "PendingConfigResponse": {
+        "type": "object",
+        "required": [
+          "pendingConfigVersion",
+          "restartRequired"
+        ],
+        "properties": {
+          "pendingConfigVersion": {
+            "type": "string"
+          },
+          "restartRequired": {
+            "type": "boolean"
+          }
+        }
+      },
+      "PendingServiceIdentityRequest": {
+        "type": "object",
+        "required": [
+          "serviceName"
+        ],
+        "properties": {
+          "serviceName": {
+            "type": "string"
           }
         }
       },

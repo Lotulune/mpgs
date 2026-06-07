@@ -20,7 +20,7 @@ async fn main() -> Result<()> {
                 config
                     .service_info
                     .service_info_with_catalog_status(public_catalog_status),
-                DatabaseHealth::Pool(pool),
+                DatabaseHealth::Pool(pool.clone()),
                 config.config_health,
             );
             if let Some(admin_auth) = config.admin_auth {
@@ -28,6 +28,12 @@ async fn main() -> Result<()> {
             }
             if let Some(setup_access) = config.setup_access {
                 app_state = app_state.with_setup_config(setup_access);
+            }
+            if let Some(config_file_manager) = config.config_file_manager {
+                if let Ok(active_config_version) = config_file_manager.active_config_version() {
+                    db::record_active_config_startup(&pool, &active_config_version).await?;
+                }
+                app_state = app_state.with_config_manager(config_file_manager);
             }
             (config.bind_addr, build_router_with_state(app_state))
         }

@@ -88,3 +88,36 @@ url = "{}"
 
     assert_eq!(response.status(), StatusCode::OK);
 }
+
+#[tokio::test]
+async fn records_pending_config_state_in_ops_schema() {
+    let Ok(database_url) = std::env::var("MPGS_TEST_DATABASE_URL") else {
+        return;
+    };
+
+    let pool = db::connect_and_migrate(&database_url)
+        .await
+        .expect("connect to Postgres and run migrations");
+
+    db::record_active_config_startup(&pool, "sha256:active-test")
+        .await
+        .expect("record active config startup state");
+    db::mark_pending_config(&pool, "sha256:pending-test")
+        .await
+        .expect("record pending config state");
+
+    let state = db::service_config_state(&pool)
+        .await
+        .expect("read service config state");
+
+    assert_eq!(
+        state.active_config_version.as_deref(),
+        Some("sha256:active-test")
+    );
+    assert_eq!(
+        state.pending_config_version.as_deref(),
+        Some("sha256:pending-test")
+    );
+    assert!(state.restart_required);
+    assert_eq!(state.last_startup_status, "ok");
+}

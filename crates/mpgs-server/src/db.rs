@@ -10,6 +10,14 @@ use std::borrow::Cow;
 
 const INITIAL_MIGRATION_SQL: &str = include_str!("../migrations/0001_public_catalog_ops.sql");
 
+#[derive(Debug, Clone)]
+pub struct ServiceConfigState {
+    pub active_config_version: Option<String>,
+    pub pending_config_version: Option<String>,
+    pub restart_required: bool,
+    pub last_startup_status: String,
+}
+
 pub async fn connect(database_url: &str) -> Result<PgPool, sqlx_core::error::Error> {
     PgPoolOptions::new()
         .max_connections(5)
@@ -80,6 +88,70 @@ pub async fn migration_health_check(pool: &PgPool) -> Result<bool, sqlx_core::er
     )
     .fetch_one(pool)
     .await
+}
+
+pub async fn service_config_state(
+    pool: &PgPool,
+) -> Result<ServiceConfigState, sqlx_core::error::Error> {
+    let row = sqlx_core::query::query::<Postgres>(
+        r#"
+        SELECT active_config_version, pending_config_version, restart_required, last_startup_status
+        FROM ops.service_config_state
+        WHERE id = TRUE
+        "#,
+    )
+    .fetch_one(pool)
+    .await?;
+
+    Ok(ServiceConfigState {
+        active_config_version: row.try_get("active_config_version")?,
+        pending_config_version: row.try_get("pending_config_version")?,
+        restart_required: row.try_get("restart_required")?,
+        last_startup_status: row.try_get("last_startup_status")?,
+    })
+}
+
+pub async fn record_active_config_startup(
+    pool: &PgPool,
+    active_config_version: &str,
+) -> Result<(), sqlx_core::error::Error> {
+    sqlx_core::query::query::<Postgres>(
+        r#"
+        UPDATE ops.service_config_state
+        SET active_config_version = $1,
+            pending_config_version = NULL,
+            restart_required = FALSE,
+            last_startup_status = 'ok',
+            last_startup_at = now(),
+            updated_at = now()
+        WHERE id = TRUE
+        "#,
+    )
+    .bind(active_config_version)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+pub async fn mark_pending_config(
+    pool: &PgPool,
+    pending_config_version: &str,
+) -> Result<(), sqlx_core::error::Error> {
+    sqlx_core::query::query::<Postgres>(
+        r#"
+        UPDATE ops.service_config_state
+        SET pending_config_version = $1,
+            restart_required = TRUE,
+            updated_at = now()
+        WHERE id = TRUE
+        "#,
+    )
+    .bind(pending_config_version)
+    .execute(pool)
+    .await?;
+
+    Ok(())
 }
 
 pub async fn discovery_home(

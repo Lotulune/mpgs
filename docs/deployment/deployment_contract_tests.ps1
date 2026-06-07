@@ -55,6 +55,12 @@ if ($setupExample -notmatch '\[setup\]' -or $setupExample -notmatch 'token_hash'
 if ($deploymentDoc -notmatch 'setup.toml' -or $deploymentDoc -notmatch 'setup token') {
     throw "deployment docs must describe setup token configuration."
 }
+if ($deploymentDoc -notmatch 'deploy/config/pending' -or $deploymentDoc -notmatch 'restartRequired=true') {
+    throw "deployment docs must describe pending config and restart-required state."
+}
+if ($deploymentDoc -notmatch 'must not clear Steam, LLM, R2, or admin credentials') {
+    throw "deployment docs must document pending secret inheritance boundaries."
+}
 if ($deploymentDoc -notmatch 'Do not put the raw admin token') {
     throw "deployment docs must forbid storing the raw admin token."
 }
