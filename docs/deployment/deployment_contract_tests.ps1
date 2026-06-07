@@ -9,6 +9,8 @@ $dockerfile = Get-Content -Raw -Path (Join-Path $root "Dockerfile.mpgs-server")
 $deploymentDoc = Get-Content -Raw -Path (Join-Path $root "docs\deployment\mpgs-server-compose.md")
 $secretsExample = Get-Content -Raw -Path (Join-Path $root "deploy\config\active\secrets.toml.example")
 $setupExample = Get-Content -Raw -Path (Join-Path $root "deploy\config\setup.toml.example")
+$localBuildScript = Get-Content -Raw -Path (Join-Path $root "deploy\scripts\build-mpgs-server-image.ps1")
+$remoteDeployScript = Get-Content -Raw -Path (Join-Path $root "deploy\scripts\deploy-mpgs-server-remote.ps1")
 
 if ($compose -notmatch 'postgres:16-bookworm') {
     throw "compose.yml must define Postgres 16."
@@ -75,6 +77,24 @@ if ($deploymentDoc -notmatch 'Do not put the raw admin token') {
 }
 if ($deploymentDoc -notmatch 'Do not put the raw setup token') {
     throw "deployment docs must forbid storing the raw setup token."
+}
+if ($localBuildScript -notmatch 'Dockerfile\.mpgs-server' -or $localBuildScript -notmatch 'docker save' -or $localBuildScript -notmatch 'buildx') {
+    throw "local build script must build and save the server image locally, including buildx platform support."
+}
+if ($remoteDeployScript -notmatch 'docker load' -or $remoteDeployScript -notmatch 'up -d' -or $remoteDeployScript -notmatch '/healthz' -or $remoteDeployScript -notmatch '/api/v1/service-info') {
+    throw "remote deploy script must load the image, start compose, and probe healthz plus service-info."
+}
+if ($remoteDeployScript -match 'cargo build|rustc|docker build|docker compose build|npm run|pnpm|yarn') {
+    throw "remote deploy script must not compile or build artifacts on the VPS."
+}
+if ($deploymentDoc -notmatch 'deploy/scripts/build-mpgs-server-image.ps1' -or $deploymentDoc -notmatch 'deploy/scripts/deploy-mpgs-server-remote.ps1') {
+    throw "deployment docs must describe the checked local build and remote deploy scripts."
+}
+if ($deploymentDoc -notmatch 'linux/arm64' -or $deploymentDoc -notmatch 'ora_vps') {
+    throw "deployment docs must describe local arm64 image creation for ora_vps-style servers."
+}
+if ($deploymentDoc -notmatch 'does not overwrite remote `deploy/.env`, active secrets, or active service config') {
+    throw "deployment docs must state that remote deployment does not overwrite server secrets or active config."
 }
 
 Write-Output "Deployment contract checks passed."

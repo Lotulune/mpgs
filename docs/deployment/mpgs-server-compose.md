@@ -11,6 +11,26 @@ docker build -f Dockerfile.mpgs-server -t mpgs-server:local .
 docker save mpgs-server:local -o mpgs-server-local.tar
 ```
 
+PowerShell users can run the checked local build script instead:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File deploy/scripts/build-mpgs-server-image.ps1 `
+  -ImageTag mpgs-server:local `
+  -OutputTar mpgs-server-local.tar
+```
+
+For an Arm VPS such as `ora_vps`, build a `linux/arm64` image locally or in CI before uploading:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File deploy/scripts/build-mpgs-server-image.ps1 `
+  -ImageTag mpgs-server:local `
+  -OutputTar mpgs-server-linux-arm64.tar `
+  -UseBuildx `
+  -Platform linux/arm64
+```
+
 Upload `mpgs-server-local.tar` plus the `deploy/` directory to the server, then load the image there:
 
 ```bash
@@ -110,6 +130,22 @@ The public client should use HTTPS:
 curl https://$CADDY_DOMAIN/healthz
 curl https://$CADDY_DOMAIN/api/v1/service-info
 ```
+
+## Remote Deploy Verification
+
+After the image archive exists locally and the server has its real `deploy/.env` plus either `deploy/config/setup.toml` or active service config, the checked remote deploy script can upload the image archive and compose assets, load the image, start Compose, and verify both `/healthz` and `/api/v1/service-info`:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File deploy/scripts/deploy-mpgs-server-remote.ps1 `
+  -RemoteHost ora_vps `
+  -RemotePath ~/mpgs-server `
+  -ImageTar mpgs-server-linux-arm64.tar `
+  -UseCaddy `
+  -PublicBaseUrl https://$env:CADDY_DOMAIN
+```
+
+The remote script uploads only compose files, Caddy config, example TOML files, and the image archive. It does not overwrite remote `deploy/.env`, active secrets, or active service config. The server-side steps are limited to `docker load`, `docker compose up -d`, `curl` probes, and `docker compose ps`.
 
 ## Operational Boundary
 

@@ -308,6 +308,7 @@ npm test
 - 镜像必须在本地开发机或 CI 构建，再上传到服务器。
 - VPS 只执行 `docker load` 和 `docker compose up`，严禁在 VPS 上编译 Rust 或构建镜像。
 - 默认 Compose 只把服务端绑定到 `127.0.0.1:4310`，公网 HTTPS 通过可选 Caddy profile 或外部反代提供。
+- 可用 `deploy/scripts/build-mpgs-server-image.ps1` 本地生成镜像 tar，再用 `deploy/scripts/deploy-mpgs-server-remote.ps1` 上传、启动并验证 `/healthz` 与 `/api/v1/service-info`。
 
 ## 项目结构
 
