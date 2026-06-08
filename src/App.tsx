@@ -207,6 +207,12 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (isPublicServiceMode && activeView === "ai") {
+      setActiveView("home");
+    }
+  }, [activeView, isPublicServiceMode]);
+
+  useEffect(() => {
     if (!dashboardLoaded || isPublicServiceMode) {
       latestDiscoverySnapshotRef.current = null;
       setDiscoveryTaskRunning(false);

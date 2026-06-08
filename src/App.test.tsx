@@ -675,6 +675,41 @@ describe("App dashboard interactions", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("returns to the discovery home when a refresh switches from local AI to public service mode", async () => {
+    vi.useFakeTimers();
+    getDashboardMock
+      .mockResolvedValueOnce(buildBackfillDashboard())
+      .mockResolvedValueOnce(buildPublicServiceDashboard());
+
+    render(<App />);
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByRole("heading", { name: "新游区" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "✦ 让 AI 帮我找游戏" }));
+
+    expect(
+      screen.getByRole("heading", { name: "AI 智能推荐助手 Beta" }),
+    ).toBeInTheDocument();
+
+    await act(async () => {
+      vi.advanceTimersByTime(2_200);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByRole("heading", { name: "新游区" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "AI 智能推荐助手" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "AI 智能推荐助手 Beta" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("opens public service detail analysis as read-only without local AI generation controls", async () => {
     const dashboard = buildPublicServiceDashboard();
     const target = dashboard.newGames[0];
