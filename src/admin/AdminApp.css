@@ -207,6 +207,10 @@ p {
   margin-top: 18px;
 }
 
+.admin-panel-actions {
+  margin-top: 16px;
+}
+
 .admin-primary,
 .admin-secondary {
   border-radius: 7px;

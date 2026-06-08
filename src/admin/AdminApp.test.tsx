@@ -134,6 +134,110 @@ describe("AdminApp", () => {
       });
     });
   });
+
+  it("copies the service address and downloads a keyless connection file", async () => {
+    const connectionShare = {
+      serviceName: "MPGS Public",
+      serviceInstanceId: "018fb770-8998-7699-a6e4-b7b59f2f9c01",
+      apiVersion: "v1",
+      baseUrl: "https://mpgs.example.test",
+      serviceInfoUrl: "https://mpgs.example.test/api/v1/service-info",
+      capabilities: ["public_catalog_read"],
+    };
+    const clipboardWrite = vi.fn().mockResolvedValue(undefined);
+    const downloadedBlobs: Blob[] = [];
+    const createObjectUrl = vi.fn((blob: Blob) => {
+      downloadedBlobs.push(blob);
+      return "blob:mpgs-service-connection";
+    });
+    const revokeObjectUrl = vi.fn();
+    const anchorClick = vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(() => undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: clipboardWrite },
+    });
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: createObjectUrl,
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: revokeObjectUrl,
+    });
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ configured: true }))
+      .mockResolvedValueOnce(jsonResponse({ authenticated: true }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          serviceName: "MPGS Public",
+          publicCatalogStatus: "empty",
+          publicGameCount: 0,
+          pendingReviewCount: 0,
+          restartRequired: false,
+          connectionShareConfigured: true,
+          latestAuditEvent: null,
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          postgres: "ok",
+          activeConfig: "ok",
+          safeMode: false,
+          publicBaseUrlStatus: "configured",
+          httpsStatus: "ok",
+          publicCors: "disabled",
+          restartPolicy: "configured",
+          steam: "configured",
+          llm: "missing",
+          r2: "missing",
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          activeConfigVersion: "sha256:active",
+          pendingConfigVersion: null,
+          restartRequired: false,
+          lastStartupStatus: "ok",
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse(connectionShare));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<AdminApp />);
+
+    fireEvent.change(await screen.findByLabelText("管理员令牌"), {
+      target: { value: "admin-token" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "登录" }));
+
+    await screen.findByRole("heading", { name: "管理概览" });
+    fireEvent.click(screen.getByRole("button", { name: "复制服务地址" }));
+
+    await waitFor(() => {
+      expect(clipboardWrite).toHaveBeenCalledWith("https://mpgs.example.test");
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "下载连接文件" }));
+
+    expect(createObjectUrl).toHaveBeenCalledTimes(1);
+    expect(anchorClick).toHaveBeenCalledTimes(1);
+    const downloadedBlob = downloadedBlobs[0];
+    if (!downloadedBlob) {
+      throw new Error("connection file blob should be created");
+    }
+    const downloadedText = await downloadedBlob.text();
+    const downloaded = JSON.parse(downloadedText);
+
+    expect(downloaded).toEqual(connectionShare);
+    expect(downloadedText).not.toMatch(
+      /setupToken|adminToken|token|secret|steamApiKey|llmApiKey/i,
+    );
+    expect(revokeObjectUrl).toHaveBeenCalledWith("blob:mpgs-service-connection");
+  });
 });
 
 function jsonResponse(payload: unknown, status = 200): Response {

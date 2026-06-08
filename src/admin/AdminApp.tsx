@@ -330,6 +330,33 @@ function OverviewPanel({
   onRefresh: () => void;
   onRestart: () => void;
 }) {
+  const [shareMessage, setShareMessage] = useState<string | null>(null);
+
+  async function handleCopyServiceAddress() {
+    try {
+      await navigator.clipboard.writeText(data.connectionShare.baseUrl);
+      setShareMessage("服务地址已复制。");
+    } catch {
+      setShareMessage("复制失败，请手动复制服务地址。");
+    }
+  }
+
+  function handleDownloadConnectionFile() {
+    const blob = new Blob(
+      [JSON.stringify(data.connectionShare, null, 2)],
+      { type: "application/json" },
+    );
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "mpgs-service-connection.json";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+    setShareMessage("连接文件已下载。");
+  }
+
   return (
     <div className="admin-overview">
       <header className="admin-section-head">
@@ -395,6 +422,23 @@ function OverviewPanel({
               ["Instance", data.connectionShare.serviceInstanceId],
             ]}
           />
+          <div className="admin-actions admin-panel-actions">
+            <button
+              className="admin-secondary"
+              onClick={handleCopyServiceAddress}
+              type="button"
+            >
+              复制服务地址
+            </button>
+            <button
+              className="admin-primary"
+              onClick={handleDownloadConnectionFile}
+              type="button"
+            >
+              下载连接文件
+            </button>
+          </div>
+          {shareMessage && <p className="admin-success block">{shareMessage}</p>}
         </div>
 
         <div className="admin-panel">
