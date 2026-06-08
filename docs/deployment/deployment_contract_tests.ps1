@@ -110,8 +110,11 @@ if ($deploymentDoc -notmatch 'Do not put the raw setup token') {
 if ($localBuildScript -notmatch 'Dockerfile\.mpgs-server' -or $localBuildScript -notmatch 'docker save' -or $localBuildScript -notmatch 'buildx') {
     throw "local build script must build and save the server image locally, including buildx platform support."
 }
-if ($remoteDeployScript -notmatch 'docker load' -or $remoteDeployScript -notmatch 'up -d' -or $remoteDeployScript -notmatch '/healthz' -or $remoteDeployScript -notmatch '/api/v1/service-info') {
+if ($remoteDeployScript -notmatch 'load -i' -or $remoteDeployScript -notmatch 'compose --project-name "__PROJECT_NAME__"' -or $remoteDeployScript -notmatch 'up -d' -or $remoteDeployScript -notmatch '/healthz' -or $remoteDeployScript -notmatch '/api/v1/service-info') {
     throw "remote deploy script must load the image, start compose, and probe healthz plus service-info."
+}
+if ($remoteDeployScript -notmatch 'UseSudoDocker' -or $remoteDeployScript -notmatch 'sudo -n docker') {
+    throw "remote deploy script must support sudo Docker for hosts where the deploy user cannot access the Docker socket directly."
 }
 if ($remoteDeployScript -notmatch 'deploy/config/active/service.toml') {
     throw "remote deploy script must upload the active service config example for first manual configuration."

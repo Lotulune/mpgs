@@ -232,11 +232,14 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -RemoteHost ora_vps `
   -RemotePath ~/mpgs-server `
   -ImageTar mpgs-server-linux-arm64.tar `
+  -UseSudoDocker `
   -UseCaddy `
   -PublicBaseUrl https://$env:CADDY_DOMAIN
 ```
 
 The remote script uploads only compose files, Caddy config, example TOML files, and the image archive. It does not overwrite remote `deploy/.env`, active secrets, or active service config. The server-side steps are limited to `docker load`, `docker compose up -d`, `curl` probes, and `docker compose ps`.
+
+If the remote deploy user cannot access `/var/run/docker.sock` directly but has passwordless sudo for Docker, pass `-UseSudoDocker`. The remote commands then use `sudo -n docker load`, `sudo -n docker compose up -d`, probes, and `sudo -n docker compose ps`; they still do not compile or build anything on the VPS.
 
 ## Operational Boundary
 

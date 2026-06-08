@@ -6,6 +6,7 @@ param(
     [string] $ImageTar = "mpgs-server-local.tar",
     [string] $ProjectName = "mpgs",
     [switch] $UseCaddy,
+    [switch] $UseSudoDocker,
     [string] $PublicBaseUrl = ""
 )
 
@@ -92,6 +93,12 @@ if ($UseCaddy) {
     $composeFiles = "$composeFiles -f compose.caddy.yml --profile caddy"
 }
 
+$dockerCommand = if ($UseSudoDocker) {
+    "sudo -n docker"
+} else {
+    "docker"
+}
+
 $probeBaseUrl = if ($PublicBaseUrl) {
     if ($PublicBaseUrl -notmatch "^https?://[^`"\s]+$") {
         throw "PublicBaseUrl must be an HTTP or HTTPS URL without spaces."
@@ -117,9 +124,9 @@ if [ ! -f deploy/config/active/secrets.toml ] && [ ! -f deploy/config/setup.toml
   exit 2
 fi
 
-docker load -i "__REMOTE_IMAGE_NAME__"
+__DOCKER_COMMAND__ load -i "__REMOTE_IMAGE_NAME__"
 cd deploy
-docker compose --project-name "__PROJECT_NAME__" --env-file .env __COMPOSE_FILES__ up -d
+__DOCKER_COMMAND__ compose --project-name "__PROJECT_NAME__" --env-file .env __COMPOSE_FILES__ up -d
 
 probe_base_url="__PROBE_BASE_URL__"
 if [ "$probe_base_url" = "__CADDY_FROM_ENV__" ]; then
@@ -137,14 +144,14 @@ for attempt in 1 2 3 4 5 6 7 8 9 10; do
   fi
   if [ "$attempt" = "10" ]; then
     echo "healthz probe failed after startup." >&2
-    docker compose --project-name "__PROJECT_NAME__" --env-file .env __COMPOSE_FILES__ ps >&2
+    __DOCKER_COMMAND__ compose --project-name "__PROJECT_NAME__" --env-file .env __COMPOSE_FILES__ ps >&2
     exit 1
   fi
   sleep 3
 done
 
 curl --fail --silent --show-error "$probe_base_url/api/v1/service-info" >/dev/null
-docker compose --project-name "__PROJECT_NAME__" --env-file .env __COMPOSE_FILES__ ps
+__DOCKER_COMMAND__ compose --project-name "__PROJECT_NAME__" --env-file .env __COMPOSE_FILES__ ps
 '@
 
 $remoteScript = $remoteTemplate `
@@ -152,6 +159,7 @@ $remoteScript = $remoteTemplate `
     -replace "__REMOTE_IMAGE_NAME__", ($remoteImageName -replace '"', '\"') `
     -replace "__PROJECT_NAME__", ($ProjectName -replace '"', '\"') `
     -replace "__COMPOSE_FILES__", $composeFiles `
+    -replace "__DOCKER_COMMAND__", ($dockerCommand -replace '"', '\"') `
     -replace "__PROBE_BASE_URL__", ($probeBaseUrl -replace '"', '\"')
 
 Invoke-Checked "ssh" @($RemoteHost, $remoteScript)
