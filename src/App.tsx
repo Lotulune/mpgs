@@ -199,12 +199,20 @@ function App() {
   const latestDiscoverySnapshotRef = useRef<DiscoveryRunSnapshot | null>(null);
   const latestStatsRef = useRef<DashboardStats | null>(null);
   const taskToastIdRef = useRef(0);
+  const dashboardLoaded = dashboard !== null;
+  const isPublicServiceMode = dashboard?.stats.sourceKind === "public_service";
 
   useEffect(() => {
     void loadDashboard();
   }, []);
 
   useEffect(() => {
+    if (!dashboardLoaded || isPublicServiceMode) {
+      latestDiscoverySnapshotRef.current = null;
+      setDiscoveryTaskRunning(false);
+      return;
+    }
+
     void getDiscoveryTaskSnapshot()
       .then((snapshot) => {
         latestDiscoverySnapshotRef.current = snapshot;
@@ -213,7 +221,7 @@ function App() {
       .catch(() => {
         setDiscoveryTaskRunning(false);
       });
-  }, []);
+  }, [dashboardLoaded, isPublicServiceMode]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -284,7 +292,7 @@ function App() {
   }, [dashboard, discoveryTaskRunning, refreshDashboard]);
 
   useEffect(() => {
-    if (!isTauriRuntime()) {
+    if (!dashboardLoaded || isPublicServiceMode || !isTauriRuntime()) {
       return;
     }
 
@@ -318,7 +326,7 @@ function App() {
       isDisposed = true;
       unlisten?.();
     };
-  }, []);
+  }, [dashboardLoaded, isPublicServiceMode]);
 
   async function refreshDashboard(requestId = beginDashboardRequest()) {
     const payload = await getDashboard();
@@ -886,7 +894,7 @@ function App() {
           />
         )}
 
-        {activeView === "ai" && (
+        {activeView === "ai" && !isPublicServiceMode && (
           <AiAssistantPage
             activeConversationId={activeAiConversation.id}
             assessment={assessment}
@@ -1008,6 +1016,7 @@ function App() {
             sections={sections}
             sectionPages={sectionPages}
             selectedAppid={selectedGame?.appid}
+            showAiAssistant={!isPublicServiceMode}
             sortMode={sortMode}
             stats={dashboard.stats}
             status={status}

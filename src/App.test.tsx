@@ -45,6 +45,24 @@ function buildDashboard() {
   return structuredClone(mockDashboard);
 }
 
+function buildPublicServiceDashboard() {
+  const dashboard = buildDashboard();
+  dashboard.stats = {
+    ...dashboard.stats,
+    sourceKind: "public_service",
+    dataSource: "公共发现服务：MPGS Test Service",
+    syncRunning: true,
+    backfillRunning: true,
+    aiBatchRefreshRunning: true,
+    classicDiscoveryRunning: true,
+  };
+  dashboard.config = {
+    ...dashboard.config,
+    onboardingCompleted: true,
+  };
+  return dashboard;
+}
+
 function createGames(count: number, prefix: string) {
   return Array.from({ length: count }, (_, index) => {
     const template = mockDashboard.newGames[index % mockDashboard.newGames.length];
@@ -602,6 +620,36 @@ describe("App dashboard interactions", () => {
     });
 
     expect(getDashboardMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not subscribe to local discovery task events in public service mode", async () => {
+    isTauriRuntimeMock.mockReturnValue(true);
+    getDashboardMock.mockResolvedValue(buildPublicServiceDashboard());
+
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "新游区" });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(listenMock).not.toHaveBeenCalled();
+  });
+
+  it("does not expose the local AI assistant entry in public service mode", async () => {
+    getDashboardMock.mockResolvedValue(buildPublicServiceDashboard());
+
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "新游区" });
+
+    expect(
+      screen.queryByRole("button", { name: "✦ 让 AI 帮我找游戏" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "AI 智能推荐助手 Beta" }),
+    ).not.toBeInTheDocument();
   });
 
   it("shows a toast when classic discovery finishes and dismisses it on click", async () => {

@@ -47,6 +47,7 @@ export function DashboardPage({
   sections,
   sectionPages,
   selectedAppid,
+  showAiAssistant = true,
   sortMode,
   stats,
   status,
@@ -72,6 +73,7 @@ export function DashboardPage({
   sections: DashboardSection[];
   sectionPages: DashboardSectionPageState;
   selectedAppid?: number;
+  showAiAssistant?: boolean;
   sortMode: LibrarySortMode;
   stats: DashboardStats;
   status: string;
@@ -154,6 +156,7 @@ export function DashboardPage({
         onToggleQuickTag={onToggleQuickTag}
         onSync={onSync}
         quickTags={quickTags}
+        showAiAssistant={showAiAssistant}
         stats={stats}
         status={status}
       />
@@ -358,6 +361,7 @@ function RightRail({
   onToggleQuickTag,
   onSync,
   quickTags,
+  showAiAssistant,
   stats,
   status,
 }: {
@@ -373,6 +377,7 @@ function RightRail({
   onToggleQuickTag: (tag: string) => void;
   onSync: (mode: SyncMode) => void;
   quickTags: string[];
+  showAiAssistant: boolean;
   stats: DashboardStats;
   status: string;
 }) {
@@ -547,25 +552,27 @@ function RightRail({
         <p className="mini-status">{stats.dataSource}</p>
       </section>
 
-      <section className="ai-card">
-        <div className="rail-title">
-          <span>✨</span>
-          <h2>AI 智能推荐助手</h2>
-          <em>Beta</em>
-        </div>
-        <p>让 AI 帮你找到最适合的多人游戏</p>
-        <div className="prompt-box">
-          例如：
-          <br />
-          想找适合和朋友休闲联机，
-          <br />
-          不太复杂但很有趣的游戏
-        </div>
-        <button className="gold-button" type="button" onClick={onAi}>
-          ✦ 让 AI 帮我找游戏
-        </button>
-        <p className="mini-status">{status}</p>
-      </section>
+      {showAiAssistant ? (
+        <section className="ai-card">
+          <div className="rail-title">
+            <span>✨</span>
+            <h2>AI 智能推荐助手</h2>
+            <em>Beta</em>
+          </div>
+          <p>让 AI 帮你找到最适合的多人游戏</p>
+          <div className="prompt-box">
+            例如：
+            <br />
+            想找适合和朋友休闲联机，
+            <br />
+            不太复杂但很有趣的游戏
+          </div>
+          <button className="gold-button" type="button" onClick={onAi}>
+            ✦ 让 AI 帮我找游戏
+          </button>
+          <p className="mini-status">{status}</p>
+        </section>
+      ) : null}
 
       <section className="filter-card">
         <div className="filter-head">
