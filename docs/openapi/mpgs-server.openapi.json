@@ -828,6 +828,25 @@
   },
   "components": {
     "schemas": {
+      "AdminAuditEventSummary": {
+        "type": "object",
+        "required": [
+          "eventType",
+          "actor",
+          "outcome"
+        ],
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "eventType": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string"
+          }
+        }
+      },
       "AdminDiagnosticsResponse": {
         "type": "object",
         "required": [
@@ -885,11 +904,39 @@
         "type": "object",
         "required": [
           "serviceName",
-          "publicCatalogStatus"
+          "publicCatalogStatus",
+          "publicGameCount",
+          "pendingReviewCount",
+          "restartRequired",
+          "connectionShareConfigured"
         ],
         "properties": {
+          "connectionShareConfigured": {
+            "type": "boolean"
+          },
+          "latestAuditEvent": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AdminAuditEventSummary"
+              }
+            ]
+          },
+          "pendingReviewCount": {
+            "type": "integer",
+            "format": "int64"
+          },
           "publicCatalogStatus": {
             "$ref": "#/components/schemas/PublicCatalogStatus"
+          },
+          "publicGameCount": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "restartRequired": {
+            "type": "boolean"
           },
           "serviceName": {
             "type": "string"

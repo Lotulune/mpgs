@@ -193,6 +193,45 @@ async fn admin_pending_service_identity_writes_pending_config_and_preserves_acti
 }
 
 #[tokio::test]
+async fn admin_overview_reports_connection_share_and_pending_restart_state() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    write_active_config(temp_dir.path());
+    let app = config_management_app(temp_dir.path());
+    let cookie = admin_cookie(app.clone()).await;
+
+    let (_pending_status, _pending_value, _headers) = request_json(
+        app.clone(),
+        Method::POST,
+        "/api/v1/admin/config/pending/service-identity",
+        json!({ "serviceName": "MPGS Pending Service" }),
+        Some(&cookie),
+    )
+    .await;
+
+    let (status, overview, _headers) = request_json(
+        app,
+        Method::GET,
+        "/api/v1/admin/overview",
+        json!({}),
+        Some(&cookie),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        overview["serviceName"],
+        "MPGS Config Management Test Service"
+    );
+    assert_eq!(overview["publicGameCount"], 0);
+    assert_eq!(overview["pendingReviewCount"], 0);
+    assert_eq!(overview["restartRequired"], true);
+    assert_eq!(overview["connectionShareConfigured"], true);
+    assert!(overview["latestAuditEvent"].is_null());
+    assert!(overview.get("adminToken").is_none());
+    assert!(overview.get("setupToken").is_none());
+}
+
+#[tokio::test]
 async fn admin_connection_share_requires_session_cookie() {
     let temp_dir = tempfile::tempdir().unwrap();
     write_active_config(temp_dir.path());

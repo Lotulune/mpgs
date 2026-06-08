@@ -30,6 +30,19 @@ pub struct AdminSessionResponse {
 pub struct AdminOverviewResponse {
     pub service_name: String,
     pub public_catalog_status: mpgs_core::models::PublicCatalogStatus,
+    pub public_game_count: i64,
+    pub pending_review_count: i64,
+    pub restart_required: bool,
+    pub connection_share_configured: bool,
+    pub latest_audit_event: Option<AdminAuditEventSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminAuditEventSummary {
+    pub event_type: String,
+    pub actor: String,
+    pub outcome: String,
 }
 
 #[derive(Debug, Serialize, ToSchema)]

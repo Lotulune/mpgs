@@ -26,6 +26,12 @@ pub struct AuditEvent {
     pub outcome: String,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AdminOverviewStats {
+    pub public_game_count: i64,
+    pub pending_review_count: i64,
+}
+
 pub async fn connect(database_url: &str) -> Result<PgPool, sqlx_core::error::Error> {
     PgPoolOptions::new()
         .max_connections(5)
@@ -220,6 +226,31 @@ pub async fn latest_audit_event(
         })
     })
     .transpose()
+}
+
+pub async fn admin_overview_stats(
+    pool: &PgPool,
+) -> Result<AdminOverviewStats, sqlx_core::error::Error> {
+    let row = sqlx_core::query::query::<Postgres>(
+        r#"
+        SELECT
+            COUNT(*) FILTER (
+                WHERE review_status = 'accepted'
+                  AND visibility = 'public'
+            ) AS public_game_count,
+            COUNT(*) FILTER (
+                WHERE review_status = 'needs_review'
+            ) AS pending_review_count
+        FROM public_catalog.games
+        "#,
+    )
+    .fetch_one(pool)
+    .await?;
+
+    Ok(AdminOverviewStats {
+        public_game_count: row.try_get("public_game_count")?,
+        pending_review_count: row.try_get("pending_review_count")?,
+    })
 }
 
 pub async fn discovery_home(

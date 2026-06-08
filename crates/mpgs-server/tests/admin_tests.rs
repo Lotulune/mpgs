@@ -1,5 +1,6 @@
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
+use mpgs_server::public_catalog::{PublicGameDetail, PublicGameListItem};
 use mpgs_server::{
     build_router_with_state, AdminAuthConfig, AppState, AuditSink, DatabaseHealth, RateLimitConfig,
     RateLimiters, ServiceInfoConfig,
@@ -33,6 +34,16 @@ async fn request_json(
     body: serde_json::Value,
     cookie: Option<&str>,
 ) -> axum::response::Response {
+    request_json_from(admin_app(), method, uri, body, cookie).await
+}
+
+async fn request_json_from(
+    app: axum::Router,
+    method: Method,
+    uri: &str,
+    body: serde_json::Value,
+    cookie: Option<&str>,
+) -> axum::response::Response {
     let mut builder = Request::builder()
         .method(method)
         .uri(uri)
@@ -42,8 +53,7 @@ async fn request_json(
         builder = builder.header(header::COOKIE, cookie);
     }
 
-    admin_app()
-        .oneshot(builder.body(Body::from(body.to_string())).unwrap())
+    app.oneshot(builder.body(Body::from(body.to_string())).unwrap())
         .await
         .unwrap()
 }
@@ -57,6 +67,28 @@ async fn get_json(uri: &str, cookie: Option<&str>) -> (StatusCode, serde_json::V
     let value = serde_json::from_slice(&body).unwrap();
 
     (status, value)
+}
+
+async fn admin_cookie_for(app: axum::Router) -> String {
+    let response = request_json_from(
+        app,
+        Method::POST,
+        "/api/v1/admin/session",
+        json!({ "token": "correct-admin-token" }),
+        None,
+    )
+    .await;
+
+    response
+        .headers()
+        .get(header::SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string()
 }
 
 #[tokio::test]
@@ -173,6 +205,11 @@ async fn admin_session_cookie_allows_overview_and_diagnostics() {
     assert_eq!(overview_status, StatusCode::OK);
     assert_eq!(overview["serviceName"], "MPGS Admin Test Service");
     assert_eq!(overview["publicCatalogStatus"], "empty");
+    assert_eq!(overview["publicGameCount"], 0);
+    assert_eq!(overview["pendingReviewCount"], 0);
+    assert_eq!(overview["restartRequired"], false);
+    assert_eq!(overview["connectionShareConfigured"], false);
+    assert!(overview["latestAuditEvent"].is_null());
     assert_eq!(diagnostics_status, StatusCode::OK);
     assert_eq!(diagnostics["postgres"], "ok");
     assert_eq!(diagnostics["publicBaseUrlStatus"], "missing");
@@ -180,6 +217,80 @@ async fn admin_session_cookie_allows_overview_and_diagnostics() {
     assert_eq!(diagnostics["publicCors"], "disabled");
     assert_eq!(diagnostics["restartPolicy"], "external_required");
     assert!(diagnostics.get("adminToken").is_none());
+}
+
+#[tokio::test]
+async fn admin_overview_reports_public_catalog_fixture_counts() {
+    let game = PublicGameListItem {
+        appid: 730,
+        name: "Counter-Strike 2".to_string(),
+        recommendation_score: Some(91.5),
+        updated_at: "2026-06-08 03:00:00+00".to_string(),
+    };
+    let app = build_router_with_state(AppState::new_with_admin_auth(
+        test_config()
+            .service_info_with_catalog_status(mpgs_core::models::PublicCatalogStatus::Ready),
+        DatabaseHealth::PublicCatalogFixture {
+            revision: 7,
+            detail: Some(PublicGameDetail { game }),
+            analysis: None,
+        },
+        AdminAuthConfig::for_test_token("correct-admin-token"),
+    ));
+    let cookie = admin_cookie_for(app.clone()).await;
+
+    let response = request_json_from(
+        app,
+        Method::GET,
+        "/api/v1/admin/overview",
+        json!({}),
+        Some(&cookie),
+    )
+    .await;
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let overview: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(overview["publicCatalogStatus"], "ready");
+    assert_eq!(overview["publicGameCount"], 1);
+    assert_eq!(overview["pendingReviewCount"], 0);
+    assert_eq!(overview["restartRequired"], false);
+    assert_eq!(overview["connectionShareConfigured"], false);
+    assert!(overview["latestAuditEvent"].is_null());
+}
+
+#[tokio::test]
+async fn admin_overview_reports_latest_audit_event_without_secret_values() {
+    let audit = AuditSink::memory();
+    let app = build_router_with_state(admin_state().with_audit_sink(audit));
+    let cookie = admin_cookie_for(app.clone()).await;
+
+    let response = request_json_from(
+        app,
+        Method::GET,
+        "/api/v1/admin/overview",
+        json!({}),
+        Some(&cookie),
+    )
+    .await;
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let overview: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        overview["latestAuditEvent"]["eventType"],
+        "admin.session.login"
+    );
+    assert_eq!(overview["latestAuditEvent"]["actor"], "admin");
+    assert_eq!(overview["latestAuditEvent"]["outcome"], "success");
+    assert!(overview["latestAuditEvent"].get("token").is_none());
+    assert!(overview.get("adminToken").is_none());
 }
 
 #[tokio::test]

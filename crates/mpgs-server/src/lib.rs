@@ -11,7 +11,8 @@ pub mod setup;
 
 pub use admin::AdminAuthConfig;
 use admin::{
-    AdminDiagnosticsResponse, AdminOverviewResponse, AdminSessionRequest, AdminSessionResponse,
+    AdminAuditEventSummary, AdminDiagnosticsResponse, AdminOverviewResponse, AdminSessionRequest,
+    AdminSessionResponse,
 };
 use axum::{
     extract::{Path, Query, State},
@@ -261,6 +262,25 @@ impl AuditSink {
             }
         }
     }
+
+    async fn latest(&self) -> Option<AuditRecord> {
+        match self {
+            Self::Noop => None,
+            Self::Pool(pool) => db::latest_audit_event(pool)
+                .await
+                .ok()
+                .flatten()
+                .map(|event| AuditRecord {
+                    event_type: event.event_type,
+                    actor: event.actor,
+                    outcome: event.outcome,
+                }),
+            Self::Memory(records) => records
+                .lock()
+                .ok()
+                .and_then(|records| records.last().cloned()),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -295,6 +315,19 @@ impl DatabaseHealth {
         match self {
             Self::Pool(pool) => db::service_config_state(pool).await.ok(),
             _ => None,
+        }
+    }
+
+    async fn admin_overview_stats(&self) -> db::AdminOverviewStats {
+        match self {
+            Self::Pool(pool) => db::admin_overview_stats(pool).await.unwrap_or_default(),
+            Self::PublicCatalogFixture { detail, .. } => db::AdminOverviewStats {
+                public_game_count: detail.iter().count() as i64,
+                pending_review_count: 0,
+            },
+            Self::HealthyForTest | Self::SafeMode | Self::Unavailable => {
+                db::AdminOverviewStats::default()
+            }
         }
     }
 
@@ -670,9 +703,43 @@ async fn admin_overview(State(state): State<AppState>, headers: HeaderMap) -> Re
         return admin_session_required_response();
     }
 
+    let stats = state.database_health.admin_overview_stats().await;
+    let restart_required = state
+        .database_health
+        .service_config_state()
+        .await
+        .map(|state| state.restart_required)
+        .unwrap_or_else(|| {
+            state
+                .config_file_manager
+                .as_ref()
+                .and_then(|manager| manager.state().ok())
+                .map(|state| state.restart_required)
+                .unwrap_or(false)
+        });
+    let connection_share_configured = state
+        .config_file_manager
+        .as_ref()
+        .map(|manager| manager.service_connection_file().is_ok())
+        .unwrap_or(false);
+    let latest_audit_event = state
+        .audit
+        .latest()
+        .await
+        .map(|event| AdminAuditEventSummary {
+            event_type: event.event_type,
+            actor: event.actor,
+            outcome: event.outcome,
+        });
+
     Json(AdminOverviewResponse {
         service_name: state.service_info.service_name,
         public_catalog_status: state.service_info.public_catalog_status,
+        public_game_count: stats.public_game_count,
+        pending_review_count: stats.pending_review_count,
+        restart_required,
+        connection_share_configured,
+        latest_audit_event,
     })
     .into_response()
 }
@@ -1285,6 +1352,7 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
     ),
     components(schemas(
         admin::AdminDiagnosticsResponse,
+        admin::AdminAuditEventSummary,
         admin::AdminOverviewResponse,
         admin::AdminSessionRequest,
         admin::AdminSessionResponse,
