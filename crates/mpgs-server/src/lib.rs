@@ -8,6 +8,7 @@ pub mod public_catalog;
 pub mod rate_limit;
 pub mod restart;
 pub mod setup;
+pub mod worker;
 
 pub use admin::AdminAuthConfig;
 use admin::{

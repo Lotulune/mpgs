@@ -6,7 +6,7 @@ use crate::public_catalog::{
     AdminReviewCandidate, DiscoveryHomeResponse, DiscoveryHomeSections, PageMeta,
     PublicGameAnalysis, PublicGameDetail, PublicGameListItem, PublicGamesPage,
 };
-use mpgs_core::models::PublicCatalogStatus;
+use mpgs_core::models::{GameAnalysisReport, GameCard, PublicCatalogStatus};
 use sqlx_core::migrate::{Migration, MigrationType, Migrator};
 use sqlx_core::row::Row;
 use sqlx_postgres::{PgPool, PgPoolOptions, Postgres};
@@ -63,6 +63,14 @@ pub struct TaskRunOutcome {
     pub task: AdminTaskSummary,
     pub run_id: i64,
     pub run_status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublicCatalogUpsertResult {
+    pub appid: u32,
+    pub review_status: String,
+    pub visibility: String,
+    pub revision_bumped: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -744,6 +752,123 @@ pub async fn apply_admin_review_action(
     Ok(candidate)
 }
 
+pub async fn upsert_public_catalog_game(
+    pool: &PgPool,
+    game: &GameCard,
+    report: &GameAnalysisReport,
+    review_status: &str,
+    visibility: &str,
+) -> anyhow::Result<PublicCatalogUpsertResult> {
+    let mut tx = pool.begin().await?;
+    let before = sqlx_core::query::query::<Postgres>(
+        r#"
+        SELECT review_status, visibility
+        FROM public_catalog.games
+        WHERE appid = $1
+        FOR UPDATE
+        "#,
+    )
+    .bind(game.appid as i32)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let before_public = before
+        .as_ref()
+        .is_some_and(|row| row_is_public_catalog_visible(row));
+
+    let game_row = sqlx_core::query::query::<Postgres>(
+        r#"
+        INSERT INTO public_catalog.games (
+            appid,
+            name,
+            review_status,
+            visibility,
+            recommendation_score
+        )
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (appid) DO UPDATE
+        SET name = EXCLUDED.name,
+            review_status = CASE
+                WHEN public_catalog.games.review_status IN ('accepted', 'archived')
+                THEN public_catalog.games.review_status
+                ELSE EXCLUDED.review_status
+            END,
+            visibility = CASE
+                WHEN public_catalog.games.review_status IN ('accepted', 'archived')
+                THEN public_catalog.games.visibility
+                ELSE EXCLUDED.visibility
+            END,
+            recommendation_score = EXCLUDED.recommendation_score,
+            updated_at = now()
+        RETURNING review_status, visibility
+        "#,
+    )
+    .bind(game.appid as i32)
+    .bind(&game.name)
+    .bind(review_status)
+    .bind(visibility)
+    .bind(game.recommendation_score)
+    .fetch_one(&mut *tx)
+    .await?;
+    let after_public = row_is_public_catalog_visible(&game_row);
+    let report_json = serde_json::to_value(report)?;
+
+    sqlx_core::query::query::<Postgres>(
+        r#"
+        INSERT INTO public_catalog.game_analysis (
+            appid,
+            report_json,
+            generated_at
+        )
+        VALUES ($1, $2, now())
+        ON CONFLICT (appid) DO UPDATE
+        SET report_json = EXCLUDED.report_json,
+            generated_at = now(),
+            updated_at = now()
+        "#,
+    )
+    .bind(game.appid as i32)
+    .bind(report_json)
+    .execute(&mut *tx)
+    .await?;
+
+    let revision_bumped = after_public;
+    if revision_bumped {
+        sqlx_core::query::query::<Postgres>(
+            r#"
+            UPDATE public_catalog.public_catalog_state
+            SET revision = revision + 1,
+                status = 'ready',
+                last_generated_at = now(),
+                updated_at = now()
+            WHERE id = TRUE
+            "#,
+        )
+        .execute(&mut *tx)
+        .await?;
+    } else if !before_public {
+        sqlx_core::query::query::<Postgres>(
+            r#"
+            UPDATE public_catalog.public_catalog_state
+            SET last_generated_at = now(),
+                updated_at = now()
+            WHERE id = TRUE
+            "#,
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    let result = PublicCatalogUpsertResult {
+        appid: game.appid,
+        review_status: game_row.try_get("review_status")?,
+        visibility: game_row.try_get("visibility")?,
+        revision_bumped,
+    };
+    tx.commit().await?;
+
+    Ok(result)
+}
+
 pub async fn discovery_home(
     pool: &PgPool,
 ) -> Result<DiscoveryHomeResponse, sqlx_core::error::Error> {
@@ -813,6 +938,16 @@ fn admin_task_failure_from_row(
         reason: row.try_get("reason")?,
         created_at: row.try_get("created_at")?,
     })
+}
+
+fn row_is_public_catalog_visible(row: &sqlx_postgres::PgRow) -> bool {
+    let review_status: Result<String, _> = row.try_get("review_status");
+    let visibility: Result<String, _> = row.try_get("visibility");
+
+    matches!(
+        (review_status.as_deref(), visibility.as_deref()),
+        (Ok("accepted"), Ok("public"))
+    )
 }
 
 pub async fn public_games_page(

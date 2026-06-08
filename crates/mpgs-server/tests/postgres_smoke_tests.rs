@@ -1,13 +1,19 @@
 use mpgs_core::models::PublicCatalogStatus;
+use mpgs_core::models::{ReviewSnippet, StoreReleaseState};
+use mpgs_core::recommendation::DemoStatus;
+use mpgs_core::steam_mapping::SteamGameSnapshot;
 use mpgs_server::admin::AdminReviewAction;
 use mpgs_server::admin::AdminTaskKind;
 use mpgs_server::{
-    build_router_with_state, db, AppState, ConfigHealth, DatabaseHealth, ServiceInfoConfig,
+    build_router_with_state, db, worker, AppState, ConfigHealth, DatabaseHealth, ServiceInfoConfig,
 };
 
+use anyhow::Result;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use std::fs;
+use std::future::Future;
+use std::pin::Pin;
 use tower::ServiceExt;
 
 fn test_config() -> ServiceInfoConfig {
@@ -15,6 +21,47 @@ fn test_config() -> ServiceInfoConfig {
         service_instance_id: "018fb770-8998-7699-a6e4-b7b59f2f9c01".to_string(),
         service_name: "MPGS Postgres Smoke Test Service".to_string(),
         service_version: "0.1.0".to_string(),
+    }
+}
+
+struct StaticSnapshotSource {
+    snapshot: Option<SteamGameSnapshot>,
+}
+
+impl worker::SteamSnapshotSource for StaticSnapshotSource {
+    fn fetch_snapshot<'a>(
+        &'a self,
+        _appid: u32,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<SteamGameSnapshot>>> + Send + 'a>> {
+        Box::pin(async { Ok(self.snapshot.clone()) })
+    }
+}
+
+fn importable_snapshot(name: &str) -> SteamGameSnapshot {
+    SteamGameSnapshot {
+        name: Some(name.to_string()),
+        short_description: Some("A polished co-op action game for small groups.".to_string()),
+        release_date: Some("2026-04-20".to_string()),
+        release_date_text: Some("Apr 20, 2026".to_string()),
+        release_state: Some(StoreReleaseState::Released),
+        demo_status: DemoStatus::ReleasedWithDemo,
+        supported_languages: Some(vec!["English".to_string()]),
+        is_adult_content: Some(false),
+        is_free: Some(false),
+        price_text: Some("$19.99".to_string()),
+        discount_percent: Some(10),
+        positive_review_pct: Some(96.0),
+        total_reviews: Some(12_000),
+        current_players: Some(8_000),
+        capsule_url: Some("https://cdn.example.test/header.jpg".to_string()),
+        store_screenshot_urls: Vec::new(),
+        tags: vec!["Co-op".to_string(), "Action".to_string()],
+        multiplayer_modes: vec!["Online Co-op".to_string(), "Multi-player".to_string()],
+        review_snippets: vec![ReviewSnippet {
+            voted_up: true,
+            review: "Great with friends and easy to teach.".to_string(),
+            playtime_hours: Some(12.0),
+        }],
     }
 }
 
@@ -417,4 +464,58 @@ async fn postgres_task_runs_complete_and_fail_with_sanitized_failure_records() {
     assert_eq!(failure.provider.as_deref(), Some("steam"));
     assert!(failure.retryable);
     assert_eq!(failure.reason, "Steam lookup timed out.");
+}
+
+#[tokio::test]
+async fn manual_appid_worker_imports_public_catalog_candidate_from_claimed_task() {
+    let Ok(database_url) = std::env::var("MPGS_TEST_DATABASE_URL") else {
+        return;
+    };
+
+    let pool = db::connect_and_migrate(&database_url)
+        .await
+        .expect("connect to Postgres and run migrations");
+
+    let task = db::create_admin_task(&pool, AdminTaskKind::ManualAppidDiscovery, Some(910_201))
+        .await
+        .expect("create manual appid task");
+    let outcome = worker::run_one_worker_tick(
+        &pool,
+        "smoke-worker-manual-appid",
+        &StaticSnapshotSource {
+            snapshot: Some(importable_snapshot("Smoke Co-op Harbor")),
+        },
+    )
+    .await
+    .expect("run one manual appid worker tick");
+
+    assert_eq!(
+        outcome,
+        worker::WorkerTickOutcome::Completed {
+            task_id: task.id,
+            appid: 910_201,
+        }
+    );
+
+    let detail = db::public_game_detail(&pool, 910_201)
+        .await
+        .expect("read imported public game")
+        .expect("high-confidence manual AppID task should publish public game");
+    let analysis = db::public_game_analysis(&pool, 910_201)
+        .await
+        .expect("read imported public game analysis")
+        .expect("manual AppID task should store rule analysis");
+    let task_state = db::admin_task_control_state(&pool)
+        .await
+        .expect("read task state after worker tick");
+
+    assert_eq!(detail.game.name, "Smoke Co-op Harbor");
+    assert!(analysis.report["overview"]
+        .as_str()
+        .unwrap_or("")
+        .contains("综合推荐"));
+    assert!(task_state
+        .recent_tasks
+        .iter()
+        .any(|item| item.id == task.id && item.status == "completed"));
 }
