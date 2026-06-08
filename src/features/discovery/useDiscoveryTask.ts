@@ -9,6 +9,7 @@ import {
   resumeDiscoveryTask,
   startDiscoveryTask,
 } from "../../api/client";
+import { getCurrentServiceConnection } from "../../domain/serviceConnectionStorage";
 import type { DiscoveryRunSnapshot, DiscoveryTaskRequest } from "../../types";
 
 const DISCOVERY_TASK_EVENT = "discovery-task-updated";
@@ -189,7 +190,7 @@ export function useDiscoveryTask() {
   useEffect(() => {
     void refresh();
 
-    if (!isTauriRuntime()) {
+    if (getCurrentServiceConnection() || !isTauriRuntime()) {
       return;
     }
 
@@ -199,7 +200,7 @@ export function useDiscoveryTask() {
     void listen<DiscoveryRunSnapshot>(
       DISCOVERY_TASK_EVENT,
       ({ payload }) => {
-        if (isDisposed) {
+        if (isDisposed || getCurrentServiceConnection()) {
           return;
         }
         applySnapshot(payload);

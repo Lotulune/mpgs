@@ -2,12 +2,17 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DiscoveryRunSnapshot } from "../../types";
+import type { ServiceInfo } from "../../types";
 import {
   getDiscoveryTaskSnapshot,
   isTauriRuntime,
   listDiscoveryTaskHistory,
   startDiscoveryTask,
 } from "../../api/client";
+import {
+  clearCurrentServiceConnection,
+  saveCurrentServiceConnection,
+} from "../../domain/serviceConnectionStorage";
 import { useDiscoveryTask } from "./useDiscoveryTask";
 
 const listenMock = vi.fn();
@@ -35,6 +40,23 @@ const tauriRuntimeMock = vi.mocked(isTauriRuntime);
 const getSnapshotMock = vi.mocked(getDiscoveryTaskSnapshot);
 const listHistoryMock = vi.mocked(listDiscoveryTaskHistory);
 const startTaskMock = vi.mocked(startDiscoveryTask);
+
+const compatibleInfo: ServiceInfo = {
+  serviceInstanceId: "018fb770-8998-7699-a6e4-b7b59f2f9c01",
+  serviceName: "MPGS Test Service",
+  serviceVersion: "0.1.0",
+  apiVersion: "v1",
+  publicCatalogStatus: "ready",
+  capabilities: ["public_catalog_read"],
+};
+
+function configureServiceConnection() {
+  saveCurrentServiceConnection({
+    baseUrl: "https://mpgs.example.test",
+    info: compatibleInfo,
+    validatedAt: "2026-06-08T00:00:00.000Z",
+  });
+}
 
 function createDeferred<T>() {
   let resolve!: (value: T) => void;
@@ -81,6 +103,7 @@ function buildSnapshot(
 
 describe("useDiscoveryTask", () => {
   beforeEach(() => {
+    clearCurrentServiceConnection();
     listenMock.mockReset();
     tauriRuntimeMock.mockReset();
     getSnapshotMock.mockReset();
@@ -110,6 +133,23 @@ describe("useDiscoveryTask", () => {
     expect(listHistoryMock).toHaveBeenCalledWith(8);
     expect(result.current.snapshot).toEqual(snapshot);
     expect(result.current.history).toEqual(history);
+  });
+
+  it("does not subscribe to local discovery task events in public service mode", async () => {
+    configureServiceConnection();
+    tauriRuntimeMock.mockReturnValue(true);
+    getSnapshotMock.mockResolvedValue(null);
+    listHistoryMock.mockResolvedValue([]);
+
+    const { result } = renderHook(() => useDiscoveryTask());
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    expect(getSnapshotMock).toHaveBeenCalledTimes(1);
+    expect(listHistoryMock).toHaveBeenCalledWith(8);
+    expect(listenMock).not.toHaveBeenCalled();
+    expect(result.current.snapshot).toBeNull();
+    expect(result.current.history).toEqual([]);
   });
 
   it("replaces the snapshot when a discovery update event arrives", async () => {

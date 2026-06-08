@@ -6,6 +6,7 @@ import {
   generateGameAnalysis,
   getDashboard,
   getGameAnalysis,
+  getUserCollections,
   isTauriRuntime,
   recommendGamesWithAi,
   refreshAllGameAnalyses,
@@ -272,6 +273,30 @@ describe("game analysis client", () => {
     });
     expect(dashboard.collections.favorites).toHaveLength(1);
     expect(dashboard.collections.favorites[0]).toMatchObject({
+      appid: 548430,
+      name: "Deep Rock Galactic",
+    });
+  });
+
+  it("reads service-mode collections from public REST data instead of local Tauri SQLite", async () => {
+    configureServiceConnection();
+    setTauriRuntime(true);
+    const fetchMock = installPublicServiceFetch();
+
+    await setGameUserState(548430, { wishlist: true });
+    const collections = await getUserCollections();
+
+    expect(invokeMock).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://mpgs.example.test/api/v1/discovery-home",
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://mpgs.example.test/api/v1/games?limit=100&offset=0",
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(collections.wishlist).toHaveLength(1);
+    expect(collections.wishlist[0]).toMatchObject({
       appid: 548430,
       name: "Deep Rock Galactic",
     });

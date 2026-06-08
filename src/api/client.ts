@@ -575,6 +575,11 @@ export async function setGameUserState(
 }
 
 export async function getUserCollections(): Promise<UserCollections> {
+  const serviceConnection = getCurrentServiceConnection();
+  if (serviceConnection) {
+    return (await fetchPublicDashboard(serviceConnection)).collections;
+  }
+
   if (!isTauriRuntime()) {
     refreshMockCollections();
     return mockDashboard.collections;
