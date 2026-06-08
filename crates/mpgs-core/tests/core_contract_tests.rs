@@ -4,6 +4,7 @@ use mpgs_core::models::{
     StoreReleaseState, UserGameState,
 };
 use mpgs_core::recommendation::{compute_recommendation_score, DemoStatus, GameFacts};
+use mpgs_core::steam_mapping::{build_discovered_game_card, SteamAppListItem, SteamGameSnapshot};
 
 fn fixture_game() -> GameCard {
     GameCard {
@@ -77,4 +78,45 @@ fn service_info_model_serializes_public_identity_contract() {
     assert_eq!(value["apiVersion"], "v1");
     assert_eq!(value["publicCatalogStatus"], "empty");
     assert_eq!(value["capabilities"][0], "public_catalog_read");
+}
+
+#[test]
+fn core_exports_pure_steam_discovery_mapping() {
+    let app = SteamAppListItem {
+        appid: 3_900_001,
+        name: "Fallback Name".to_string(),
+    };
+    let snapshot = SteamGameSnapshot {
+        name: Some("Moonbase Kitchen Panic".to_string()),
+        short_description: Some("A readable co-op kitchen scramble.".to_string()),
+        release_date: Some("2026-04-20".to_string()),
+        release_date_text: Some("Apr 20, 2026".to_string()),
+        release_state: Some(StoreReleaseState::Released),
+        demo_status: DemoStatus::ReleasedWithDemo,
+        supported_languages: Some(vec!["English".to_string()]),
+        is_adult_content: Some(false),
+        is_free: Some(false),
+        price_text: Some("$19.99".to_string()),
+        discount_percent: Some(20),
+        positive_review_pct: Some(93.0),
+        total_reviews: Some(240),
+        current_players: Some(88),
+        capsule_url: None,
+        store_screenshot_urls: Vec::new(),
+        tags: vec!["Co-op".to_string()],
+        multiplayer_modes: vec!["Online Co-op".to_string()],
+        review_snippets: Vec::new(),
+    };
+
+    let card = build_discovered_game_card(&app, snapshot, "2026-04-26")
+        .expect("multiplayer Steam snapshot should map to a game card");
+
+    assert_eq!(card.appid, 3_900_001);
+    assert_eq!(card.name, "Moonbase Kitchen Panic");
+    assert_eq!(card.section, "new");
+    assert_eq!(
+        card.capsule_url,
+        "https://cdn.cloudflare.steamstatic.com/steam/apps/3900001/header.jpg"
+    );
+    assert!(card.recommendation_score > 70.0);
 }

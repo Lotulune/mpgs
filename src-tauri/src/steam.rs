@@ -41,31 +41,10 @@ const STEAM_STORE_SEARCH_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const APP_DETAILS_FILTERS: &str =
     "basic,price_overview,release_date,categories,genres,demos,content_descriptors,screenshots";
 
+pub use mpgs_core::steam_mapping::{SteamAppListItem, SteamAppListPreview, SteamGameSnapshot};
+
 fn steam_app_list_endpoints() -> &'static [SteamAppListEndpoint] {
     &STEAM_APP_LIST_ENDPOINTS
-}
-
-#[derive(Debug, Clone)]
-pub struct SteamGameSnapshot {
-    pub name: Option<String>,
-    pub short_description: Option<String>,
-    pub release_date: Option<String>,
-    pub release_date_text: Option<String>,
-    pub release_state: Option<StoreReleaseState>,
-    pub demo_status: DemoStatus,
-    pub supported_languages: Option<Vec<String>>,
-    pub is_adult_content: Option<bool>,
-    pub is_free: Option<bool>,
-    pub price_text: Option<String>,
-    pub discount_percent: Option<u32>,
-    pub positive_review_pct: Option<f64>,
-    pub total_reviews: Option<u32>,
-    pub current_players: Option<u32>,
-    pub capsule_url: Option<String>,
-    pub store_screenshot_urls: Vec<String>,
-    pub tags: Vec<String>,
-    pub multiplayer_modes: Vec<String>,
-    pub review_snippets: Vec<ReviewSnippet>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,22 +52,6 @@ pub enum SteamGameSnapshotEnrichment {
     Discovery,
     Sync,
     Full,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SteamAppListPreview {
-    pub apps: Vec<SteamAppListItem>,
-    #[serde(alias = "last_appid")]
-    pub last_appid: Option<u32>,
-    #[serde(alias = "have_more_results")]
-    pub have_more_results: Option<bool>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SteamAppListItem {
-    pub appid: u32,
-    pub name: String,
 }
 
 #[derive(Debug, Deserialize)]
