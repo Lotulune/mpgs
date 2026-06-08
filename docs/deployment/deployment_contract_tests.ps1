@@ -13,6 +13,11 @@ $secretsExample = Get-Content -Raw -Path (Join-Path $root "deploy\config\active\
 $setupExample = Get-Content -Raw -Path (Join-Path $root "deploy\config\setup.toml.example")
 $localBuildScript = Get-Content -Raw -Path (Join-Path $root "deploy\scripts\build-mpgs-server-image.ps1")
 $remoteDeployScript = Get-Content -Raw -Path (Join-Path $root "deploy\scripts\deploy-mpgs-server-remote.ps1")
+$remotePreflightScriptPath = Join-Path $root "deploy\scripts\test-mpgs-server-remote-preflight.ps1"
+if (-not (Test-Path $remotePreflightScriptPath)) {
+    throw "remote preflight script must exist."
+}
+$remotePreflightScript = Get-Content -Raw -Path $remotePreflightScriptPath
 
 if ($compose -notmatch 'postgres:16-bookworm') {
     throw "compose.yml must define Postgres 16."
@@ -122,11 +127,23 @@ if ($remoteDeployScript -notmatch 'deploy/config/active/service.toml') {
 if ($remoteDeployScript -match 'cargo build|rustc|docker build|docker compose build|npm run|pnpm|yarn') {
     throw "remote deploy script must not compile or build artifacts on the VPS."
 }
+if ($remotePreflightScript -notmatch 'UseSudoDocker' -or $remotePreflightScript -notmatch 'sudo -n docker') {
+    throw "remote preflight script must support sudo Docker checks."
+}
+if ($remotePreflightScript -notmatch 'docker compose version' -or $remotePreflightScript -notmatch 'CADDY_DOMAIN' -or $remotePreflightScript -notmatch '/healthz') {
+    throw "remote preflight script must check compose, Caddy/public URL inputs, and health probe targets."
+}
+if ($remotePreflightScript -match 'cargo build|rustc|docker build|docker compose build|npm run|pnpm|yarn|docker load|up -d') {
+    throw "remote preflight script must be read-only and must not build, load, or start services."
+}
 if ($deploymentDoc -notmatch 'deploy/scripts/build-mpgs-server-image.ps1' -or $deploymentDoc -notmatch 'deploy/scripts/deploy-mpgs-server-remote.ps1') {
     throw "deployment docs must describe the checked local build and remote deploy scripts."
 }
 if ($deploymentDoc -notmatch 'linux/arm64' -or $deploymentDoc -notmatch 'ora_vps') {
     throw "deployment docs must describe local arm64 image creation for ora_vps-style servers."
+}
+if ($deploymentDoc -notmatch "-RemotePath\s+'~/mpgs-server'" -or $readme -notmatch "-RemotePath\s+'~/mpgs-server'") {
+    throw "PowerShell remote deploy examples must quote ~/mpgs-server so it is not expanded as a local Windows path."
 }
 if ($deploymentDoc -notmatch 'does not overwrite remote `deploy/.env`, active secrets, or active service config') {
     throw "deployment docs must state that remote deployment does not overwrite server secrets or active config."

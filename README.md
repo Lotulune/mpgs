@@ -69,7 +69,7 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File deploy/scripts/deploy-mpgs-server-remote.ps1 `
   -RemoteHost ora_vps `
-  -RemotePath ~/mpgs-server `
+  -RemotePath '~/mpgs-server' `
   -ImageTar mpgs-server-linux-arm64.tar `
   -UseCaddy `
   -PublicBaseUrl https://mpgs.example.com

@@ -226,11 +226,24 @@ Commit both `docs/openapi/mpgs-server.openapi.json` and `src/api/generated/mpgsS
 
 After the image archive exists locally and the server has its real `deploy/.env` plus either `deploy/config/setup.toml` or active service config, the checked remote deploy script can upload the image archive and compose assets, load the image, start Compose, and verify both `/healthz` and `/api/v1/service-info`:
 
+Before uploading, run the read-only remote preflight. It checks the local image archive path when provided, remote Docker/Compose access, deployment directory presence, redacted `.env` keys, active/setup config presence, 80/443 occupancy, and the health/service-info/admin probe URLs. It does not load images, start Compose, build, or compile on the VPS:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File deploy/scripts/test-mpgs-server-remote-preflight.ps1 `
+  -RemoteHost ora_vps `
+  -RemotePath '~/mpgs-server' `
+  -ImageTar mpgs-server-linux-arm64.tar `
+  -UseSudoDocker `
+  -UseCaddy `
+  -PublicBaseUrl https://$env:CADDY_DOMAIN
+```
+
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File deploy/scripts/deploy-mpgs-server-remote.ps1 `
   -RemoteHost ora_vps `
-  -RemotePath ~/mpgs-server `
+  -RemotePath '~/mpgs-server' `
   -ImageTar mpgs-server-linux-arm64.tar `
   -UseSudoDocker `
   -UseCaddy `
