@@ -21,7 +21,7 @@ export function WishlistTrackerPage({
       <CollectionGrid
         actionLabel={(game) => `移出愿望单《${game.name}》`}
         countLabel={`愿望单 · ${games.length} 款`}
-        emptyBody="还没有加入愿望单的游戏。去详情页点一下“愿望单”，这里会立刻同步你的本地状态。"
+        emptyBody="还没有加入愿望单的游戏。去详情页点一下“愿望单”，这里会立刻更新你的本地个人状态。"
         emptyTitle="愿望单还是空的"
         games={games}
         onAction={(game) =>

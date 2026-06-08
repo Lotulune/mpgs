@@ -109,5 +109,7 @@ describe("CollectionsHubPage", () => {
     expect(
       screen.getByText(/去详情页点击“收藏 \/ 加入愿望单 \/ 关注”/),
     ).toBeInTheDocument();
+    expect(screen.getByText(/本地个人状态/)).toBeInTheDocument();
+    expect(screen.queryByText(/SQLite/)).not.toBeInTheDocument();
   });
 });

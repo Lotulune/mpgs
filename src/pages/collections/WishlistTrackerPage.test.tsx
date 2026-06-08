@@ -78,4 +78,18 @@ describe("WishlistTrackerPage", () => {
       "已从愿望单移除《Orbit Outing》。",
     );
   });
+
+  it("describes empty wishlist state as local personal state without storage internals", () => {
+    render(
+      <WishlistTrackerPage
+        games={[]}
+        onOpen={vi.fn()}
+        onToggle={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "愿望单还是空的" })).toBeInTheDocument();
+    expect(screen.getByText(/本地个人状态/)).toBeInTheDocument();
+    expect(screen.queryByText(/SQLite/)).not.toBeInTheDocument();
+  });
 });

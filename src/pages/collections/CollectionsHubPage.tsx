@@ -10,22 +10,22 @@ const collectionTabCopy: Record<
 > = {
   favorites: {
     emptyTitle: "游戏收藏 还是空的",
-    emptyCopy: "去详情页点击“收藏”，这里会立刻同步本地 SQLite 状态。",
+    emptyCopy: "去详情页点击“收藏”，这里会立刻更新本地个人状态。",
     label: "游戏收藏",
   },
   wishlist: {
     emptyTitle: "愿望单 还是空的",
-    emptyCopy: "去详情页点击“加入愿望单”，这里会立刻同步本地 SQLite 状态。",
+    emptyCopy: "去详情页点击“加入愿望单”，这里会立刻更新本地个人状态。",
     label: "愿望单",
   },
   followed: {
     emptyTitle: "关注的游戏 还是空的",
-    emptyCopy: "去详情页点击“关注”，这里会立刻同步本地 SQLite 状态。",
+    emptyCopy: "去详情页点击“关注”，这里会立刻更新本地个人状态。",
     label: "关注的游戏",
   },
   history: {
     emptyTitle: "浏览记录 还是空的",
-    emptyCopy: "去详情页点击“收藏 / 加入愿望单 / 关注”，这里会立刻同步本地 SQLite 状态。",
+    emptyCopy: "去详情页点击“收藏 / 加入愿望单 / 关注”，这里会立刻更新本地个人状态。",
     label: "浏览记录",
   },
 };
