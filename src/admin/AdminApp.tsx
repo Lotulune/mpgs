@@ -412,6 +412,21 @@ function OverviewPanel({
           />
           {restartMessage && <p className="admin-success block">{restartMessage}</p>}
         </div>
+
+        <div className="admin-panel">
+          <h2>最近审计</h2>
+          {data.overview.latestAuditEvent ? (
+            <DefinitionList
+              items={[
+                ["Event", data.overview.latestAuditEvent.eventType],
+                ["Actor", data.overview.latestAuditEvent.actor],
+                ["Outcome", data.overview.latestAuditEvent.outcome],
+              ]}
+            />
+          ) : (
+            <p className="admin-muted">暂无审计事件</p>
+          )}
+        </div>
       </section>
     </div>
   );

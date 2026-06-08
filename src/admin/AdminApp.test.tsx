@@ -68,6 +68,11 @@ describe("AdminApp", () => {
           pendingReviewCount: 0,
           restartRequired: true,
           connectionShareConfigured: true,
+          latestAuditEvent: {
+            eventType: "admin.restart.requested",
+            actor: "admin",
+            outcome: "success",
+          },
         }),
       )
       .mockResolvedValueOnce(
@@ -117,6 +122,10 @@ describe("AdminApp", () => {
     expect(screen.getByText("Postgres")).toBeInTheDocument();
     expect(screen.getByText("sha256:pending")).toBeInTheDocument();
     expect(screen.getByText("https://mpgs.example.test")).toBeInTheDocument();
+    expect(screen.getByText("最近审计")).toBeInTheDocument();
+    expect(screen.getByText("admin.restart.requested")).toBeInTheDocument();
+    expect(screen.getByText("admin")).toBeInTheDocument();
+    expect(screen.getByText("success")).toBeInTheDocument();
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith("/api/v1/admin/overview", {
