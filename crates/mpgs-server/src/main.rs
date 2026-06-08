@@ -1,8 +1,10 @@
 use anyhow::Result;
 use mpgs_server::{
-    build_router_with_state, db, AppState, AuditSink, DatabaseHealth, StartupConfig,
+    build_router_with_state, db, steam::SteamHttpSnapshotSource, worker, AppState, AuditSink,
+    DatabaseHealth, StartupConfig,
 };
 use std::path::PathBuf;
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -20,6 +22,22 @@ async fn main() -> Result<()> {
         StartupConfig::Ready(config) => {
             let pool = db::connect_and_migrate(&config.database_url).await?;
             let public_catalog_status = db::public_catalog_status(&pool).await?;
+            if config.steam.api_key.is_some() {
+                let worker_pool = pool.clone();
+                let steam_source = SteamHttpSnapshotSource::new(
+                    reqwest::Client::builder()
+                        .user_agent("MPGS/0.1 (+https://local.app)")
+                        .build()?,
+                    config.steam.country.clone(),
+                    config.steam.language.clone(),
+                );
+                tokio::spawn(worker::run_worker_loop(
+                    worker_pool,
+                    "mpgs-server-worker-1".to_string(),
+                    steam_source,
+                    Duration::from_secs(5),
+                ));
+            }
             let mut app_state = AppState::new_with_config_health(
                 config
                     .service_info

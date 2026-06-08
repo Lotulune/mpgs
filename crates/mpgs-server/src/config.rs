@@ -15,11 +15,19 @@ pub struct ServerConfig {
     pub bind_addr: SocketAddr,
     pub database_url: String,
     pub service_info: ServiceInfoConfig,
+    pub steam: SteamConfig,
     pub config_health: ConfigHealth,
     pub admin_auth: Option<AdminAuthConfig>,
     pub setup_access: Option<SetupAccess>,
     pub config_file_manager: Option<ConfigFileManager>,
     pub public_cors: PublicCorsConfig,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SteamConfig {
+    pub api_key: Option<String>,
+    pub country: String,
+    pub language: String,
 }
 
 #[derive(Debug, Clone)]
@@ -125,6 +133,22 @@ impl ServerConfig {
             bind_addr,
             database_url,
             service_info,
+            steam: SteamConfig {
+                api_key: vars
+                    .get("MPGS_STEAM_API_KEY")
+                    .cloned()
+                    .filter(|value| !value.trim().is_empty()),
+                country: vars
+                    .get("MPGS_STEAM_COUNTRY")
+                    .cloned()
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| "US".to_string()),
+                language: vars
+                    .get("MPGS_STEAM_LANGUAGE")
+                    .cloned()
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| "schinese".to_string()),
+            },
             config_health: ConfigHealth::HealthyForTest,
             admin_auth: None,
             setup_access: None,
@@ -163,6 +187,23 @@ impl ServerConfig {
             bind_addr,
             database_url: secrets_config.database.url,
             service_info,
+            steam: SteamConfig {
+                api_key: secrets_config
+                    .steam
+                    .and_then(|steam| steam.api_key)
+                    .filter(|value| !value.trim().is_empty()),
+                country: service_config
+                    .steam
+                    .as_ref()
+                    .and_then(|steam| steam.country.clone())
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| "US".to_string()),
+                language: service_config
+                    .steam
+                    .and_then(|steam| steam.language)
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| "schinese".to_string()),
+            },
             config_health: ConfigHealth::active_files(service_path, secrets_path),
             admin_auth: Some(AdminAuthConfig::new(
                 secrets_config.admin.token_hash,
@@ -324,6 +365,7 @@ fn promote_pending_service_config(config_dir: &Path) -> Result<(), ConfigError> 
 struct ActiveServiceConfig {
     bind_addr: Option<String>,
     service_identity: ActiveServiceIdentityConfig,
+    steam: Option<ActiveSteamServiceConfig>,
     public_cors: Option<ActivePublicCorsConfig>,
 }
 
@@ -341,9 +383,16 @@ struct ActivePublicCorsConfig {
 }
 
 #[derive(Debug, Deserialize)]
+struct ActiveSteamServiceConfig {
+    country: Option<String>,
+    language: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct ActiveSecretsConfig {
     database: ActiveDatabaseConfig,
     admin: ActiveAdminConfig,
+    steam: Option<ActiveSteamSecretsConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -355,6 +404,11 @@ struct ActiveDatabaseConfig {
 struct ActiveAdminConfig {
     token_hash: String,
     session_secret: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ActiveSteamSecretsConfig {
+    api_key: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

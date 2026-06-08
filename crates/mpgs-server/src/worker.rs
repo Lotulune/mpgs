@@ -6,6 +6,7 @@ use mpgs_core::steam_mapping::{build_discovered_game_card, SteamAppListItem, Ste
 use sqlx_postgres::PgPool;
 use std::future::Future;
 use std::pin::Pin;
+use std::time::Duration;
 
 pub trait SteamSnapshotSource {
     fn fetch_snapshot<'a>(
@@ -31,6 +32,24 @@ pub async fn run_one_worker_tick(
     };
 
     process_claimed_task(pool, claimed, snapshot_source).await
+}
+
+pub async fn run_worker_loop(
+    pool: PgPool,
+    worker_id: String,
+    snapshot_source: impl SteamSnapshotSource + Send + Sync + 'static,
+    idle_sleep: Duration,
+) {
+    loop {
+        match run_one_worker_tick(&pool, &worker_id, &snapshot_source).await {
+            Ok(WorkerTickOutcome::Idle) => tokio::time::sleep(idle_sleep).await,
+            Ok(WorkerTickOutcome::Completed { .. }) | Ok(WorkerTickOutcome::Failed { .. }) => {}
+            Err(error) => {
+                eprintln!("mpgs worker tick failed: {error}");
+                tokio::time::sleep(idle_sleep).await;
+            }
+        }
+    }
 }
 
 async fn process_claimed_task(

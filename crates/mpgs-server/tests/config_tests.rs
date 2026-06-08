@@ -26,6 +26,10 @@ instance_id = "018fb770-8998-7699-a6e4-b7b59f2f9c01"
 name = "MPGS TOML Service"
 version = "2.0.0"
 
+[steam]
+country = "JP"
+language = "english"
+
 [public_cors]
 allow_any_origin = true
 "#,
@@ -40,6 +44,9 @@ url = "postgres://mpgs:secret@postgres:5432/mpgs"
 [admin]
 token_hash = "sha256:test-hash"
 session_secret = "test-session-secret"
+
+[steam]
+api_key = "test-steam-key"
 "#,
     )
     .unwrap();
@@ -64,6 +71,9 @@ session_secret = "test-session-secret"
         config.public_cors,
         PublicCorsConfig::AllowAnyOrigin
     ));
+    assert_eq!(config.steam.api_key.as_deref(), Some("test-steam-key"));
+    assert_eq!(config.steam.country, "JP");
+    assert_eq!(config.steam.language, "english");
     assert!(config.admin_auth.is_some());
 }
 
@@ -177,6 +187,9 @@ fn server_config_loads_required_database_and_public_identity_env() {
         ),
         ("MPGS_SERVICE_NAME", "MPGS Test Service"),
         ("MPGS_SERVICE_VERSION", "9.8.7"),
+        ("MPGS_STEAM_API_KEY", "env-steam-key"),
+        ("MPGS_STEAM_COUNTRY", "GB"),
+        ("MPGS_STEAM_LANGUAGE", "english"),
     ]))
     .unwrap();
 
@@ -194,6 +207,9 @@ fn server_config_loads_required_database_and_public_identity_env() {
     );
     assert_eq!(config.service_info.service_name, "MPGS Test Service");
     assert_eq!(config.service_info.service_version, "9.8.7");
+    assert_eq!(config.steam.api_key.as_deref(), Some("env-steam-key"));
+    assert_eq!(config.steam.country, "GB");
+    assert_eq!(config.steam.language, "english");
 }
 
 #[test]
