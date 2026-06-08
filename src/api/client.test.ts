@@ -1,11 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   __resetMockGameAnalysisCacheForTests,
+  assessGameWithAi,
+  discoverSteamGames,
   generateGameAnalysis,
   getDashboard,
   getGameAnalysis,
   isTauriRuntime,
+  recommendGamesWithAi,
+  refreshAllGameAnalyses,
+  retryAiAnalysisJob,
   setGameUserState,
+  startClassicDiscoveryTask,
+  startDiscoveryTask,
+  syncSeedGames,
 } from "./client";
 import { mockDashboard } from "../data/mockDashboard";
 import {
@@ -267,5 +275,39 @@ describe("game analysis client", () => {
       appid: 548430,
       name: "Deep Rock Galactic",
     });
+  });
+
+  it("freezes legacy client-side discovery, sync, and AI command paths when a public service is configured", async () => {
+    configureServiceConnection();
+    setTauriRuntime(true);
+
+    const blockedActions = [
+      () => syncSeedGames("full"),
+      () => discoverSteamGames(1, 10),
+      () => assessGameWithAi(548430),
+      () =>
+        recommendGamesWithAi({
+          prompt: "recommend co-op games",
+          contextMessages: [],
+          limit: 3,
+        }),
+      () => refreshAllGameAnalyses(2),
+      () => retryAiAnalysisJob(548430),
+      () =>
+        startDiscoveryTask({
+          syncMode: "full",
+          targetAddedGames: 5,
+          pageSize: 25,
+        }),
+      () => startClassicDiscoveryTask(2),
+    ];
+
+    for (const runAction of blockedActions) {
+      await expect(runAction()).rejects.toThrow(
+        "公共发现服务模式下，客户端不会执行本地同步、发现或 AI 任务。",
+      );
+    }
+
+    expect(invokeMock).not.toHaveBeenCalled();
   });
 });

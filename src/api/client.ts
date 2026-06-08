@@ -48,6 +48,8 @@ export const isTauriRuntime = () =>
 const mockDiscoveryTaskHistory: DiscoveryRunSnapshot[] = [];
 const mockGameAnalysisCache = new Map<number, GameAnalysisReport>();
 let mockGameAnalysisVersion = 0;
+const PUBLIC_SERVICE_LEGACY_COMMAND_ERROR =
+  "公共发现服务模式下，客户端不会执行本地同步、发现或 AI 任务。";
 
 export function __resetMockGameAnalysisCacheForTests() {
   mockGameAnalysisCache.clear();
@@ -229,6 +231,8 @@ export async function getDashboard(): Promise<DashboardPayload> {
 export async function saveConfig(
   request: SaveConfigRequest,
 ): Promise<PublicConfig> {
+  assertLegacyServiceCommandAllowed();
+
   if (!isTauriRuntime()) {
     const nextProvider = request.llmProvider ?? mockDashboard.config.llmProvider;
     const steamConfigured =
@@ -286,6 +290,8 @@ export async function saveConfig(
 export async function validateSteamConfig(
   request: ValidateSteamConfigRequest,
 ): Promise<ConnectionValidationResult> {
+  assertLegacyServiceCommandAllowed();
+
   if (!isTauriRuntime()) {
     if (request.steamApiKey !== undefined && !request.steamApiKey.trim()) {
       throw new Error("请先输入 Steam Web API Key。");
@@ -306,6 +312,8 @@ export async function validateSteamConfig(
 export async function validateLlmConfig(
   request: ValidateLlmConfigRequest,
 ): Promise<ConnectionValidationResult> {
+  assertLegacyServiceCommandAllowed();
+
   if (!isTauriRuntime()) {
     if (request.apiKey !== undefined && !request.apiKey.trim()) {
       throw new Error("请先输入 API Key。");
@@ -326,6 +334,8 @@ export async function validateLlmConfig(
 }
 
 export async function syncSeedGames(mode: SyncMode = "full"): Promise<SyncReport> {
+  assertLegacyServiceCommandAllowed();
+
   if (!isTauriRuntime()) {
     return {
       updatedGames: mockDashboard.stats.seedCount,
@@ -346,6 +356,8 @@ export async function discoverSteamGames(
   pageSize = 25,
   startAppid?: number,
 ): Promise<SteamDiscoveryReport> {
+  assertLegacyServiceCommandAllowed();
+
   if (!isTauriRuntime()) {
     const scannedApps = Math.min(pageSize * maxPages, mockDashboard.stats.seedCount);
     return {
@@ -370,6 +382,8 @@ export async function discoverSteamGames(
 }
 
 export async function assessGameWithAi(appid: number): Promise<AiAssessment> {
+  assertLegacyServiceCommandAllowed();
+
   if (!isTauriRuntime()) {
     const game = allMockGames().find((item) => item.appid === appid);
     return {
@@ -386,6 +400,8 @@ export async function assessGameWithAi(appid: number): Promise<AiAssessment> {
 export async function recommendGamesWithAi(
   request: AiRecommendationRequest,
 ): Promise<AiRecommendationResponse> {
+  assertLegacyServiceCommandAllowed();
+
   if (!isTauriRuntime()) {
     return buildMockRecommendationResponse(request);
   }
@@ -396,6 +412,8 @@ export async function recommendGamesWithAi(
 export async function refreshAllGameAnalyses(
   concurrency?: number,
 ): Promise<AiBatchRefreshReport> {
+  assertLegacyServiceCommandAllowed();
+
   const normalizedConcurrency =
     clampBatchRefreshConcurrency(concurrency) ?? mockDashboard.config.aiBatchRefreshConcurrency;
   if (!isTauriRuntime()) {
@@ -421,6 +439,8 @@ export async function refreshAllGameAnalyses(
 export async function retryAiAnalysisJob(
   appid: number,
 ): Promise<AiBatchRefreshReport> {
+  assertLegacyServiceCommandAllowed();
+
   if (!isTauriRuntime()) {
     mockDashboard.aiAnalysisQueueFailures = mockDashboard.aiAnalysisQueueFailures.filter(
       (item) => item.appid !== appid,
@@ -566,6 +586,8 @@ export async function previewSteamAppList(
   maxResults = 20,
   lastAppid?: number,
 ): Promise<SteamAppListPreview> {
+  assertLegacyServiceCommandAllowed();
+
   if (!isTauriRuntime()) {
     return {
       apps: allMockGames()
@@ -583,6 +605,10 @@ export async function previewSteamAppList(
 }
 
 export async function getDiscoveryTaskSnapshot(): Promise<DiscoveryRunSnapshot | null> {
+  if (getCurrentServiceConnection()) {
+    return null;
+  }
+
   if (!isTauriRuntime()) {
     return mockDiscoveryTaskHistory[0]
       ? cloneDiscoverySnapshot(mockDiscoveryTaskHistory[0])
@@ -595,6 +621,10 @@ export async function getDiscoveryTaskSnapshot(): Promise<DiscoveryRunSnapshot |
 export async function listDiscoveryTaskHistory(
   limit = 8,
 ): Promise<DiscoveryRunSnapshot[]> {
+  if (getCurrentServiceConnection()) {
+    return [];
+  }
+
   if (!isTauriRuntime()) {
     return mockDiscoveryTaskHistory
       .slice(0, limit)
@@ -609,6 +639,8 @@ export async function listDiscoveryTaskHistory(
 export async function startDiscoveryTask(
   request: DiscoveryTaskRequest,
 ): Promise<DiscoveryRunSnapshot> {
+  assertLegacyServiceCommandAllowed();
+
   if (!isTauriRuntime()) {
     const now = new Date().toISOString();
     const snapshot: DiscoveryRunSnapshot = {
@@ -645,6 +677,8 @@ export async function startDiscoveryTask(
 }
 
 export async function pauseDiscoveryTask(): Promise<DiscoveryRunSnapshot> {
+  assertLegacyServiceCommandAllowed();
+
   if (!isTauriRuntime()) {
     const current = mockDiscoveryTaskHistory[0];
     if (!current) {
@@ -667,6 +701,8 @@ export async function pauseDiscoveryTask(): Promise<DiscoveryRunSnapshot> {
 }
 
 export async function resumeDiscoveryTask(): Promise<DiscoveryRunSnapshot> {
+  assertLegacyServiceCommandAllowed();
+
   if (!isTauriRuntime()) {
     const current = mockDiscoveryTaskHistory[0];
     if (!current) {
@@ -688,6 +724,8 @@ export async function resumeDiscoveryTask(): Promise<DiscoveryRunSnapshot> {
 }
 
 export async function cancelDiscoveryTask(): Promise<DiscoveryRunSnapshot> {
+  assertLegacyServiceCommandAllowed();
+
   if (!isTauriRuntime()) {
     const current = mockDiscoveryTaskHistory[0];
     if (!current) {
@@ -713,6 +751,8 @@ export async function cancelDiscoveryTask(): Promise<DiscoveryRunSnapshot> {
 export async function startClassicDiscoveryTask(
   maxPages?: number,
 ): Promise<ClassicDiscoveryRunSnapshot> {
+  assertLegacyServiceCommandAllowed();
+
   if (!isTauriRuntime()) {
     return {
       id: Date.now(),
@@ -759,6 +799,12 @@ function refreshMockCollections() {
     followed: games.filter((game) => game.userState.followed),
     history: games.filter((game) => game.userState.viewed),
   };
+}
+
+function assertLegacyServiceCommandAllowed() {
+  if (getCurrentServiceConnection()) {
+    throw new Error(PUBLIC_SERVICE_LEGACY_COMMAND_ERROR);
+  }
 }
 
 function buildMockRecommendationResponse(

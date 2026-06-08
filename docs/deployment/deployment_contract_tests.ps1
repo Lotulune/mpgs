@@ -6,6 +6,7 @@ $compose = Get-Content -Raw -Path (Join-Path $root "deploy\compose.yml")
 $caddyCompose = Get-Content -Raw -Path (Join-Path $root "deploy\compose.caddy.yml")
 $caddyfile = Get-Content -Raw -Path (Join-Path $root "deploy\Caddyfile")
 $dockerfile = Get-Content -Raw -Path (Join-Path $root "Dockerfile.mpgs-server")
+$readme = Get-Content -Raw -Path (Join-Path $root "README.md")
 $deploymentDoc = Get-Content -Raw -Path (Join-Path $root "docs\deployment\mpgs-server-compose.md")
 $serviceConfigExample = Get-Content -Raw -Path (Join-Path $root "deploy\config\active\service.toml")
 $secretsExample = Get-Content -Raw -Path (Join-Path $root "deploy\config\active\secrets.toml.example")
@@ -126,6 +127,30 @@ if ($deploymentDoc -notmatch 'linux/arm64' -or $deploymentDoc -notmatch 'ora_vps
 }
 if ($deploymentDoc -notmatch 'does not overwrite remote `deploy/.env`, active secrets, or active service config') {
     throw "deployment docs must state that remote deployment does not overwrite server secrets or active config."
+}
+if ($deploymentDoc -notmatch 'Client Connection Handoff' -or $deploymentDoc -notmatch '/api/v1/service-info' -or $deploymentDoc -notmatch 'public_catalog_read') {
+    throw "deployment docs must describe client service connection validation."
+}
+if ($deploymentDoc -notmatch 'Tauri Rust must not proxy public catalog reads' -or $deploymentDoc -notmatch 'Personal game state stays in client local storage') {
+    throw "deployment docs must describe client public REST and local personal-state boundaries."
+}
+if ($deploymentDoc -notmatch 'Key Rotation' -or $deploymentDoc -notmatch 'never the raw token' -or $deploymentDoc -notmatch 'restartRequired=true') {
+    throw "deployment docs must describe key rotation and pending restart boundaries."
+}
+if ($deploymentDoc -notmatch 'Backup and Restore' -or $deploymentDoc -notmatch 'pg_dump' -or $deploymentDoc -notmatch 'database-only backup is not enough') {
+    throw "deployment docs must describe Postgres plus TOML backup and restore."
+}
+if ($deploymentDoc -notmatch 'OpenAPI Generation' -or $deploymentDoc -notmatch '--export-openapi' -or $deploymentDoc -notmatch 'npm run generate:api-types') {
+    throw "deployment docs must describe OpenAPI and TypeScript contract generation."
+}
+if ($readme -notmatch '轻量使用者客户端 \+ 自托管公共发现服务' -or $readme -notmatch '严禁在 VPS 上编译 Rust') {
+    throw "README must describe the split architecture and no-VPS-build deployment boundary."
+}
+if ($readme -notmatch '普通客户端不会要求你填写 Steam Key' -or $readme -notmatch '个人状态不会写入公共发现服务') {
+    throw "README must describe ordinary client credential and personal-state boundaries."
+}
+if ($readme -notmatch '备份与恢复' -or $readme -notmatch 'OpenAPI 和类型生成') {
+    throw "README must include backup and OpenAPI generation sections."
 }
 
 Write-Output "Deployment contract checks passed."

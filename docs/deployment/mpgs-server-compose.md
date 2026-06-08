@@ -111,6 +111,17 @@ This only affects public read routes such as `/api/v1/service-info` and `/api/v1
 
 `/api/v1/admin/diagnostics` is admin-only and reports public base URL, HTTPS suitability, public CORS mode, restart policy metadata, and provider configuration presence using redacted statuses such as `configured` or `missing`. It must not return Steam, LLM, R2, setup, or admin token values.
 
+## Client Connection Handoff
+
+The user client does not contain a default official service address. Give users either:
+
+- the HTTPS service address from `service_connection.public_base_url`
+- the keyless connection file from the admin connection-share API
+
+Before saving the service, the client validates `/api/v1/service-info`, confirms API `v1`, checks for the `public_catalog_read` capability, and successfully probes an anonymous public read endpoint such as `/api/v1/discovery-home`.
+
+The public client reads anonymous REST APIs directly over HTTPS. Tauri Rust must not proxy public catalog reads. Personal game state stays in client local storage and is isolated by service instance ID.
+
 For the default Compose network, `deploy/config/active/secrets.toml` should use:
 
 ```toml
@@ -129,6 +140,18 @@ sha256:<base64-no-padding sha256(admin-token)>
 Set `admin.session_secret` to a long random value used to sign short-lived admin session cookies. Do not put the raw admin token in `.env`, Postgres, docs, or logs.
 
 Do not put Steam, LLM, R2, setup token, or admin token secrets in Postgres.
+
+## Key Rotation
+
+Rotate service-side secrets from the management UI whenever possible:
+
+- Steam, LLM, and R2 keys are written as pending service configuration and are never echoed back to the UI.
+- Admin token changes must store only `admin.token_hash`, never the raw token.
+- Saving unrelated non-secret settings must inherit active secrets and must not clear Steam, LLM, R2, setup, or admin credentials.
+- Pending changes report `restartRequired=true`.
+- `/api/v1/admin/restart` validates pending configuration, records audit data, and exits the service so Compose restarts it.
+
+For manual emergency rotation, edit `deploy/config/active/secrets.toml` on the server, keep file permissions restricted to operators, then restart the Compose service. Do not rotate secrets by editing `deploy/.env` except for the Postgres container password itself.
 
 ## Start Without Public HTTPS
 
@@ -166,6 +189,38 @@ curl https://$CADDY_DOMAIN/admin
 ```
 
 The Docker image sets `MPGS_ADMIN_STATIC_DIR=/usr/local/share/mpgs/admin`, which points to the Vite `dist` output copied into the runtime image. For local development outside Docker, `mpgs-server` defaults to `dist` unless `MPGS_ADMIN_STATIC_DIR` is set.
+
+## Backup and Restore
+
+Back up both Postgres data and server configuration. A database-only backup is not enough because service identity, public base URL, admin token hash, session secret, and provider credentials live in TOML files.
+
+Create a database backup from the server:
+
+```bash
+docker compose --env-file deploy/.env -f deploy/compose.yml \
+  exec -T postgres pg_dump -U mpgs -d mpgs > mpgs.sql
+```
+
+Back up these files to a protected location:
+
+- `deploy/.env`
+- `deploy/config/active/service.toml`
+- `deploy/config/active/secrets.toml`
+- `deploy/config/setup.toml` if safe-mode repair access must be preserved
+- selected files under `deploy/config/pending/` only when you intentionally want to preserve pending changes
+
+Restore by placing `deploy/.env` and config files back on the server, restoring the Postgres dump into the `postgres` service, then running `docker compose up -d`. Verify `/healthz`, `/api/v1/service-info`, and `/admin` after restore.
+
+## OpenAPI Generation
+
+The REST contract is generated from Rust server types. Regenerate OpenAPI locally or in CI, not on the VPS:
+
+```powershell
+cargo run -p mpgs-server -- --export-openapi > docs/openapi/mpgs-server.openapi.json
+npm run generate:api-types
+```
+
+Commit both `docs/openapi/mpgs-server.openapi.json` and `src/api/generated/mpgsServerApi.ts` when API response shapes change. Public clients and the admin UI should use generated TypeScript contract types rather than hand-written copies.
 
 ## Remote Deploy Verification
 

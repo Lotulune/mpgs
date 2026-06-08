@@ -1,330 +1,197 @@
 # MPGS / Co-Play
 
-MPGS（界面品牌名为 Co-Play）是一款面向 Steam 多人游戏发现的 Windows 桌面工具。
+MPGS（界面品牌名为 Co-Play）正在从本地一体 Tauri 应用迁移为“轻量使用者客户端 + 自托管公共发现服务”的多人游戏发现系统。
 
-它的核心用途不是“完整替代 Steam 商店”，而是帮你更快找到适合和朋友一起玩的游戏，再把同步到的 Steam 数据、本地收藏状态和 AI 分析组织成一个更容易浏览和筛选的本地游戏库。
+当前主线边界：
 
-## 这套系统能做什么
+- **使用者客户端**：用户安装的 Tauri 桌面壳。保存服务地址、服务身份信息、个人收藏/愿望单/关注/浏览记录，并通过 HTTPS REST 读取公共游戏库。
+- **公共发现服务**：Rust + Axum + Postgres 服务端。负责公共游戏库、Steam/LLM 配置、发现任务、AI 分析、管理 API 和管理界面。
+- **管理界面**：维护者使用的 WebUI，由 `mpgs-server` 同源托管在 `/admin`。
 
-- 浏览多人游戏推荐分区，例如新游区、精品老游区、最近发现
-- 同步 Steam 游戏基础信息、评价、在线人数等数据
-- 扫描 Steam AppList，持续发现新的多人游戏并导入本地库
-- 为单个游戏生成 AI 评估摘要和更详细的分析结果
-- 管理收藏、愿望单、关注、浏览记录
-- 在本地保存配置和数据，不依赖云端账号体系
+第一版没有默认官方服务地址。普通用户需要维护者提供服务地址或无密钥连接文件。
 
 ## 普通用户怎么开始
 
-### 第 1 步：下载 Windows 安装包
+1. 安装 Windows 客户端。
+2. 输入维护者提供的公共发现服务地址，或导入维护者提供的连接文件。
+3. 客户端会读取 `/api/v1/service-info` 并探测一个匿名公共读取接口，确认 API `v1`、公共只读能力、HTTPS 或本机/局域网规则后才保存。
+4. 浏览公共游戏库，并在本机保存个人收藏、愿望单、关注和浏览记录。
 
-优先去项目的 [GitHub Releases](https://github.com/RedAiyo/mpgs/releases) 页面下载 Windows 安装包。
+普通客户端不会要求你填写 Steam Key、LLM Key，也不会执行 Steam 同步、发现任务或 AI 批处理。连接公共发现服务后，这些旧本地命令路径会被冻结；公共游戏数据由服务端维护。
 
-建议按下面的顺序选择：
+## 客户端本地数据
 
-1. 优先下载名称里带 `windows-x64` 的 Windows 安装包。
-2. 如果同时看到 `.msi` 和 `-setup.exe`，一般优先选 `.msi`。
-3. 如果 Releases 页面还没有正式安装包，你需要联系维护者索取构建好的安装文件，或者按本文末尾的开发者方式自行构建。
+客户端只保存壳能力相关数据：
 
-注意：
+- 当前公共发现服务连接
+- 服务身份验证结果
+- 按服务实例 ID 隔离的个人游戏状态
+- 后续可加入的公共库只读缓存
 
-- 本项目的发布流程已经配置了 Windows x64 桌面打包。
-- 当前仓库的发布说明里明确写了 Windows 包还没有代码签名，所以首次运行时出现 SmartScreen 警告是预期现象，不代表一定有问题。
+个人状态不会写入公共发现服务。服务地址变化但服务实例 ID 相同，客户端可以沿用该实例下的个人状态；实例 ID 不同则视为另一个服务。
 
-### 第 2 步：安装并启动
+## 维护者自托管服务端
 
-下载完成后：
+服务端部署基线在 [docs/deployment/mpgs-server-compose.md](docs/deployment/mpgs-server-compose.md)。
 
-1. 双击安装包完成安装。
-2. 第一次打开应用时，如果 Windows 弹出 SmartScreen，可先点“更多信息”，再选择继续打开。
-3. 应用启动后，就算你还没有配置任何 API Key，也可以先看到本地初始化的基础内容。
+关键约束：
 
-## 使用前要准备什么
+- 服务端是 Rust + Axum + Postgres + SQLx。
+- API 是 REST `/api/v1`，OpenAPI 由 Rust 类型生成。
+- 官方自托管目标是 Docker Compose。
+- 镜像必须在本地开发机或 CI 构建，再上传到服务器。
+- VPS 只允许执行 `docker load`、`docker compose up -d`、探针和反代检查，严禁在 VPS 上编译 Rust、跑 `npm run build` 或 `docker build`。
+- 默认 Compose 只把 `mpgs-server` 暴露到主机 `127.0.0.1:4310`；公网访问应通过 Caddy profile 或外部 HTTPS 反向代理。
 
-如果你想把这套系统真正用起来，通常需要准备两类 Key：
+本地构建镜像：
 
-### 必备 1：Steam Web API Key
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File deploy/scripts/build-mpgs-server-image.ps1 `
+  -ImageTag mpgs-server:local `
+  -OutputTar mpgs-server-local.tar
+```
 
-用途：
+Arm VPS（例如 `ora_vps`）需要在本地或 CI 构建 `linux/arm64` 镜像：
 
-- 用来同步 Steam 数据
-- 用来扫描和发现新的多人游戏
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File deploy/scripts/build-mpgs-server-image.ps1 `
+  -ImageTag mpgs-server:local `
+  -OutputTar mpgs-server-linux-arm64.tar `
+  -UseBuildx `
+  -Platform linux/arm64
+```
 
-没有这个 Key 时：
+远程部署脚本只上传镜像 tar 和 Compose 资产，不覆盖远端真实 `.env`、active secrets 或 active service config：
 
-- 你仍然可以打开应用
-- 但同步 Steam 数据、扩充本地库这些核心能力会受限
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File deploy/scripts/deploy-mpgs-server-remote.ps1 `
+  -RemoteHost ora_vps `
+  -RemotePath ~/mpgs-server `
+  -ImageTar mpgs-server-linux-arm64.tar `
+  -UseCaddy `
+  -PublicBaseUrl https://mpgs.example.com
+```
 
-### 可选 2：DeepSeek API Key
+## 服务配置与密钥
 
-用途：
+Compose `.env` 只放容器级值，例如 Postgres 容器密码、镜像名和 Caddy 域名。服务配置放在 TOML 文件中：
 
-- 用来生成 AI 分析摘要
-- 用来做更完整的 AI 游戏评估
+- `deploy/config/active/service.toml`：服务身份、公开连接地址、CORS、部署元信息等非敏感配置
+- `deploy/config/active/secrets.toml`：数据库 URL、admin token hash、session secret、Steam/LLM/R2 等服务端密钥
+- `deploy/config/setup.toml`：首次配置或安全修复用 setup token hash
+- `deploy/config/pending/`：管理界面写入的待重启配置
 
-没有这个 Key 时：
+不要把 Steam Key、LLM Key、R2 凭据、setup token 明文或 admin token 明文写进 Postgres、`.env`、文档或日志。
 
-- 你仍然可以使用同步、浏览、收藏等功能
-- 但 AI 分析能力不可用或会退化
+Key 轮换通过管理界面写入 pending 配置并标记 `restartRequired=true`。确认后调用 `/api/v1/admin/restart`，服务校验 pending 配置并优雅退出，由 Docker Compose `restart: unless-stopped` 拉起。服务不会挂 Docker socket，不使用 restart-helper，也不会执行宿主机命令。
 
-## 如何申请 DeepSeek API Key
+## HTTPS 和反代
 
-以下官方入口已于 `2026-05-02` 核对，后续如 DeepSeek 平台改版，请以官方页面最新展示为准。
+生产服务地址必须使用 HTTPS。客户端默认拒绝公网 HTTP，只允许 localhost 或显式局域网例外。
 
-### 官方入口
+默认 Compose 不直接暴露公网端口：
 
-- DeepSeek API 文档：[api-docs.deepseek.com](https://api-docs.deepseek.com/)
-- DeepSeek 平台：[platform.deepseek.com](https://platform.deepseek.com/)
-- API Keys 页面：[platform.deepseek.com/api_keys](https://platform.deepseek.com/api_keys)
-- Models & Pricing：[api-docs.deepseek.com/quick_start/pricing](https://api-docs.deepseek.com/quick_start/pricing)
+```bash
+curl http://127.0.0.1:4310/healthz
+curl http://127.0.0.1:4310/api/v1/service-info
+```
 
-### 操作步骤
+使用 Caddy profile 时，`deploy/Caddyfile` 会把 HTTPS 域名反代到 `mpgs-server:4310`：
 
-1. 打开 [DeepSeek 平台](https://platform.deepseek.com/) 并登录账号。
-2. 登录后进入 [API Keys](https://platform.deepseek.com/api_keys) 页面。
-3. 创建一个新的 API Key。
-4. 把生成后的 Key 立即保存好。
+```bash
+docker compose --env-file deploy/.env \
+  -f deploy/compose.yml \
+  -f deploy/compose.caddy.yml \
+  --profile caddy \
+  up -d
+```
 
-补充说明：
+公共客户端只需要访问匿名只读 API；管理、setup 和 restart 接口保持同源管理界面访问。
 
-- DeepSeek 官方文档确认它提供 OpenAI 兼容格式接口，因此本项目里可以直接使用 `https://api.deepseek.com` 作为 `LLM Base URL`。
-- 本项目当前默认模型配置是 `deepseek-v4-flash`，README 也优先推荐这个模型名。
-- 如果后续 AI 调用失败，并提示余额或计费问题，请再去 DeepSeek 平台检查余额、套餐或充值状态。
+## 备份与恢复
 
-## 如何申请 Steam Web API Key
+第一版备份以本地运维命令为准，不包含云备份。
 
-以下官方入口已于 `2026-05-02` 核对，后续如 Steam 页面改版，请以官方页面最新展示为准。
+建议同时备份：
 
-### 官方入口
+- Postgres 数据库：`docker compose --env-file deploy/.env -f deploy/compose.yml exec -T postgres pg_dump -U mpgs -d mpgs > mpgs.sql`
+- 服务配置目录：`deploy/config/active/`、`deploy/config/setup.toml`，以及需要保留的 pending 配置
+- 部署 `.env`：只在安全介质中保存，不提交到 Git
 
-- Steam Web API 文档：[steamcommunity.com/dev](https://steamcommunity.com/dev)
-- Steam Web API Key 注册页：[steamcommunity.com/dev/apikey](https://steamcommunity.com/dev/apikey)
-- Steamworks 认证说明：[partner.steamgames.com/doc/webapi_overview/auth](https://partner.steamgames.com/doc/webapi_overview/auth)
+恢复时先恢复 `deploy/.env` 与配置文件，再恢复 Postgres dump，最后执行 `docker compose up -d` 并探测 `/healthz` 与 `/api/v1/service-info`。
 
-### 操作步骤
+## OpenAPI 和类型生成
 
-1. 用你的 Steam 账号登录 [Steam Web API Key 注册页](https://steamcommunity.com/dev/apikey)。
-2. 阅读并同意 Steam Web API Terms of Use。
-3. 按页面要求填写将与该 Key 关联的域名。
-4. 提交后保存生成的 Steam Web API Key。
+服务端 OpenAPI 从 Rust 类型导出：
 
-补充说明：
+```powershell
+cargo run -p mpgs-server -- --export-openapi > docs/openapi/mpgs-server.openapi.json
+```
 
-- Valve 官方文档明确说明：标准用户 Key 对所有 Steam 账号开放，但需要一个 Steam 账号和一个将与该 Key 关联的域名。
-- Valve 官方文档没有专门给“纯本地桌面应用”提供单独示例，所以如果你在域名这一步拿不准，请以注册页面当时的最新提示为准。
+TypeScript API 类型由 OpenAPI JSON 生成：
 
-## 在 MPGS 里怎么配置
+```powershell
+npm run generate:api-types
+```
 
-启动应用后，进入“设置”页，按下面步骤填写。
+提交 API 变更时，应同时提交 OpenAPI JSON 与生成的 `src/api/generated/mpgsServerApi.ts`，并运行相关契约测试。
 
-### 1. 配置 API 密钥
+## 开发命令
 
-打开：
-
-- `设置` -> `API 密钥`
-
-把下面两个字段填好：
-
-- `Steam Web API Key`
-- `LLM API Key`
-
-说明：
-
-- `Steam Web API Key` 对应你刚刚在 Steam 申请到的 Key
-- `LLM API Key` 如果你准备用 DeepSeek，就填 DeepSeek 的 API Key
-
-### 2. 配置 LLM 参数
-
-打开：
-
-- `设置` -> `LLM 配置`
-
-推荐按下面填写：
-
-- `LLM Base URL`：`https://api.deepseek.com`
-- `模型`：`deepseek-v4-flash`
-- `地区`：默认可用 `US`
-- `语言`：简体中文推荐 `schinese`
-
-填完后点击：
-
-- `保存设置`
-
-### 3. 你需要知道的保存方式
-
-这几个配置项会保存在本地 SQLite 数据库里，不会主动上传到项目自带服务器。
-
-应用启动时会在系统应用数据目录下创建本地数据库文件：
-
-- `mpgs.sqlite3`
-
-## 配好以后怎么用
-
-### 第 1 步：先做一次完整同步
-
-进入：
-
-- `设置` -> `数据同步`
-
-点击：
-
-- `完整同步`
-
-这一步会尽量把当前库内游戏的商店信息、评价、在线人数和样本数据补齐。
-
-### 第 2 步：开始发现新的多人游戏
-
-进入：
-
-- `设置` -> `发现任务`
-
-然后点击：
-
-- `开始新任务`
-
-你可以在这里看到：
-
-- 当前任务状态
-- 进度
-- 历史记录
-- 失败项
-
-如果中途不想继续，还可以：
-
-- `暂停任务`
-- `继续任务`
-- `取消任务`
-
-### 第 3 步：回到首页浏览结果
-
-同步和发现完成后，你可以回到首页看这些区域：
-
-- 新游区
-- 精品老游区
-- 最近发现
-
-你也可以继续打开详情页，查看：
-
-- 标签
-- 联机模式
-- 好评率
-- 当前在线人数
-- 发售时间
-- Demo 状态
-
-### 第 4 步：用 AI 看更细的分析
-
-如果你已经配置好 DeepSeek API Key，可以：
-
-1. 进入某个游戏详情页。
-2. 触发 AI 分析。
-3. 查看更完整的分析结果，例如摘要、维度评分、优点、风险和证据。
-
-如果你希望把整个库都重新跑一遍 AI 评分，可以去：
-
-- `设置` -> `AI 批量重算`
-
-## 常见使用场景
-
-### 我只想先试试，不想申请任何 Key
-
-可以。
-
-你可以先安装并打开应用，先看界面和基础内容，但真正的数据同步、发现任务和 AI 分析能力不会完整启用。
-
-### 我只想同步 Steam，不需要 AI
-
-可以。
-
-这种情况下你只需要申请并配置：
-
-- `Steam Web API Key`
-
-### 我已经能同步数据了，还想看 AI 建议
-
-这时再补配：
-
-- `LLM API Key`
-- `LLM Base URL`
-- `模型`
-
-## 常见问题
-
-### Windows 提示“无法验证发布者”怎么办
-
-当前项目的 Windows 打包流程还没有代码签名，所以 SmartScreen 警告是预期现象。只要安装包来源可信，可以按系统提示继续。
-
-### API Key 保存在哪里
-
-会保存在本机 SQLite 中，不会因为关闭应用就丢失。
-
-### 我改了 Key 以后要不要重装
-
-不用。
-
-直接回到 `设置` 页重新填写并保存即可。
-
-### 为什么我已经填了 DeepSeek Key，但 AI 还是调用失败
-
-常见原因有：
-
-- Key 填错
-- `LLM Base URL` 填错
-- 模型名不对
-- DeepSeek 账户余额、计费或权限状态有问题
-
-推荐先核对：
-
-- Base URL 是否是 `https://api.deepseek.com`
-- 模型是否是当前可用模型
-- DeepSeek 平台账户是否可正常调用 API
-
-## 给开发者的补充
-
-如果你不是普通用户，而是要从源码启动项目，可以用：
+安装依赖：
 
 ```bash
 npm install
-npm run tauri dev
 ```
 
-前端单独预览：
+前端开发：
 
 ```bash
 npm run dev
 ```
 
-测试：
+桌面客户端开发：
+
+```bash
+npm run tauri dev
+```
+
+服务端测试：
+
+```bash
+cargo test -p mpgs-server
+```
+
+前端测试：
 
 ```bash
 npm test
 ```
 
-## 公共发现服务部署
+部署契约检查：
 
-服务端化后的 `mpgs-server` 使用 Rust + Axum + Postgres，部署基线在 [docs/deployment/mpgs-server-compose.md](D:/AI%20Coding/mpgs/docs/deployment/mpgs-server-compose.md)。
-
-关键约束：
-
-- 镜像必须在本地开发机或 CI 构建，再上传到服务器。
-- VPS 只执行 `docker load` 和 `docker compose up`，严禁在 VPS 上编译 Rust 或构建镜像。
-- 默认 Compose 只把服务端绑定到 `127.0.0.1:4310`，公网 HTTPS 通过可选 Caddy profile 或外部反代提供。
-- 可用 `deploy/scripts/build-mpgs-server-image.ps1` 本地生成镜像 tar，再用 `deploy/scripts/deploy-mpgs-server-remote.ps1` 上传、启动并验证 `/healthz` 与 `/api/v1/service-info`。
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File docs/deployment/deployment_contract_tests.ps1
+```
 
 ## 项目结构
 
 ```text
-src/                  React 前端页面与组件
-src/api/              前端调用后端命令的封装
-src/features/         发现任务、库状态等功能模块
-src/pages/            首页、详情、设置、收藏、AI 页面
-src-tauri/src/        Rust 后端、Steam、数据库、评分、AI 逻辑
-src-tauri/tests/      Rust 侧测试
-docs/                 规格说明、实现计划、路线文档
+src/                  React 使用者客户端、管理入口和共享前端代码
+src/api/              REST/API 适配和旧 Tauri 命令过渡封装
+src/domain/           客户端服务连接、个人状态和推荐规则模型
+src-tauri/            Tauri 本地壳与旧本地能力代码，后续逐步冻结/移除
+crates/mpgs-core/     纯 Rust 领域模型、评分、推荐和规则逻辑
+crates/mpgs-server/   Axum REST API、Postgres、OpenAPI、管理 API
+deploy/               Docker Compose、Caddy、配置样例和部署脚本
+docs/                 ADR、路线、OpenAPI 和部署文档
 ```
 
-## 参考链接
+## 参考入口
 
-- DeepSeek API Docs: <https://api-docs.deepseek.com/>
-- DeepSeek Platform: <https://platform.deepseek.com/>
-- Steam Web API Docs: <https://steamcommunity.com/dev>
-- Steam Web API Auth Docs: <https://partner.steamgames.com/doc/webapi_overview/auth>
+- 服务端部署：[docs/deployment/mpgs-server-compose.md](docs/deployment/mpgs-server-compose.md)
+- 架构决策：[docs/2026-06-08-public-service-architecture-decisions.md](docs/2026-06-08-public-service-architecture-decisions.md)
+- 迁移路线：[docs/2026-06-07-public-discovery-service-migration-roadmap.md](docs/2026-06-07-public-discovery-service-migration-roadmap.md)
