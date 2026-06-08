@@ -380,6 +380,7 @@ function RightRail({
     releaseWindowOptions.find(
       (option) => option.value === filters.releaseWindow,
     ) ?? releaseWindowOptions[0];
+  const isPublicServiceMode = stats.sourceKind === "public_service";
   const hasBackfillActivity =
     stats.backfillRunning ||
     stats.backfillPendingCount > 0 ||
@@ -438,107 +439,111 @@ function RightRail({
           </div>
         </div>
         <p className="stats-meta">最近同步：{formatDateTime(stats.lastSyncAt)}</p>
-        <div className="backfill-status-block">
-          <div className="backfill-status-head">
-            <strong>Steam 同步</strong>
-            <span>{syncStatusLabel}</span>
-          </div>
-          {hasSyncActivity ? (
-            <>
-              <div className="discovery-progress-track" aria-hidden="true">
-                <div
-                  className="discovery-progress-fill"
-                  style={{ width: `${syncProgressPercent}%` }}
-                />
+        {!isPublicServiceMode ? (
+          <>
+            <div className="backfill-status-block">
+              <div className="backfill-status-head">
+                <strong>Steam 同步</strong>
+                <span>{syncStatusLabel}</span>
               </div>
-              <div className="backfill-status-grid">
-                <div>
-                  <span>模式</span>
-                  <strong>{syncModeLabel(stats.syncMode)}</strong>
-                </div>
-                <div>
-                  <span>已处理</span>
-                  <strong>{`${formatNumber(stats.syncProcessedCount)}/${formatNumber(stats.syncTotalCount)}`}</strong>
-                </div>
-                <div>
-                  <span>剩余</span>
-                  <strong>{formatNumber(stats.syncPendingCount)}</strong>
-                </div>
-                <div>
-                  <span>已更新</span>
-                  <strong>{formatNumber(stats.syncUpdatedCount)}</strong>
-                </div>
-                <div>
-                  <span>失败</span>
-                  <strong>{formatNumber(stats.syncFailedCount)}</strong>
-                </div>
-                <div>
-                  <span>当前 AppID</span>
-                  <strong>{stats.syncCurrentAppid ?? "无"}</strong>
-                </div>
+              {hasSyncActivity ? (
+                <>
+                  <div className="discovery-progress-track" aria-hidden="true">
+                    <div
+                      className="discovery-progress-fill"
+                      style={{ width: `${syncProgressPercent}%` }}
+                    />
+                  </div>
+                  <div className="backfill-status-grid">
+                    <div>
+                      <span>模式</span>
+                      <strong>{syncModeLabel(stats.syncMode)}</strong>
+                    </div>
+                    <div>
+                      <span>已处理</span>
+                      <strong>{`${formatNumber(stats.syncProcessedCount)}/${formatNumber(stats.syncTotalCount)}`}</strong>
+                    </div>
+                    <div>
+                      <span>剩余</span>
+                      <strong>{formatNumber(stats.syncPendingCount)}</strong>
+                    </div>
+                    <div>
+                      <span>已更新</span>
+                      <strong>{formatNumber(stats.syncUpdatedCount)}</strong>
+                    </div>
+                    <div>
+                      <span>失败</span>
+                      <strong>{formatNumber(stats.syncFailedCount)}</strong>
+                    </div>
+                    <div>
+                      <span>当前 AppID</span>
+                      <strong>{stats.syncCurrentAppid ?? "无"}</strong>
+                    </div>
+                  </div>
+                  <p className="mini-status">
+                    {stats.syncCurrentAppid
+                      ? `当前正在同步 AppID ${stats.syncCurrentAppid}。`
+                      : hasSyncResume
+                        ? `队列中仍有 ${formatNumber(stats.syncPendingCount)} 个游戏待续同步。`
+                        : stats.syncFailedCount > 0
+                        ? `同步已结束，但最近一次失败发生在 AppID ${stats.syncLastErrorAppid ?? "无"}。`
+                        : "本轮同步已完成。"}
+                  </p>
+                  {stats.syncLastError ? <p className="settings-error">{stats.syncLastError}</p> : null}
+                </>
+              ) : (
+                <p className="mini-status">
+                  完整同步会刷新商店图、评论、在线人数和评价样本；快速同步只刷新商店侧元数据。
+                </p>
+              )}
+            </div>
+            <div className="backfill-status-block">
+              <div className="backfill-status-head">
+                <strong>元数据补录</strong>
+                <span>{backfillStatusLabel}</span>
               </div>
-              <p className="mini-status">
-                {stats.syncCurrentAppid
-                  ? `当前正在同步 AppID ${stats.syncCurrentAppid}。`
-                  : hasSyncResume
-                    ? `队列中仍有 ${formatNumber(stats.syncPendingCount)} 个游戏待续同步。`
-                    : stats.syncFailedCount > 0
-                    ? `同步已结束，但最近一次失败发生在 AppID ${stats.syncLastErrorAppid ?? "无"}。`
-                    : "本轮同步已完成。"}
-              </p>
-              {stats.syncLastError ? <p className="settings-error">{stats.syncLastError}</p> : null}
-            </>
-          ) : (
-            <p className="mini-status">
-              完整同步会刷新商店图、评论、在线人数和评价样本；快速同步只刷新商店侧元数据。
-            </p>
-          )}
-        </div>
-        <div className="backfill-status-block">
-          <div className="backfill-status-head">
-            <strong>元数据补录</strong>
-            <span>{backfillStatusLabel}</span>
-          </div>
-          {hasBackfillActivity ? (
-            <>
-              <div className="discovery-progress-track" aria-hidden="true">
-                <div
-                  className="discovery-progress-fill"
-                  style={{ width: `${backfillProgressPercent}%` }}
-                />
-              </div>
-              <div className="backfill-status-grid">
-                <div>
-                  <span>已处理</span>
-                  <strong>{`${formatNumber(stats.backfillProcessedCount)}/${formatNumber(stats.backfillTotalCount)}`}</strong>
-                </div>
-                <div>
-                  <span>剩余</span>
-                  <strong>{formatNumber(stats.backfillPendingCount)}</strong>
-                </div>
-                <div>
-                  <span>失败</span>
-                  <strong>{formatNumber(stats.backfillFailedCount)}</strong>
-                </div>
-                <div>
-                  <span>当前 AppID</span>
-                  <strong>{stats.backfillCurrentAppid ?? "无"}</strong>
-                </div>
-              </div>
-              <p className="mini-status">
-                {stats.backfillCurrentAppid
-                  ? `当前正在补录 AppID ${stats.backfillCurrentAppid}（第 ${stats.backfillCurrentAttempt ?? 1}/${stats.backfillMaxAttempts} 次尝试）。`
-                  : stats.backfillPendingCount > 0
-                    ? "新游补全清空后即可启动老游补库；老游 AI 仍会排在新游 AI 后面。"
-                    : stats.backfillFailedCount > 0
-                      ? "本轮补录已结束，但有部分游戏补录失败。"
-                      : "本轮新游补全已完成；若有老游待入库，现在可以继续启动老游补库。"}
-              </p>
-            </>
-          ) : (
-            <p className="mini-status">新游发现可选完整拉取或部分拉取；只有完整拉取才会补录在线人数和评论片段，老游补库只等新游补全清空。</p>
-          )}
-        </div>
+              {hasBackfillActivity ? (
+                <>
+                  <div className="discovery-progress-track" aria-hidden="true">
+                    <div
+                      className="discovery-progress-fill"
+                      style={{ width: `${backfillProgressPercent}%` }}
+                    />
+                  </div>
+                  <div className="backfill-status-grid">
+                    <div>
+                      <span>已处理</span>
+                      <strong>{`${formatNumber(stats.backfillProcessedCount)}/${formatNumber(stats.backfillTotalCount)}`}</strong>
+                    </div>
+                    <div>
+                      <span>剩余</span>
+                      <strong>{formatNumber(stats.backfillPendingCount)}</strong>
+                    </div>
+                    <div>
+                      <span>失败</span>
+                      <strong>{formatNumber(stats.backfillFailedCount)}</strong>
+                    </div>
+                    <div>
+                      <span>当前 AppID</span>
+                      <strong>{stats.backfillCurrentAppid ?? "无"}</strong>
+                    </div>
+                  </div>
+                  <p className="mini-status">
+                    {stats.backfillCurrentAppid
+                      ? `当前正在补录 AppID ${stats.backfillCurrentAppid}（第 ${stats.backfillCurrentAttempt ?? 1}/${stats.backfillMaxAttempts} 次尝试）。`
+                      : stats.backfillPendingCount > 0
+                        ? "新游补全清空后即可启动老游补库；老游 AI 仍会排在新游 AI 后面。"
+                        : stats.backfillFailedCount > 0
+                          ? "本轮补录已结束，但有部分游戏补录失败。"
+                          : "本轮新游补全已完成；若有老游待入库，现在可以继续启动老游补库。"}
+                  </p>
+                </>
+              ) : (
+                <p className="mini-status">新游发现可选完整拉取或部分拉取；只有完整拉取才会补录在线人数和评论片段，老游补库只等新游补全清空。</p>
+              )}
+            </div>
+          </>
+        ) : null}
         <p className="mini-status">{stats.dataSource}</p>
       </section>
 
@@ -674,24 +679,26 @@ function RightRail({
             })}
           </div>
         </div>
-        <div className="stacked-actions">
-          <button
-            className="gold-button"
-            disabled={isBusy || stats.syncRunning}
-            onClick={() => onSync("full")}
-            type="button"
-          >
-            {fullLabel}
-          </button>
-          <button
-            className="ghost-button"
-            disabled={isBusy || stats.syncRunning}
-            onClick={() => onSync("quick")}
-            type="button"
-          >
-            {quickLabel}
-          </button>
-        </div>
+        {!isPublicServiceMode ? (
+          <div className="stacked-actions">
+            <button
+              className="gold-button"
+              disabled={isBusy || stats.syncRunning}
+              onClick={() => onSync("full")}
+              type="button"
+            >
+              {fullLabel}
+            </button>
+            <button
+              className="ghost-button"
+              disabled={isBusy || stats.syncRunning}
+              onClick={() => onSync("quick")}
+              type="button"
+            >
+              {quickLabel}
+            </button>
+          </div>
+        ) : null}
         <button
           aria-pressed={filters.hideAdultContent}
           className={filters.hideAdultContent ? "toggle-row active" : "toggle-row"}

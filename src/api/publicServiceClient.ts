@@ -239,6 +239,7 @@ function buildPublicDashboardStats(
     aiBatchRefreshFailedPendingReviewCount: 0,
     aiBatchRefreshLastError: null,
     aiBatchRefreshLastErrorAppid: null,
+    sourceKind: "public_service",
     dataSource: `公共发现服务：${serviceInfo.serviceName}`,
   };
 }

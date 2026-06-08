@@ -348,4 +348,29 @@ describe("DashboardPage", () => {
     expect(onSync).toHaveBeenNthCalledWith(1, "full");
     expect(onSync).toHaveBeenNthCalledWith(2, "quick");
   });
+
+  it("hides local maintenance controls in public service mode", () => {
+    renderDashboardPage({
+      activeView: "home",
+      statsOverride: {
+        ...mockDashboard.stats,
+        sourceKind: "public_service",
+        dataSource: "公共发现服务：MPGS Test Service",
+        syncRunning: true,
+        syncMode: "full",
+        syncTotalCount: 6,
+        syncProcessedCount: 3,
+        backfillRunning: true,
+        backfillTotalCount: 5,
+        backfillProcessedCount: 2,
+      },
+    });
+
+    expect(screen.getByText("公共发现服务：MPGS Test Service")).toBeInTheDocument();
+    expect(screen.queryByText("Steam 同步")).not.toBeInTheDocument();
+    expect(screen.queryByText("完整同步中")).not.toBeInTheDocument();
+    expect(screen.queryByText("元数据补录")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "完整同步" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "快速同步" })).not.toBeInTheDocument();
+  });
 });

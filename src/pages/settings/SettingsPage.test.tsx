@@ -288,6 +288,31 @@ describe("Settings and About pages", () => {
     expect(screen.getByText("当前库已就绪。")).toBeInTheDocument();
   });
 
+  it("hides local maintenance sections in public service mode", () => {
+    renderSettingsPage({
+      stats: {
+        ...mockDashboard.stats,
+        sourceKind: "public_service",
+        dataSource: "公共发现服务：MPGS Test Service",
+        totalGames: 42,
+      },
+      status: "公共服务已连接。",
+    });
+
+    expect(screen.getByText("公共发现服务")).toBeInTheDocument();
+    expect(screen.getByText("公共发现服务：MPGS Test Service")).toBeInTheDocument();
+    expect(screen.getByText("42")).toBeInTheDocument();
+    expect(screen.getByText("本地保存")).toBeInTheDocument();
+    expect(screen.getByText("公共服务已连接。")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /初始化向导/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /API 密钥/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /LLM 配置/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /数据同步/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /AI 批量重算/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /发现任务/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "发现任务控制台" })).not.toBeInTheDocument();
+  });
+
   it("passes the selected batch refresh concurrency to the refresh action", () => {
     const onRefreshAllAnalyses = vi.fn(async (_concurrency: number) => undefined);
 

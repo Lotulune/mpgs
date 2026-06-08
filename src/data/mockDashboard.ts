@@ -353,6 +353,7 @@ export const mockDashboard: DashboardPayload = {
     aiBatchRefreshFailedPendingReviewCount: 1,
     aiBatchRefreshLastError: "LLM upstream timeout",
     aiBatchRefreshLastErrorAppid: 548430,
+    sourceKind: "local",
     dataSource: "浏览器预览 mock 数据；Tauri 内会读取本地 SQLite",
   },
   config: {

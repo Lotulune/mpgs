@@ -133,6 +133,7 @@ export function SettingsPage({
     defaultSettingsExpandedState,
   );
   const expanded = expandedSections ?? localExpanded;
+  const isPublicServiceMode = stats.sourceKind === "public_service";
 
   useEffect(() => {
     setForm(buildFormFromConfig(config));
@@ -215,6 +216,39 @@ export function SettingsPage({
     const readyCount = Number(config.steamApiKeyValidated) + Number(config.llmConfigValidated);
     return config.onboardingCompleted ? "已完成" : `${readyCount}/2 已验证`;
   }, [config]);
+
+  if (isPublicServiceMode) {
+    return (
+      <section className="settings-page">
+        <h2>设置</h2>
+        <div className="settings-section">
+          <div className="settings-section-body">
+            <div className="backfill-status-block compact">
+              <div className="backfill-status-head">
+                <strong>公共发现服务</strong>
+                <span>只读连接</span>
+              </div>
+              <div className="backfill-status-grid">
+                <div>
+                  <span>数据源</span>
+                  <strong>{stats.dataSource}</strong>
+                </div>
+                <div>
+                  <span>公共库数量</span>
+                  <strong>{formatNumber(stats.totalGames)}</strong>
+                </div>
+                <div>
+                  <span>个人状态</span>
+                  <strong>本地保存</strong>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p className="mini-status">{status}</p>
+      </section>
+    );
+  }
 
   async function handlePreviewSteamApps() {
     setIsPreviewing(true);

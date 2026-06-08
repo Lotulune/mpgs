@@ -113,6 +113,8 @@ export interface DashboardPayload {
   config: PublicConfig;
 }
 
+export type DashboardSourceKind = "local" | "public_service";
+
 export interface DashboardStats {
   lastSyncAt?: string | null;
   seedCount: number;
@@ -162,6 +164,7 @@ export interface DashboardStats {
   aiBatchRefreshFailedPendingReviewCount: number;
   aiBatchRefreshLastError?: string | null;
   aiBatchRefreshLastErrorAppid?: number | null;
+  sourceKind?: DashboardSourceKind;
   dataSource: string;
 }
 
