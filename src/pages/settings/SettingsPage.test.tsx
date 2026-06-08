@@ -458,4 +458,33 @@ describe("Settings and About pages", () => {
       screen.getByText(new RegExp(`库内 ${mockDashboard.stats.totalGames} 款游戏`)),
     ).toBeInTheDocument();
   });
+
+  it("shows public service identity instead of local credentials on the about page in service mode", () => {
+    render(
+      <AboutPage
+        config={{
+          ...mockDashboard.config,
+          steamApiKeyConfigured: true,
+          llmApiKeyConfigured: true,
+        }}
+        stats={{
+          ...mockDashboard.stats,
+          sourceKind: "public_service",
+          dataSource: "公共发现服务：MPGS Test Service",
+          totalGames: 42,
+          newGamesCount: 8,
+        }}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "关于 Co-Play" })).toBeInTheDocument();
+    expect(screen.getByText("公共发现服务：MPGS Test Service")).toBeInTheDocument();
+    expect(screen.getByText(/匿名只读/)).toBeInTheDocument();
+    expect(screen.getByText("本地个人状态")).toBeInTheDocument();
+    expect(screen.queryByText(/Steam Key/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/LLM Key/)).not.toBeInTheDocument();
+    expect(screen.queryByText("同步与诊断")).not.toBeInTheDocument();
+    expect(screen.queryByText(/最近同步/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/最近处理 AppID/)).not.toBeInTheDocument();
+  });
 });
