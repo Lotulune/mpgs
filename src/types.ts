@@ -1,4 +1,10 @@
 import type { DemoStatus } from "./domain/recommendation";
+import type { ServiceInfo as MpgsServerServiceInfo } from "./api/generated/mpgsServerApi";
+export type {
+  PublicCatalogStatus,
+  ServiceCapability,
+  ServiceInfo,
+} from "./api/generated/mpgsServerApi";
 
 export type StoreReleaseState =
   | "upcoming"
@@ -64,27 +70,10 @@ export interface ConnectionValidationResult {
   appCount?: number | null;
 }
 
-export type PublicCatalogStatus =
-  | "empty"
-  | "ready"
-  | "updating"
-  | "unavailable";
-
-export type ServiceCapability = "public_catalog_read";
-
-export interface ServiceInfo {
-  serviceInstanceId: string;
-  serviceName: string;
-  serviceVersion: string;
-  apiVersion: string;
-  publicCatalogStatus: PublicCatalogStatus;
-  capabilities: ServiceCapability[];
-}
-
 export interface ServiceInfoCompatibilityResult {
   compatible: boolean;
   reason: string;
-  info: ServiceInfo;
+  info: MpgsServerServiceInfo;
 }
 
 export interface ServiceAddressPolicyResult {
@@ -100,7 +89,7 @@ export type ServiceAddressValidationResult =
       baseUrl: string;
       serviceInfoUrl: string;
       publicReadProbeUrl: string;
-      info: ServiceInfo;
+      info: MpgsServerServiceInfo;
     }
   | {
       success: false;
@@ -108,7 +97,7 @@ export type ServiceAddressValidationResult =
       baseUrl?: string;
       serviceInfoUrl?: string;
       publicReadProbeUrl?: string;
-      info?: ServiceInfo;
+      info?: MpgsServerServiceInfo;
       diagnostic?: string;
     };
 
