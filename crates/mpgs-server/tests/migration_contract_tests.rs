@@ -30,7 +30,7 @@ fn initial_migration_is_embedded_for_binary_startup() {
     let migrator = db::migrator();
     let migrations: Vec<_> = migrator.iter().collect();
 
-    assert_eq!(migrations.len(), 2);
+    assert_eq!(migrations.len(), 3);
     assert_eq!(migrations[0].version, 1);
     assert_eq!(migrations[0].description, "public_catalog_ops");
     assert!(migrations[0]
@@ -41,6 +41,11 @@ fn initial_migration_is_embedded_for_binary_startup() {
     assert!(migrations[1]
         .sql
         .contains("CREATE TABLE IF NOT EXISTS ops.audit_events"));
+    assert_eq!(migrations[2].version, 3);
+    assert_eq!(migrations[2].description, "admin_review_notes");
+    assert!(migrations[2]
+        .sql
+        .contains("ADD COLUMN IF NOT EXISTS review_note TEXT"));
 }
 
 #[test]
@@ -53,6 +58,7 @@ fn database_health_checks_the_sqlx_migration_record() {
     assert!(source.contains("FROM _sqlx_migrations"));
     assert!(source.contains("description = 'public_catalog_ops'"));
     assert!(source.contains("description = 'ops_audit_events'"));
+    assert!(source.contains("description = 'admin_review_notes'"));
     assert!(source.contains("success = TRUE"));
 }
 
@@ -74,6 +80,25 @@ fn public_catalog_status_counts_only_anonymous_visible_public_games() {
 }
 
 #[test]
+fn publicizing_review_action_increments_public_catalog_revision() {
+    let source_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("db.rs");
+    let source = fs::read_to_string(&source_path).expect("db source should exist");
+
+    let review_action_fn = source
+        .split("pub async fn apply_admin_review_action")
+        .nth(1)
+        .and_then(|tail| tail.split("pub async fn discovery_home").next())
+        .expect("admin review action function should exist");
+
+    assert!(review_action_fn.contains("review_status = 'needs_review'"));
+    assert!(review_action_fn.contains("public_catalog.public_catalog_state"));
+    assert!(review_action_fn.contains("revision = revision + 1"));
+    assert!(review_action_fn.contains("action.visibility() == \"public\""));
+}
+
+#[test]
 fn audit_migration_creates_ops_audit_events_without_secret_columns() {
     let migration_path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("migrations")
@@ -85,6 +110,20 @@ fn audit_migration_creates_ops_audit_events_without_secret_columns() {
     assert!(sql.contains("actor TEXT NOT NULL DEFAULT 'system'"));
     assert!(sql.contains("outcome TEXT NOT NULL"));
     assert!(sql.contains("detail_json JSONB NOT NULL DEFAULT '{}'::jsonb"));
+    assert!(!sql.to_lowercase().contains("token"));
+    assert!(!sql.to_lowercase().contains("api_key"));
+    assert!(!sql.to_lowercase().contains("secret"));
+}
+
+#[test]
+fn review_notes_migration_extends_public_games_without_secret_columns() {
+    let migration_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("migrations")
+        .join("0003_admin_review_notes.sql");
+    let sql = fs::read_to_string(&migration_path).expect("review notes migration should exist");
+
+    assert!(sql.contains("ALTER TABLE public_catalog.games"));
+    assert!(sql.contains("ADD COLUMN IF NOT EXISTS review_note TEXT"));
     assert!(!sql.to_lowercase().contains("token"));
     assert!(!sql.to_lowercase().contains("api_key"));
     assert!(!sql.to_lowercase().contains("secret"));

@@ -2,6 +2,9 @@ import type {
   AdminAuditEventsResponse,
   AdminDiagnosticsResponse,
   AdminOverviewResponse,
+  AdminReviewActionRequest,
+  AdminReviewActionResponse,
+  AdminReviewQueueResponse,
   AdminSessionResponse,
   ConfigStateResponse,
   RestartResponse,
@@ -63,6 +66,22 @@ export async function getAdminConnectionShare(): Promise<ServiceConnectionFileRe
 
 export async function getAdminAuditEvents(): Promise<AdminAuditEventsResponse> {
   return readAdminJson("/api/v1/admin/audit-events");
+}
+
+export async function getAdminReviewQueue(): Promise<AdminReviewQueueResponse> {
+  return readAdminJson("/api/v1/admin/review-queue");
+}
+
+export async function applyAdminReviewAction(
+  appid: number,
+  request: AdminReviewActionRequest,
+): Promise<AdminReviewActionResponse> {
+  return readJson(`/api/v1/admin/review-queue/${appid}/action`, {
+    body: JSON.stringify(request),
+    credentials: "same-origin",
+    headers: jsonHeaders,
+    method: "POST",
+  });
 }
 
 export async function requestRestart(): Promise<RestartResponse> {

@@ -1,4 +1,5 @@
 use mpgs_core::models::PublicCatalogStatus;
+use mpgs_server::admin::AdminReviewAction;
 use mpgs_server::{
     build_router_with_state, db, AppState, ConfigHealth, DatabaseHealth, ServiceInfoConfig,
 };
@@ -144,4 +145,59 @@ async fn records_audit_events_in_ops_schema() {
     assert_eq!(event.event_type, "admin.restart.requested");
     assert_eq!(event.actor, "admin");
     assert_eq!(event.outcome, "success");
+}
+
+#[tokio::test]
+async fn public_review_action_advances_public_catalog_revision() {
+    let Ok(database_url) = std::env::var("MPGS_TEST_DATABASE_URL") else {
+        return;
+    };
+
+    let pool = db::connect_and_migrate(&database_url)
+        .await
+        .expect("connect to Postgres and run migrations");
+
+    sqlx_core::query::query::<sqlx_postgres::Postgres>(
+        r#"
+        INSERT INTO public_catalog.games (
+            appid,
+            name,
+            review_status,
+            visibility,
+            recommendation_score
+        )
+        VALUES ($1, 'Review Smoke Candidate', 'needs_review', 'hidden', 87.0)
+        ON CONFLICT (appid) DO UPDATE
+        SET review_status = 'needs_review',
+            visibility = 'hidden',
+            recommendation_score = 87.0,
+            review_note = NULL,
+            updated_at = now()
+        "#,
+    )
+    .bind(901_337_i32)
+    .execute(&pool)
+    .await
+    .expect("insert review candidate");
+
+    let before = db::public_catalog_revision(&pool)
+        .await
+        .expect("read revision before review action");
+    let reviewed = db::apply_admin_review_action(
+        &pool,
+        901_337,
+        AdminReviewAction::AcceptPublic,
+        Some("smoke approved"),
+    )
+    .await
+    .expect("apply public review action")
+    .expect("review candidate should be updated");
+    let after = db::public_catalog_revision(&pool)
+        .await
+        .expect("read revision after review action");
+
+    assert_eq!(reviewed.review_status, "accepted");
+    assert_eq!(reviewed.visibility, "public");
+    assert_eq!(reviewed.review_note.as_deref(), Some("smoke approved"));
+    assert_eq!(after, before + 1);
 }

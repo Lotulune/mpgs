@@ -122,6 +122,21 @@ describe("AdminApp", () => {
             },
           ],
         }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          items: [
+            {
+              appid: 440,
+              name: "Team Fortress 2",
+              reviewStatus: "needs_review",
+              visibility: "hidden",
+              recommendationScore: 86,
+              updatedAt: "2026-06-08 04:00:00+00",
+              reviewNote: "Needs moderator confirmation.",
+            },
+          ],
+        }),
       );
     vi.stubGlobal("fetch", fetchMock);
 
@@ -144,6 +159,9 @@ describe("AdminApp", () => {
     expect(screen.getAllByText("success").length).toBeGreaterThan(0);
     expect(screen.getByText("运维日志")).toBeInTheDocument();
     expect(screen.getByText("admin.session.login")).toBeInTheDocument();
+    expect(screen.getByText("待审核游戏")).toBeInTheDocument();
+    expect(screen.getByText("Team Fortress 2")).toBeInTheDocument();
+    expect(screen.getByText(/AppID 440/)).toBeInTheDocument();
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith("/api/v1/admin/overview", {
@@ -223,7 +241,8 @@ describe("AdminApp", () => {
         }),
       )
       .mockResolvedValueOnce(jsonResponse(connectionShare))
-      .mockResolvedValueOnce(jsonResponse({ events: [] }));
+      .mockResolvedValueOnce(jsonResponse({ events: [] }))
+      .mockResolvedValueOnce(jsonResponse({ items: [] }));
     vi.stubGlobal("fetch", fetchMock);
 
     render(<AdminApp />);
@@ -256,6 +275,161 @@ describe("AdminApp", () => {
       /setupToken|adminToken|token|secret|steamApiKey|llmApiKey/i,
     );
     expect(revokeObjectUrl).toHaveBeenCalledWith("blob:mpgs-service-connection");
+  });
+
+  it("submits review actions from the admin review queue", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ configured: true }))
+      .mockResolvedValueOnce(jsonResponse({ authenticated: true }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          serviceName: "MPGS Public",
+          publicCatalogStatus: "empty",
+          publicGameCount: 0,
+          pendingReviewCount: 1,
+          restartRequired: false,
+          connectionShareConfigured: true,
+          latestAuditEvent: null,
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          postgres: "ok",
+          activeConfig: "ok",
+          safeMode: false,
+          publicBaseUrlStatus: "configured",
+          httpsStatus: "ok",
+          publicCors: "disabled",
+          restartPolicy: "configured",
+          steam: "configured",
+          llm: "missing",
+          r2: "missing",
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          activeConfigVersion: "sha256:active",
+          pendingConfigVersion: null,
+          restartRequired: false,
+          lastStartupStatus: "ok",
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          serviceName: "MPGS Public",
+          serviceInstanceId: "018fb770-8998-7699-a6e4-b7b59f2f9c01",
+          apiVersion: "v1",
+          baseUrl: "https://mpgs.example.test",
+          serviceInfoUrl: "https://mpgs.example.test/api/v1/service-info",
+          capabilities: ["public_catalog_read"],
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ events: [] }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          items: [
+            {
+              appid: 440,
+              name: "Team Fortress 2",
+              reviewStatus: "needs_review",
+              visibility: "hidden",
+              recommendationScore: 86,
+              updatedAt: "2026-06-08 04:00:00+00",
+              reviewNote: null,
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          game: {
+            appid: 440,
+            name: "Team Fortress 2",
+            reviewStatus: "accepted",
+            visibility: "public",
+            recommendationScore: 86,
+            updatedAt: "2026-06-08 04:02:00+00",
+            reviewNote: null,
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          serviceName: "MPGS Public",
+          publicCatalogStatus: "ready",
+          publicGameCount: 1,
+          pendingReviewCount: 0,
+          restartRequired: false,
+          connectionShareConfigured: true,
+          latestAuditEvent: {
+            eventType: "admin.review.accept_public",
+            actor: "admin",
+            outcome: "success",
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          postgres: "ok",
+          activeConfig: "ok",
+          safeMode: false,
+          publicBaseUrlStatus: "configured",
+          httpsStatus: "ok",
+          publicCors: "disabled",
+          restartPolicy: "configured",
+          steam: "configured",
+          llm: "missing",
+          r2: "missing",
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          activeConfigVersion: "sha256:active",
+          pendingConfigVersion: null,
+          restartRequired: false,
+          lastStartupStatus: "ok",
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          serviceName: "MPGS Public",
+          serviceInstanceId: "018fb770-8998-7699-a6e4-b7b59f2f9c01",
+          apiVersion: "v1",
+          baseUrl: "https://mpgs.example.test",
+          serviceInfoUrl: "https://mpgs.example.test/api/v1/service-info",
+          capabilities: ["public_catalog_read"],
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ events: [] }))
+      .mockResolvedValueOnce(jsonResponse({ items: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<AdminApp />);
+
+    fireEvent.change(await screen.findByLabelText("管理员令牌"), {
+      target: { value: "admin-token" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "登录" }));
+
+    expect(await screen.findByText("Team Fortress 2")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "公开" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/v1/admin/review-queue/440/action",
+        {
+          body: JSON.stringify({ action: "accept_public" }),
+          credentials: "same-origin",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+          },
+          method: "POST",
+        },
+      );
+    });
+    expect(await screen.findByText("审核动作已提交。")).toBeInTheDocument();
   });
 });
 

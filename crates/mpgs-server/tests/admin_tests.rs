@@ -1,6 +1,6 @@
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
-use mpgs_server::public_catalog::{PublicGameDetail, PublicGameListItem};
+use mpgs_server::public_catalog::{AdminReviewFixture, PublicGameDetail, PublicGameListItem};
 use mpgs_server::{
     build_router_with_state, AdminAuthConfig, AppState, AuditSink, DatabaseHealth, RateLimitConfig,
     RateLimiters, ServiceInfoConfig,
@@ -333,6 +333,178 @@ async fn admin_audit_events_lists_recent_records_without_secret_values() {
     assert!(value["events"][0].get("token").is_none());
     assert!(value["events"][0].get("adminToken").is_none());
     assert!(value["events"][0].get("secret").is_none());
+}
+
+#[tokio::test]
+async fn admin_review_queue_requires_session_cookie() {
+    let (status, value) = get_json("/api/v1/admin/review-queue", None).await;
+
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(value["error"]["code"], "admin_session_required");
+}
+
+#[tokio::test]
+async fn admin_review_queue_lists_candidates_hidden_from_public_reads() {
+    let app = build_router_with_state(AppState::new_with_admin_auth(
+        test_config().service_info(),
+        DatabaseHealth::ReviewQueueFixture {
+            candidates: vec![AdminReviewFixture {
+                appid: 440,
+                name: "Team Fortress 2".to_string(),
+                review_status: "needs_review".to_string(),
+                visibility: "hidden".to_string(),
+                recommendation_score: Some(86.0),
+                updated_at: "2026-06-08 04:00:00+00".to_string(),
+                review_note: Some("Needs moderator confirmation.".to_string()),
+            }],
+        },
+        AdminAuthConfig::for_test_token("correct-admin-token"),
+    ));
+    let cookie = admin_cookie_for(app.clone()).await;
+
+    let response = request_json_from(
+        app,
+        Method::GET,
+        "/api/v1/admin/review-queue",
+        json!({}),
+        Some(&cookie),
+    )
+    .await;
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["items"][0]["appid"], 440);
+    assert_eq!(value["items"][0]["name"], "Team Fortress 2");
+    assert_eq!(value["items"][0]["reviewStatus"], "needs_review");
+    assert_eq!(value["items"][0]["visibility"], "hidden");
+    assert_eq!(
+        value["items"][0]["reviewNote"],
+        "Needs moderator confirmation."
+    );
+}
+
+#[tokio::test]
+async fn admin_review_action_accepts_and_publicizes_candidate() {
+    let audit = AuditSink::memory();
+    let app = build_router_with_state(
+        admin_state()
+            .with_audit_sink(audit.clone())
+            .with_review_action_fixture(),
+    );
+    let cookie = admin_cookie_for(app.clone()).await;
+
+    let response = request_json_from(
+        app,
+        Method::POST,
+        "/api/v1/admin/review-queue/440/action",
+        json!({
+            "action": "accept_public",
+            "note": "Looks good."
+        }),
+        Some(&cookie),
+    )
+    .await;
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["game"]["appid"], 440);
+    assert_eq!(value["game"]["reviewStatus"], "accepted");
+    assert_eq!(value["game"]["visibility"], "public");
+    assert_eq!(value["game"]["reviewNote"], "Looks good.");
+    assert!(audit.records_for_test().iter().any(|record| {
+        record.event_type == "admin.review.accept_public" && record.outcome == "success"
+    }));
+}
+
+#[tokio::test]
+async fn admin_review_action_maps_all_first_version_actions() {
+    let cases = [
+        (
+            "accept_public",
+            "accepted",
+            "public",
+            "admin.review.accept_public",
+        ),
+        (
+            "accept_hidden",
+            "accepted",
+            "hidden",
+            "admin.review.accept_hidden",
+        ),
+        ("reject", "rejected", "hidden", "admin.review.reject"),
+        ("archive", "archived", "hidden", "admin.review.archive"),
+    ];
+
+    for (action, expected_status, expected_visibility, expected_audit_event) in cases {
+        let audit = AuditSink::memory();
+        let app = build_router_with_state(
+            admin_state()
+                .with_audit_sink(audit.clone())
+                .with_review_action_fixture(),
+        );
+        let cookie = admin_cookie_for(app.clone()).await;
+
+        let response = request_json_from(
+            app,
+            Method::POST,
+            "/api/v1/admin/review-queue/440/action",
+            json!({ "action": action }),
+            Some(&cookie),
+        )
+        .await;
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(value["game"]["reviewStatus"], expected_status);
+        assert_eq!(value["game"]["visibility"], expected_visibility);
+        assert!(audit.records_for_test().iter().any(|record| {
+            record.event_type == expected_audit_event && record.outcome == "success"
+        }));
+    }
+}
+
+#[tokio::test]
+async fn admin_review_action_only_applies_to_pending_candidates() {
+    let app = build_router_with_state(admin_state().with_review_action_fixture());
+    let cookie = admin_cookie_for(app.clone()).await;
+
+    let first_response = request_json_from(
+        app.clone(),
+        Method::POST,
+        "/api/v1/admin/review-queue/440/action",
+        json!({ "action": "accept_hidden" }),
+        Some(&cookie),
+    )
+    .await;
+    let second_response = request_json_from(
+        app,
+        Method::POST,
+        "/api/v1/admin/review-queue/440/action",
+        json!({ "action": "accept_public" }),
+        Some(&cookie),
+    )
+    .await;
+    let status = second_response.status();
+    let body = axum::body::to_bytes(second_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(first_response.status(), StatusCode::OK);
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(value["error"]["code"], "admin_review_candidate_not_found");
 }
 
 #[tokio::test]

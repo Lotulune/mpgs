@@ -12,7 +12,7 @@ pub mod setup;
 pub use admin::AdminAuthConfig;
 use admin::{
     AdminAuditEventSummary, AdminAuditEventsResponse, AdminDiagnosticsResponse,
-    AdminOverviewResponse, AdminSessionRequest, AdminSessionResponse,
+    AdminOverviewResponse, AdminReviewActionRequest, AdminSessionRequest, AdminSessionResponse,
 };
 use axum::{
     extract::{Path, Query, State},
@@ -30,6 +30,7 @@ pub use cors::PublicCorsConfig;
 use health::{HealthResponse, HealthStatus};
 use mpgs_core::models::{PublicCatalogStatus, ServiceCapability, ServiceInfo};
 use public_catalog::{
+    AdminReviewActionResponse, AdminReviewCandidate, AdminReviewQueueResponse,
     DiscoveryHomeResponse, GamesQuery, PublicGameAnalysis, PublicGameDetail, PublicGamesPage,
     ServiceErrorEnvelope,
 };
@@ -209,6 +210,22 @@ impl AppState {
         self
     }
 
+    #[doc(hidden)]
+    pub fn with_review_action_fixture(mut self) -> Self {
+        self.database_health = DatabaseHealth::ReviewActionFixture {
+            candidates: Arc::new(Mutex::new(vec![AdminReviewCandidate {
+                appid: 440,
+                name: "Team Fortress 2".to_string(),
+                review_status: "needs_review".to_string(),
+                visibility: "hidden".to_string(),
+                recommendation_score: Some(86.0),
+                updated_at: "2026-06-08 04:00:00+00".to_string(),
+                review_note: None,
+            }])),
+        };
+        self
+    }
+
     pub fn safe_mode(config: ServiceInfoConfig) -> Self {
         Self {
             service_info: config.service_info_with_catalog_status(PublicCatalogStatus::Unavailable),
@@ -340,6 +357,14 @@ pub enum DatabaseHealth {
         detail: Option<PublicGameDetail>,
         analysis: Option<PublicGameAnalysis>,
     },
+    #[doc(hidden)]
+    ReviewQueueFixture {
+        candidates: Vec<AdminReviewCandidate>,
+    },
+    #[doc(hidden)]
+    ReviewActionFixture {
+        candidates: Arc<Mutex<Vec<AdminReviewCandidate>>>,
+    },
     SafeMode,
     Unavailable,
 }
@@ -348,7 +373,11 @@ impl DatabaseHealth {
     async fn is_healthy(&self) -> bool {
         match self {
             Self::Pool(pool) => db::migration_health_check(pool).await.unwrap_or(false),
-            Self::HealthyForTest | Self::PublicCatalogFixture { .. } | Self::SafeMode => true,
+            Self::HealthyForTest
+            | Self::PublicCatalogFixture { .. }
+            | Self::ReviewQueueFixture { .. }
+            | Self::ReviewActionFixture { .. }
+            | Self::SafeMode => true,
             Self::Unavailable => false,
         }
     }
@@ -371,6 +400,28 @@ impl DatabaseHealth {
                 public_game_count: detail.iter().count() as i64,
                 pending_review_count: 0,
             },
+            Self::ReviewQueueFixture { candidates } => db::AdminOverviewStats {
+                public_game_count: 0,
+                pending_review_count: candidates
+                    .iter()
+                    .filter(|candidate| candidate.review_status == "needs_review")
+                    .count() as i64,
+            },
+            Self::ReviewActionFixture { candidates } => {
+                let pending_review_count = candidates
+                    .lock()
+                    .map(|candidates| {
+                        candidates
+                            .iter()
+                            .filter(|candidate| candidate.review_status == "needs_review")
+                            .count() as i64
+                    })
+                    .unwrap_or_default();
+                db::AdminOverviewStats {
+                    public_game_count: 0,
+                    pending_review_count,
+                }
+            }
             Self::HealthyForTest | Self::SafeMode | Self::Unavailable => {
                 db::AdminOverviewStats::default()
             }
@@ -415,6 +466,11 @@ pub fn build_router_with_state(state: AppState) -> Router {
         .route("/api/v1/admin/overview", get(admin_overview))
         .route("/api/v1/admin/diagnostics", get(admin_diagnostics))
         .route("/api/v1/admin/audit-events", get(admin_audit_events))
+        .route("/api/v1/admin/review-queue", get(admin_review_queue))
+        .route(
+            "/api/v1/admin/review-queue/{appid}/action",
+            post(admin_review_action),
+        )
         .route("/api/v1/admin/config-state", get(admin_config_state))
         .route(
             "/api/v1/admin/connection-share",
@@ -831,6 +887,95 @@ async fn admin_audit_events(State(state): State<AppState>, headers: HeaderMap) -
 
 #[utoipa::path(
     get,
+    path = "/api/v1/admin/review-queue",
+    tag = "admin",
+    responses(
+        (status = 200, description = "Admin review queue", body = AdminReviewQueueResponse),
+        (status = 429, description = "Request rate limited", body = ServiceErrorEnvelope),
+        (status = 401, description = "Admin session required", body = ServiceErrorEnvelope),
+        (status = 503, description = "Public catalog unavailable", body = ServiceErrorEnvelope)
+    )
+)]
+async fn admin_review_queue(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if !state.rate_limits.allow(RateLimitBucket::Admin) {
+        return rate_limited_response();
+    }
+
+    if !admin_session_is_valid(&state, &headers) {
+        return admin_session_required_response();
+    }
+
+    match state.database_health.admin_review_queue().await {
+        Ok(items) => Json(AdminReviewQueueResponse { items }).into_response(),
+        Err(error) if state.database_health.is_safe_mode() => safe_mode_error_response(),
+        Err(error) => service_error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "public_catalog_unavailable",
+            public_catalog_error_message(error),
+        ),
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/review-queue/{appid}/action",
+    tag = "admin",
+    request_body = AdminReviewActionRequest,
+    responses(
+        (status = 200, description = "Admin review action applied", body = AdminReviewActionResponse),
+        (status = 401, description = "Admin session required", body = ServiceErrorEnvelope),
+        (status = 404, description = "Review candidate not found", body = ServiceErrorEnvelope),
+        (status = 429, description = "Request rate limited", body = ServiceErrorEnvelope),
+        (status = 503, description = "Public catalog unavailable", body = ServiceErrorEnvelope)
+    )
+)]
+async fn admin_review_action(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(appid): Path<u32>,
+    Json(request): Json<AdminReviewActionRequest>,
+) -> Response {
+    if !state.rate_limits.allow(RateLimitBucket::Admin) {
+        return rate_limited_response();
+    }
+
+    if !admin_session_is_valid(&state, &headers) {
+        return admin_session_required_response();
+    }
+
+    let note = request
+        .note
+        .as_deref()
+        .map(str::trim)
+        .filter(|note| !note.is_empty());
+    match state
+        .database_health
+        .apply_admin_review_action(appid, request.action, note)
+        .await
+    {
+        Ok(Some(game)) => {
+            state
+                .audit
+                .record(request.action.audit_event_type(), "admin", "success")
+                .await;
+            Json(AdminReviewActionResponse { game }).into_response()
+        }
+        Ok(None) => service_error_response(
+            StatusCode::NOT_FOUND,
+            "admin_review_candidate_not_found",
+            "待审核游戏不存在。",
+        ),
+        Err(error) if state.database_health.is_safe_mode() => safe_mode_error_response(),
+        Err(error) => service_error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "public_catalog_unavailable",
+            public_catalog_error_message(error),
+        ),
+    }
+}
+
+#[utoipa::path(
+    get,
     path = "/api/v1/admin/diagnostics",
     tag = "admin",
     responses(
@@ -1202,6 +1347,7 @@ impl DatabaseHealth {
             Self::Pool(pool) => db::public_catalog_revision(pool).await,
             Self::HealthyForTest => Ok(0),
             Self::PublicCatalogFixture { revision, .. } => Ok(*revision),
+            Self::ReviewQueueFixture { .. } | Self::ReviewActionFixture { .. } => Ok(0),
             Self::SafeMode => Err(sqlx_core::error::Error::PoolClosed),
             Self::Unavailable => Err(sqlx_core::error::Error::PoolClosed),
         }
@@ -1225,7 +1371,9 @@ impl DatabaseHealth {
     async fn discovery_home(&self) -> Result<DiscoveryHomeResponse, sqlx_core::error::Error> {
         match self {
             Self::Pool(pool) => db::discovery_home(pool).await,
-            Self::HealthyForTest => Ok(DiscoveryHomeResponse::empty()),
+            Self::HealthyForTest
+            | Self::ReviewQueueFixture { .. }
+            | Self::ReviewActionFixture { .. } => Ok(DiscoveryHomeResponse::empty()),
             Self::PublicCatalogFixture { detail, .. } => {
                 let item = detail.iter().map(|detail| detail.game.clone()).collect();
                 Ok(DiscoveryHomeResponse {
@@ -1254,7 +1402,9 @@ impl DatabaseHealth {
     ) -> Result<PublicGamesPage, sqlx_core::error::Error> {
         match self {
             Self::Pool(pool) => db::public_games_page(pool, limit, offset).await,
-            Self::HealthyForTest => Ok(PublicGamesPage::empty(limit, offset)),
+            Self::HealthyForTest
+            | Self::ReviewQueueFixture { .. }
+            | Self::ReviewActionFixture { .. } => Ok(PublicGamesPage::empty(limit, offset)),
             Self::PublicCatalogFixture { detail, .. } => {
                 let items = detail
                     .iter()
@@ -1282,7 +1432,9 @@ impl DatabaseHealth {
     ) -> Result<Option<PublicGameDetail>, sqlx_core::error::Error> {
         match self {
             Self::Pool(pool) => db::public_game_detail(pool, appid).await,
-            Self::HealthyForTest => Ok(None),
+            Self::HealthyForTest
+            | Self::ReviewQueueFixture { .. }
+            | Self::ReviewActionFixture { .. } => Ok(None),
             Self::PublicCatalogFixture { detail, .. } => {
                 Ok(detail.clone().filter(|detail| detail.game.appid == appid))
             }
@@ -1297,10 +1449,62 @@ impl DatabaseHealth {
     ) -> Result<Option<PublicGameAnalysis>, sqlx_core::error::Error> {
         match self {
             Self::Pool(pool) => db::public_game_analysis(pool, appid).await,
-            Self::HealthyForTest => Ok(None),
+            Self::HealthyForTest
+            | Self::ReviewQueueFixture { .. }
+            | Self::ReviewActionFixture { .. } => Ok(None),
             Self::PublicCatalogFixture { analysis, .. } => {
                 Ok(analysis.clone().filter(|analysis| analysis.appid == appid))
             }
+            Self::SafeMode => Err(sqlx_core::error::Error::PoolClosed),
+            Self::Unavailable => Err(sqlx_core::error::Error::PoolClosed),
+        }
+    }
+
+    async fn admin_review_queue(
+        &self,
+    ) -> Result<Vec<AdminReviewCandidate>, sqlx_core::error::Error> {
+        match self {
+            Self::Pool(pool) => db::admin_review_queue(pool).await,
+            Self::ReviewQueueFixture { candidates } => Ok(candidates.clone()),
+            Self::ReviewActionFixture { candidates } => candidates
+                .lock()
+                .map(|candidates| candidates.clone())
+                .map_err(|_| sqlx_core::error::Error::PoolClosed),
+            Self::HealthyForTest | Self::PublicCatalogFixture { .. } => Ok(Vec::new()),
+            Self::SafeMode => Err(sqlx_core::error::Error::PoolClosed),
+            Self::Unavailable => Err(sqlx_core::error::Error::PoolClosed),
+        }
+    }
+
+    async fn apply_admin_review_action(
+        &self,
+        appid: u32,
+        action: admin::AdminReviewAction,
+        note: Option<&str>,
+    ) -> Result<Option<AdminReviewCandidate>, sqlx_core::error::Error> {
+        match self {
+            Self::Pool(pool) => db::apply_admin_review_action(pool, appid, action, note).await,
+            Self::ReviewActionFixture { candidates } => {
+                let mut candidates = candidates
+                    .lock()
+                    .map_err(|_| sqlx_core::error::Error::PoolClosed)?;
+                let Some(candidate) = candidates
+                    .iter_mut()
+                    .find(|candidate| candidate.appid == appid)
+                else {
+                    return Ok(None);
+                };
+                if candidate.review_status != "needs_review" {
+                    return Ok(None);
+                }
+                candidate.review_status = action.review_status().to_string();
+                candidate.visibility = action.visibility().to_string();
+                candidate.review_note = note.map(str::to_string);
+                Ok(Some(candidate.clone()))
+            }
+            Self::HealthyForTest
+            | Self::PublicCatalogFixture { .. }
+            | Self::ReviewQueueFixture { .. } => Ok(None),
             Self::SafeMode => Err(sqlx_core::error::Error::PoolClosed),
             Self::Unavailable => Err(sqlx_core::error::Error::PoolClosed),
         }
@@ -1503,6 +1707,8 @@ fn content_type_for_path(path: &FsPath) -> HeaderValue {
         admin_session,
         admin_overview,
         admin_audit_events,
+        admin_review_queue,
+        admin_review_action,
         admin_diagnostics,
         admin_config_state,
         admin_connection_share,
@@ -1517,6 +1723,8 @@ fn content_type_for_path(path: &FsPath) -> HeaderValue {
         admin::AdminAuditEventsResponse,
         admin::AdminAuditEventSummary,
         admin::AdminOverviewResponse,
+        admin::AdminReviewAction,
+        admin::AdminReviewActionRequest,
         admin::AdminSessionRequest,
         admin::AdminSessionResponse,
         config_files::ConfigStateResponse,
@@ -1532,6 +1740,9 @@ fn content_type_for_path(path: &FsPath) -> HeaderValue {
         health::HealthStatus,
         public_catalog::DiscoveryHomeResponse,
         public_catalog::DiscoveryHomeSections,
+        public_catalog::AdminReviewActionResponse,
+        public_catalog::AdminReviewCandidate,
+        public_catalog::AdminReviewQueueResponse,
         public_catalog::PageMeta,
         public_catalog::PublicGameAnalysis,
         public_catalog::PublicGameDetail,

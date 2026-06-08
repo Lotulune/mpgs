@@ -1,10 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  applyAdminReviewAction,
   completeSetup,
   getAdminAuditEvents,
   getAdminConnectionShare,
   getAdminDiagnostics,
   getAdminOverview,
+  getAdminReviewQueue,
   getAdminConfigState,
   getSetupStatus,
   loginAdmin,
@@ -134,6 +136,34 @@ describe("admin API client", () => {
         }),
       )
       .mockResolvedValueOnce(
+        jsonResponse({
+          items: [
+            {
+              appid: 440,
+              name: "Team Fortress 2",
+              reviewStatus: "needs_review",
+              visibility: "hidden",
+              recommendationScore: 86,
+              updatedAt: "2026-06-08 04:00:00+00",
+              reviewNote: "Needs moderator confirmation.",
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          game: {
+            appid: 440,
+            name: "Team Fortress 2",
+            reviewStatus: "accepted",
+            visibility: "public",
+            recommendationScore: 86,
+            updatedAt: "2026-06-08 04:02:00+00",
+            reviewNote: "Looks good.",
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
         jsonResponse({ restartScheduled: true, mode: "self_exit" }, 202),
       );
     vi.stubGlobal("fetch", fetchMock);
@@ -143,6 +173,11 @@ describe("admin API client", () => {
     await getAdminConfigState();
     await getAdminConnectionShare();
     await getAdminAuditEvents();
+    await getAdminReviewQueue();
+    await applyAdminReviewAction(440, {
+      action: "accept_public",
+      note: "Looks good.",
+    });
     await requestRestart();
 
     expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/v1/admin/overview", {
@@ -169,7 +204,27 @@ describe("admin API client", () => {
       credentials: "same-origin",
       headers: { Accept: "application/json" },
     });
-    expect(fetchMock).toHaveBeenNthCalledWith(6, "/api/v1/admin/restart", {
+    expect(fetchMock).toHaveBeenNthCalledWith(6, "/api/v1/admin/review-queue", {
+      credentials: "same-origin",
+      headers: { Accept: "application/json" },
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      7,
+      "/api/v1/admin/review-queue/440/action",
+      {
+        body: JSON.stringify({
+          action: "accept_public",
+          note: "Looks good.",
+        }),
+        credentials: "same-origin",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        method: "POST",
+      },
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(8, "/api/v1/admin/restart", {
       body: JSON.stringify({ confirm: true }),
       credentials: "same-origin",
       headers: {

@@ -36,6 +36,31 @@ export interface AdminOverviewResponse {
   serviceName: string;
 }
 
+export type AdminReviewAction = "accept_public" | "accept_hidden" | "reject" | "archive";
+
+export interface AdminReviewActionRequest {
+  action: AdminReviewAction;
+  note?: string | null;
+}
+
+export interface AdminReviewActionResponse {
+  game: AdminReviewCandidate;
+}
+
+export interface AdminReviewCandidate {
+  appid: number;
+  name: string;
+  recommendationScore?: number | null;
+  reviewNote?: string | null;
+  reviewStatus: string;
+  updatedAt: string;
+  visibility: string;
+}
+
+export interface AdminReviewQueueResponse {
+  items: AdminReviewCandidate[];
+}
+
 export interface AdminSessionRequest {
   token: string;
 }

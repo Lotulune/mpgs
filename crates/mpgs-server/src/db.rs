@@ -1,6 +1,7 @@
+use crate::admin::AdminReviewAction;
 use crate::public_catalog::{
-    DiscoveryHomeResponse, DiscoveryHomeSections, PageMeta, PublicGameAnalysis, PublicGameDetail,
-    PublicGameListItem, PublicGamesPage,
+    AdminReviewCandidate, DiscoveryHomeResponse, DiscoveryHomeSections, PageMeta,
+    PublicGameAnalysis, PublicGameDetail, PublicGameListItem, PublicGamesPage,
 };
 use mpgs_core::models::PublicCatalogStatus;
 use sqlx_core::migrate::{Migration, MigrationType, Migrator};
@@ -10,6 +11,8 @@ use std::borrow::Cow;
 
 const INITIAL_MIGRATION_SQL: &str = include_str!("../migrations/0001_public_catalog_ops.sql");
 const AUDIT_EVENTS_MIGRATION_SQL: &str = include_str!("../migrations/0002_ops_audit_events.sql");
+const ADMIN_REVIEW_NOTES_MIGRATION_SQL: &str =
+    include_str!("../migrations/0003_admin_review_notes.sql");
 
 #[derive(Debug, Clone)]
 pub struct ServiceConfigState {
@@ -54,6 +57,13 @@ pub fn migrator() -> Migrator {
                 Cow::Borrowed("ops_audit_events"),
                 MigrationType::Simple,
                 Cow::Borrowed(AUDIT_EVENTS_MIGRATION_SQL),
+                false,
+            ),
+            Migration::new(
+                3,
+                Cow::Borrowed("admin_review_notes"),
+                MigrationType::Simple,
+                Cow::Borrowed(ADMIN_REVIEW_NOTES_MIGRATION_SQL),
                 false,
             ),
         ]),
@@ -116,6 +126,12 @@ pub async fn migration_health_check(pool: &PgPool) -> Result<bool, sqlx_core::er
             FROM _sqlx_migrations
             WHERE version = 2
               AND description = 'ops_audit_events'
+              AND success = TRUE
+        ) AND EXISTS (
+            SELECT 1
+            FROM _sqlx_migrations
+            WHERE version = 3
+              AND description = 'admin_review_notes'
               AND success = TRUE
         )
         "#,
@@ -285,6 +301,72 @@ pub async fn admin_overview_stats(
     })
 }
 
+pub async fn admin_review_queue(
+    pool: &PgPool,
+) -> Result<Vec<AdminReviewCandidate>, sqlx_core::error::Error> {
+    let rows = sqlx_core::query::query::<Postgres>(
+        r#"
+        SELECT appid, name, review_status, visibility, recommendation_score, updated_at::text AS updated_at, review_note
+        FROM public_catalog.games
+        WHERE review_status = 'needs_review'
+        ORDER BY updated_at DESC, appid ASC
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(admin_review_candidate_from_row)
+        .collect()
+}
+
+pub async fn apply_admin_review_action(
+    pool: &PgPool,
+    appid: u32,
+    action: AdminReviewAction,
+    note: Option<&str>,
+) -> Result<Option<AdminReviewCandidate>, sqlx_core::error::Error> {
+    let mut tx = pool.begin().await?;
+    let row = sqlx_core::query::query::<Postgres>(
+        r#"
+        UPDATE public_catalog.games
+        SET review_status = $2,
+            visibility = $3,
+            review_note = $4,
+            updated_at = now()
+        WHERE appid = $1
+          AND review_status = 'needs_review'
+        RETURNING appid, name, review_status, visibility, recommendation_score, updated_at::text AS updated_at, review_note
+        "#,
+    )
+    .bind(appid as i32)
+    .bind(action.review_status())
+    .bind(action.visibility())
+    .bind(note)
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    let candidate = row.map(admin_review_candidate_from_row).transpose()?;
+
+    if candidate.is_some() && action.visibility() == "public" {
+        sqlx_core::query::query::<Postgres>(
+            r#"
+            UPDATE public_catalog.public_catalog_state
+            SET revision = revision + 1,
+                status = 'ready',
+                updated_at = now()
+            WHERE id = TRUE
+            "#,
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    tx.commit().await?;
+
+    Ok(candidate)
+}
+
 pub async fn discovery_home(
     pool: &PgPool,
 ) -> Result<DiscoveryHomeResponse, sqlx_core::error::Error> {
@@ -306,6 +388,22 @@ pub async fn discovery_home(
             high_confidence,
             recently_added,
         },
+    })
+}
+
+fn admin_review_candidate_from_row(
+    row: sqlx_postgres::PgRow,
+) -> Result<AdminReviewCandidate, sqlx_core::error::Error> {
+    let appid: i32 = row.try_get("appid")?;
+
+    Ok(AdminReviewCandidate {
+        appid: appid as u32,
+        name: row.try_get("name")?,
+        review_status: row.try_get("review_status")?,
+        visibility: row.try_get("visibility")?,
+        recommendation_score: row.try_get("recommendation_score")?,
+        updated_at: row.try_get("updated_at")?,
+        review_note: row.try_get("review_note")?,
     })
 }
 

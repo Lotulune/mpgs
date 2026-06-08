@@ -51,6 +51,48 @@ pub struct AdminAuditEventsResponse {
     pub events: Vec<AdminAuditEventSummary>,
 }
 
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminReviewActionRequest {
+    pub action: AdminReviewAction,
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AdminReviewAction {
+    AcceptPublic,
+    AcceptHidden,
+    Reject,
+    Archive,
+}
+
+impl AdminReviewAction {
+    pub fn review_status(self) -> &'static str {
+        match self {
+            Self::AcceptPublic | Self::AcceptHidden => "accepted",
+            Self::Reject => "rejected",
+            Self::Archive => "archived",
+        }
+    }
+
+    pub fn visibility(self) -> &'static str {
+        match self {
+            Self::AcceptPublic => "public",
+            Self::AcceptHidden | Self::Reject | Self::Archive => "hidden",
+        }
+    }
+
+    pub fn audit_event_type(self) -> &'static str {
+        match self {
+            Self::AcceptPublic => "admin.review.accept_public",
+            Self::AcceptHidden => "admin.review.accept_hidden",
+            Self::Reject => "admin.review.reject",
+            Self::Archive => "admin.review.archive",
+        }
+    }
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct AdminDiagnosticsResponse {

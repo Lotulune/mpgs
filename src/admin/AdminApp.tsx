@@ -3,17 +3,22 @@ import type {
   AdminAuditEventsResponse,
   AdminDiagnosticsResponse,
   AdminOverviewResponse,
+  AdminReviewAction,
+  AdminReviewCandidate,
+  AdminReviewQueueResponse,
   ConfigStateResponse,
   ServiceConnectionFileResponse,
   SetupCompleteRequest,
 } from "../api/generated/mpgsServerApi";
 import {
+  applyAdminReviewAction,
   completeSetup,
   getAdminAuditEvents,
   getAdminConfigState,
   getAdminConnectionShare,
   getAdminDiagnostics,
   getAdminOverview,
+  getAdminReviewQueue,
   getSetupStatus,
   loginAdmin,
   requestRestart,
@@ -32,6 +37,7 @@ type AdminData = {
   configState: ConfigStateResponse;
   connectionShare: ServiceConnectionFileResponse;
   auditEvents: AdminAuditEventsResponse;
+  reviewQueue: AdminReviewQueueResponse;
 };
 
 const initialSetupForm: SetupCompleteRequest = {
@@ -110,15 +116,29 @@ export function AdminApp() {
   }
 
   async function refreshAdminData() {
-    const [overview, diagnostics, configState, connectionShare, auditEvents] =
-      await Promise.all([
-        getAdminOverview(),
-        getAdminDiagnostics(),
-        getAdminConfigState(),
-        getAdminConnectionShare(),
-        getAdminAuditEvents(),
-      ]);
-    setAdminData({ overview, diagnostics, configState, connectionShare, auditEvents });
+    const [
+      overview,
+      diagnostics,
+      configState,
+      connectionShare,
+      auditEvents,
+      reviewQueue,
+    ] = await Promise.all([
+      getAdminOverview(),
+      getAdminDiagnostics(),
+      getAdminConfigState(),
+      getAdminConnectionShare(),
+      getAdminAuditEvents(),
+      getAdminReviewQueue(),
+    ]);
+    setAdminData({
+      overview,
+      diagnostics,
+      configState,
+      connectionShare,
+      auditEvents,
+      reviewQueue,
+    });
   }
 
   async function handleRefresh() {
@@ -203,6 +223,10 @@ export function AdminApp() {
             data={adminData}
             isBusy={isBusy}
             restartMessage={restartMessage}
+            onReviewAction={async (appid, action) => {
+              await applyAdminReviewAction(appid, { action });
+              await refreshAdminData();
+            }}
             onRefresh={handleRefresh}
             onRestart={handleRestart}
           />
@@ -327,14 +351,17 @@ function OverviewPanel({
   restartMessage,
   onRefresh,
   onRestart,
+  onReviewAction,
 }: {
   data: AdminData;
   isBusy: boolean;
   restartMessage: string | null;
   onRefresh: () => void;
   onRestart: () => void;
+  onReviewAction: (appid: number, action: AdminReviewAction) => Promise<void>;
 }) {
   const [shareMessage, setShareMessage] = useState<string | null>(null);
+  const [reviewMessage, setReviewMessage] = useState<string | null>(null);
 
   async function handleCopyServiceAddress() {
     try {
@@ -359,6 +386,16 @@ function OverviewPanel({
     anchor.remove();
     URL.revokeObjectURL(url);
     setShareMessage("连接文件已下载。");
+  }
+
+  async function handleReviewAction(appid: number, action: AdminReviewAction) {
+    setReviewMessage(null);
+    try {
+      await onReviewAction(appid, action);
+      setReviewMessage("审核动作已提交。");
+    } catch (error) {
+      setReviewMessage(errorMessage(error));
+    }
   }
 
   return (
@@ -462,6 +499,25 @@ function OverviewPanel({
         </div>
 
         <div className="admin-panel">
+          <h2>待审核游戏</h2>
+          {data.reviewQueue.items.length > 0 ? (
+            <div className="admin-review-list">
+              {data.reviewQueue.items.map((candidate) => (
+                <ReviewCandidateRow
+                  candidate={candidate}
+                  isBusy={isBusy}
+                  key={candidate.appid}
+                  onAction={handleReviewAction}
+                />
+              ))}
+            </div>
+          ) : (
+            <p className="admin-muted">暂无待审核游戏</p>
+          )}
+          {reviewMessage && <p className="admin-success block">{reviewMessage}</p>}
+        </div>
+
+        <div className="admin-panel">
           <h2>最近审计</h2>
           {data.overview.latestAuditEvent ? (
             <DefinitionList
@@ -497,6 +553,42 @@ function OverviewPanel({
         </div>
       </section>
     </div>
+  );
+}
+
+function ReviewCandidateRow({
+  candidate,
+  isBusy,
+  onAction,
+}: {
+  candidate: AdminReviewCandidate;
+  isBusy: boolean;
+  onAction: (appid: number, action: AdminReviewAction) => void;
+}) {
+  return (
+    <article className="admin-review-row">
+      <div>
+        <strong>{candidate.name}</strong>
+        <span>
+          AppID {candidate.appid} · {candidate.reviewStatus} · {candidate.visibility}
+        </span>
+        {candidate.reviewNote && <p>{candidate.reviewNote}</p>}
+      </div>
+      <div className="admin-review-actions">
+        <button disabled={isBusy} onClick={() => onAction(candidate.appid, "accept_public")} type="button">
+          公开
+        </button>
+        <button disabled={isBusy} onClick={() => onAction(candidate.appid, "accept_hidden")} type="button">
+          隐藏接受
+        </button>
+        <button disabled={isBusy} onClick={() => onAction(candidate.appid, "reject")} type="button">
+          拒绝
+        </button>
+        <button disabled={isBusy} onClick={() => onAction(candidate.appid, "archive")} type="button">
+          归档
+        </button>
+      </div>
+    </article>
   );
 }
 

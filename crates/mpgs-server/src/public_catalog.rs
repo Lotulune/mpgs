@@ -14,6 +14,33 @@ pub struct PublicGameListItem {
 
 #[derive(Debug, Clone, Serialize, ToSchema, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct AdminReviewCandidate {
+    pub appid: u32,
+    pub name: String,
+    pub review_status: String,
+    pub visibility: String,
+    pub recommendation_score: Option<f64>,
+    pub updated_at: String,
+    pub review_note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminReviewQueueResponse {
+    pub items: Vec<AdminReviewCandidate>,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminReviewActionResponse {
+    pub game: AdminReviewCandidate,
+}
+
+#[doc(hidden)]
+pub type AdminReviewFixture = AdminReviewCandidate;
+
+#[derive(Debug, Clone, Serialize, ToSchema, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct DiscoveryHomeResponse {
     pub status: PublicCatalogStatus,
     pub total_games: i64,
