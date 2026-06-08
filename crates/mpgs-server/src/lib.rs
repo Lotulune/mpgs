@@ -39,7 +39,10 @@ pub use restart::RestartCoordinator;
 use restart::{RestartRequest, RestartResponse};
 use setup::{SetupAccess, SetupCompleteRequest, SetupCompleteResponse, SetupStatusResponse};
 use sqlx_postgres::PgPool;
-use std::sync::{Arc, Mutex};
+use std::{
+    path::{Component, Path as FsPath, PathBuf},
+    sync::{Arc, Mutex},
+};
 use utoipa::OpenApi;
 
 #[derive(Debug, Clone)]
@@ -92,6 +95,7 @@ pub struct AppState {
     audit: AuditSink,
     rate_limits: RateLimiters,
     public_cors: PublicCorsConfig,
+    admin_static_dir: Option<PathBuf>,
 }
 
 impl AppState {
@@ -107,6 +111,7 @@ impl AppState {
             audit: AuditSink::Noop,
             rate_limits: RateLimiters::default(),
             public_cors: PublicCorsConfig::default(),
+            admin_static_dir: None,
         }
     }
 
@@ -126,6 +131,7 @@ impl AppState {
             audit: AuditSink::Noop,
             rate_limits: RateLimiters::default(),
             public_cors: PublicCorsConfig::default(),
+            admin_static_dir: None,
         }
     }
 
@@ -145,6 +151,7 @@ impl AppState {
             audit: AuditSink::Noop,
             rate_limits: RateLimiters::default(),
             public_cors: PublicCorsConfig::default(),
+            admin_static_dir: None,
         }
     }
 
@@ -183,6 +190,11 @@ impl AppState {
         self
     }
 
+    pub fn with_admin_static_dir(mut self, admin_static_dir: impl Into<PathBuf>) -> Self {
+        self.admin_static_dir = Some(admin_static_dir.into());
+        self
+    }
+
     pub fn with_setup_access(
         mut self,
         config_dir: impl Into<std::path::PathBuf>,
@@ -209,6 +221,7 @@ impl AppState {
             audit: AuditSink::Noop,
             rate_limits: RateLimiters::default(),
             public_cors: PublicCorsConfig::default(),
+            admin_static_dir: None,
         }
     }
 }
@@ -381,6 +394,10 @@ pub fn build_router_with_state(state: AppState) -> Router {
         .route("/api/v1/setup/status", get(setup_status))
         .route("/api/v1/setup/complete", post(setup_complete))
         .route("/openapi.json", get(openapi_json))
+        .route("/admin", get(admin_index))
+        .route("/admin/", get(admin_index))
+        .route("/admin/{*path}", get(admin_deep_link))
+        .route("/assets/{*asset_path}", get(static_asset))
         .with_state(state)
 }
 
@@ -1329,6 +1346,82 @@ fn public_catalog_error_message(_error: sqlx_core::error::Error) -> &'static str
 
 async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
     Json(build_openapi())
+}
+
+async fn admin_index(State(state): State<AppState>) -> Response {
+    serve_admin_html(&state).await
+}
+
+async fn admin_deep_link(State(state): State<AppState>) -> Response {
+    serve_admin_html(&state).await
+}
+
+async fn static_asset(State(state): State<AppState>, Path(asset_path): Path<String>) -> Response {
+    let Some(root) = state.admin_static_dir.as_ref() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let Some(path) = safe_asset_path(root, &asset_path) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+
+    serve_static_file(&path).await
+}
+
+async fn serve_admin_html(state: &AppState) -> Response {
+    let Some(root) = state.admin_static_dir.as_ref() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+
+    serve_static_file(&root.join("admin.html")).await
+}
+
+async fn serve_static_file(path: &FsPath) -> Response {
+    match tokio::fs::read(path).await {
+        Ok(contents) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, content_type_for_path(path))],
+            contents,
+        )
+            .into_response(),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+fn safe_asset_path(root: &FsPath, asset_path: &str) -> Option<PathBuf> {
+    let requested = FsPath::new(asset_path);
+    if asset_path.trim().is_empty() || requested.is_absolute() {
+        return None;
+    }
+
+    let mut safe_path = PathBuf::new();
+    for component in requested.components() {
+        match component {
+            Component::Normal(part) => safe_path.push(part),
+            _ => return None,
+        }
+    }
+
+    if safe_path.as_os_str().is_empty() {
+        return None;
+    }
+
+    Some(root.join("assets").join(safe_path))
+}
+
+fn content_type_for_path(path: &FsPath) -> HeaderValue {
+    match path.extension().and_then(|extension| extension.to_str()) {
+        Some("css") => HeaderValue::from_static("text/css; charset=utf-8"),
+        Some("html") => HeaderValue::from_static("text/html; charset=utf-8"),
+        Some("ico") => HeaderValue::from_static("image/x-icon"),
+        Some("jpg") | Some("jpeg") => HeaderValue::from_static("image/jpeg"),
+        Some("js") | Some("mjs") => HeaderValue::from_static("text/javascript; charset=utf-8"),
+        Some("json") => HeaderValue::from_static("application/json"),
+        Some("png") => HeaderValue::from_static("image/png"),
+        Some("svg") => HeaderValue::from_static("image/svg+xml"),
+        Some("webp") => HeaderValue::from_static("image/webp"),
+        Some("woff2") => HeaderValue::from_static("font/woff2"),
+        _ => HeaderValue::from_static("application/octet-stream"),
+    }
 }
 
 #[derive(OpenApi)]

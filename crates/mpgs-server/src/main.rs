@@ -2,6 +2,7 @@ use anyhow::Result;
 use mpgs_server::{
     build_router_with_state, db, AppState, AuditSink, DatabaseHealth, StartupConfig,
 };
+use std::path::PathBuf;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -13,6 +14,7 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    let admin_static_dir = admin_static_dir_from_env();
     let startup_config = StartupConfig::from_env()?;
     let (bind_addr, app) = match startup_config {
         StartupConfig::Ready(config) => {
@@ -32,7 +34,9 @@ async fn main() -> Result<()> {
             if let Some(setup_access) = config.setup_access {
                 app_state = app_state.with_setup_config(setup_access);
             }
-            app_state = app_state.with_public_cors(config.public_cors);
+            app_state = app_state
+                .with_public_cors(config.public_cors)
+                .with_admin_static_dir(admin_static_dir.clone());
             if let Some(config_file_manager) = config.config_file_manager {
                 if let Ok(active_config_version) = config_file_manager.active_config_version() {
                     db::record_active_config_startup(&pool, &active_config_version).await?;
@@ -46,7 +50,8 @@ async fn main() -> Result<()> {
             service_info,
             setup_access,
         } => {
-            let mut app_state = AppState::safe_mode(service_info);
+            let mut app_state =
+                AppState::safe_mode(service_info).with_admin_static_dir(admin_static_dir.clone());
             if let Some(setup_access) = setup_access {
                 app_state = app_state.with_setup_config(setup_access);
             }
@@ -57,4 +62,10 @@ async fn main() -> Result<()> {
 
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+fn admin_static_dir_from_env() -> PathBuf {
+    std::env::var_os("MPGS_ADMIN_STATIC_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("dist"))
 }

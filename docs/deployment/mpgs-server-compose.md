@@ -1,6 +1,7 @@
 # MPGS Server Docker Compose Deployment
 
 This deployment target runs `mpgs-server` with Postgres and an optional Caddy reverse proxy.
+The server image also includes the built management UI and serves it from `/admin` on the same origin as the management API.
 
 ## Build Locally
 
@@ -157,6 +158,14 @@ The public client should use HTTPS:
 curl https://$CADDY_DOMAIN/healthz
 curl https://$CADDY_DOMAIN/api/v1/service-info
 ```
+
+The management surface is served by `mpgs-server` itself:
+
+```bash
+curl https://$CADDY_DOMAIN/admin
+```
+
+The Docker image sets `MPGS_ADMIN_STATIC_DIR=/usr/local/share/mpgs/admin`, which points to the Vite `dist` output copied into the runtime image. For local development outside Docker, `mpgs-server` defaults to `dist` unless `MPGS_ADMIN_STATIC_DIR` is set.
 
 ## Remote Deploy Verification
 

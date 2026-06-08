@@ -40,8 +40,17 @@ if ($caddyfile -notmatch 'reverse_proxy mpgs-server:4310') {
 if ($dockerfile -notmatch 'cargo build --release -p mpgs-server') {
     throw "Dockerfile must build only the mpgs-server package."
 }
+if ($dockerfile -notmatch 'FROM node:22-bookworm AS frontend-builder' -or $dockerfile -notmatch 'npm run build') {
+    throw "Dockerfile must build the management UI locally or in CI before runtime image assembly."
+}
+if ($dockerfile -notmatch 'COPY --from=frontend-builder /workspace/dist /usr/local/share/mpgs/admin' -or $dockerfile -notmatch 'MPGS_ADMIN_STATIC_DIR=/usr/local/share/mpgs/admin') {
+    throw "Dockerfile must copy the built management UI into the runtime image and point MPGS_ADMIN_STATIC_DIR at it."
+}
 if ($deploymentDoc -notmatch 'Do not build on the VPS' -or $deploymentDoc -notmatch 'must not compile Rust') {
     throw "deployment docs must forbid VPS builds."
+}
+if ($deploymentDoc -notmatch '/admin' -or $deploymentDoc -notmatch 'MPGS_ADMIN_STATIC_DIR=/usr/local/share/mpgs/admin') {
+    throw "deployment docs must describe same-origin admin UI hosting and the image static directory."
 }
 if ($deploymentDoc -notmatch 'active/service.toml' -or $deploymentDoc -notmatch 'active/secrets.toml') {
     throw "deployment docs must describe the active TOML config files."
