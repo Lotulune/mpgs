@@ -252,3 +252,169 @@ async fn admin_task_controls_use_ops_schema_in_postgres() {
             && failure.reason == "Steam lookup timed out."
     }));
 }
+
+#[tokio::test]
+async fn postgres_workers_claim_only_one_queued_task_at_a_time() {
+    let Ok(database_url) = std::env::var("MPGS_TEST_DATABASE_URL") else {
+        return;
+    };
+
+    let pool = db::connect_and_migrate(&database_url)
+        .await
+        .expect("connect to Postgres and run migrations");
+
+    let first_task =
+        db::create_admin_task(&pool, AdminTaskKind::ManualAppidDiscovery, Some(910_001))
+            .await
+            .expect("create first manual appid task");
+    let second_task =
+        db::create_admin_task(&pool, AdminTaskKind::ManualAppidDiscovery, Some(910_002))
+            .await
+            .expect("create second manual appid task");
+
+    sqlx_core::query::query::<sqlx_postgres::Postgres>(
+        r#"
+        UPDATE ops.tasks
+        SET priority = 1
+        WHERE id IN ($1, $2)
+        "#,
+    )
+    .bind(first_task.id)
+    .bind(second_task.id)
+    .execute(&pool)
+    .await
+    .expect("prioritize smoke tasks");
+
+    let first_claim = db::claim_next_task(&pool, "smoke-worker-a")
+        .await
+        .expect("claim first queued task")
+        .expect("first queued task should be claimed");
+    let second_claim = db::claim_next_task(&pool, "smoke-worker-b")
+        .await
+        .expect("claim second queued task")
+        .expect("second queued task should be claimed");
+
+    assert_ne!(first_claim.task.id, second_claim.task.id);
+    assert_eq!(first_claim.task.status, "running");
+    assert_eq!(second_claim.task.status, "running");
+    assert!(first_claim.run_id > 0);
+    assert!(second_claim.run_id > 0);
+
+    let claimed_task_count = sqlx_core::query_scalar::query_scalar::<sqlx_postgres::Postgres, i64>(
+        r#"
+        SELECT COUNT(*)
+        FROM ops.tasks
+        WHERE id IN ($1, $2)
+          AND status = 'running'
+          AND claimed_at IS NOT NULL
+        "#,
+    )
+    .bind(first_task.id)
+    .bind(second_task.id)
+    .fetch_one(&pool)
+    .await
+    .expect("count claimed smoke tasks");
+    let running_run_count = sqlx_core::query_scalar::query_scalar::<sqlx_postgres::Postgres, i64>(
+        r#"
+        SELECT COUNT(*)
+        FROM ops.task_runs
+        WHERE task_id IN ($1, $2)
+          AND status = 'running'
+        "#,
+    )
+    .bind(first_task.id)
+    .bind(second_task.id)
+    .fetch_one(&pool)
+    .await
+    .expect("count running smoke task runs");
+
+    assert_eq!(claimed_task_count, 2);
+    assert_eq!(running_run_count, 2);
+}
+
+#[tokio::test]
+async fn postgres_task_runs_complete_and_fail_with_sanitized_failure_records() {
+    let Ok(database_url) = std::env::var("MPGS_TEST_DATABASE_URL") else {
+        return;
+    };
+
+    let pool = db::connect_and_migrate(&database_url)
+        .await
+        .expect("connect to Postgres and run migrations");
+
+    let completing_task =
+        db::create_admin_task(&pool, AdminTaskKind::ManualAppidDiscovery, Some(910_101))
+            .await
+            .expect("create task to complete");
+    let failing_task =
+        db::create_admin_task(&pool, AdminTaskKind::ManualAppidDiscovery, Some(910_102))
+            .await
+            .expect("create task to fail");
+
+    sqlx_core::query::query::<sqlx_postgres::Postgres>(
+        r#"
+        UPDATE ops.tasks
+        SET priority = 0
+        WHERE id IN ($1, $2)
+        "#,
+    )
+    .bind(completing_task.id)
+    .bind(failing_task.id)
+    .execute(&pool)
+    .await
+    .expect("prioritize lifecycle smoke tasks");
+
+    let completing_claim = db::claim_next_task(&pool, "smoke-worker-complete")
+        .await
+        .expect("claim completing task")
+        .expect("completing task should be claimed");
+    let completed = db::complete_task_run(
+        &pool,
+        completing_claim.run_id,
+        Some("manual AppID discovery completed"),
+    )
+    .await
+    .expect("complete task run")
+    .expect("running task run should complete");
+
+    assert_eq!(completed.task.id, completing_claim.task.id);
+    assert_eq!(completed.task.status, "completed");
+    assert_eq!(completed.run_status, "completed");
+
+    let failing_claim = db::claim_next_task(&pool, "smoke-worker-fail")
+        .await
+        .expect("claim failing task")
+        .expect("failing task should be claimed");
+    let failed = db::fail_task_run(
+        &pool,
+        failing_claim.run_id,
+        db::TaskFailureInput {
+            stage: "steam_lookup",
+            target: None,
+            provider: Some("steam"),
+            retryable: true,
+            reason: "Steam lookup timed out.",
+        },
+    )
+    .await
+    .expect("fail task run")
+    .expect("running task run should fail");
+
+    assert_eq!(failed.task.id, failing_claim.task.id);
+    assert_eq!(failed.task.status, "failed");
+    assert_eq!(failed.run_status, "failed");
+
+    let failure = db::admin_task_control_state(&pool)
+        .await
+        .expect("read task failure summary")
+        .failures
+        .into_iter()
+        .find(|failure| failure.task_id == Some(failing_claim.task.id))
+        .expect("failed task should have a sanitized failure record");
+
+    assert_eq!(failure.stage, "steam_lookup");
+    assert_eq!(failure.target.as_deref(), Some("appid:910102"));
+    assert_eq!(failure.provider.as_deref(), Some("steam"));
+    assert!(failure.retryable);
+    assert_eq!(failure.reason, "Steam lookup timed out.");
+}

@@ -40,6 +40,31 @@ pub struct AdminTaskControlState {
     pub failures: Vec<AdminTaskFailureItem>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaimedTask {
+    pub task: AdminTaskSummary,
+    pub run_id: i64,
+    pub worker_id: String,
+    pub claimed_at: String,
+    pub run_started_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskFailureInput<'a> {
+    pub stage: &'a str,
+    pub target: Option<&'a str>,
+    pub provider: Option<&'a str>,
+    pub retryable: bool,
+    pub reason: &'a str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskRunOutcome {
+    pub task: AdminTaskSummary,
+    pub run_id: i64,
+    pub run_status: String,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AdminOverviewStats {
     pub public_game_count: i64,
@@ -361,6 +386,204 @@ pub async fn create_admin_task(
     admin_task_from_row(row)
 }
 
+pub async fn claim_next_task(
+    pool: &PgPool,
+    worker_id: &str,
+) -> Result<Option<ClaimedTask>, sqlx_core::error::Error> {
+    let mut tx = pool.begin().await?;
+    let Some(candidate) = sqlx_core::query::query::<Postgres>(
+        r#"
+        SELECT id
+        FROM ops.tasks
+        WHERE status = 'queued'
+        ORDER BY priority ASC, created_at ASC, id ASC
+        LIMIT 1
+        FOR UPDATE SKIP LOCKED
+        "#,
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    else {
+        tx.commit().await?;
+        return Ok(None);
+    };
+
+    let task_id: i64 = candidate.try_get("id")?;
+    let task_row = sqlx_core::query::query::<Postgres>(
+        r#"
+        UPDATE ops.tasks
+        SET status = 'running',
+            claimed_at = now(),
+            updated_at = now()
+        WHERE id = $1
+        RETURNING id, task_type, status, target, target_appid, created_at::text AS created_at, updated_at::text AS updated_at, claimed_at::text AS claimed_at
+        "#,
+    )
+    .bind(task_id)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    let claimed_at: String = task_row.try_get("claimed_at")?;
+    let task = admin_task_from_row(task_row)?;
+    let run_summary = format!("claimed by {worker_id}");
+    let run_row = sqlx_core::query::query::<Postgres>(
+        r#"
+        INSERT INTO ops.task_runs (task_id, status, summary)
+        VALUES ($1, 'running', $2)
+        RETURNING id, started_at::text AS started_at
+        "#,
+    )
+    .bind(task.id)
+    .bind(&run_summary)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    let claimed = ClaimedTask {
+        task,
+        run_id: run_row.try_get("id")?,
+        worker_id: worker_id.to_string(),
+        claimed_at,
+        run_started_at: run_row.try_get("started_at")?,
+    };
+    tx.commit().await?;
+
+    Ok(Some(claimed))
+}
+
+pub async fn complete_task_run(
+    pool: &PgPool,
+    run_id: i64,
+    summary: Option<&str>,
+) -> Result<Option<TaskRunOutcome>, sqlx_core::error::Error> {
+    let mut tx = pool.begin().await?;
+    let Some(run_lock) = lock_running_task_run(&mut tx, run_id).await? else {
+        tx.commit().await?;
+        return Ok(None);
+    };
+
+    sqlx_core::query::query::<Postgres>(
+        r#"
+        UPDATE ops.task_runs
+        SET status = 'completed',
+            finished_at = now(),
+            summary = COALESCE($2, summary)
+        WHERE id = $1
+        "#,
+    )
+    .bind(run_id)
+    .bind(summary)
+    .execute(&mut *tx)
+    .await?;
+
+    let task_row = sqlx_core::query::query::<Postgres>(
+        r#"
+        UPDATE ops.tasks
+        SET status = 'completed',
+            finished_at = now(),
+            updated_at = now()
+        WHERE id = $1
+        RETURNING id, task_type, status, target, target_appid, created_at::text AS created_at, updated_at::text AS updated_at
+        "#,
+    )
+    .bind(run_lock.task_id)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    let outcome = TaskRunOutcome {
+        task: admin_task_from_row(task_row)?,
+        run_id,
+        run_status: "completed".to_string(),
+    };
+    tx.commit().await?;
+
+    Ok(Some(outcome))
+}
+
+pub async fn fail_task_run(
+    pool: &PgPool,
+    run_id: i64,
+    failure: TaskFailureInput<'_>,
+) -> Result<Option<TaskRunOutcome>, sqlx_core::error::Error> {
+    let mut tx = pool.begin().await?;
+    let Some(run_lock) = lock_running_task_run(&mut tx, run_id).await? else {
+        tx.commit().await?;
+        return Ok(None);
+    };
+
+    let attempt = sqlx_core::query_scalar::query_scalar::<Postgres, i32>(
+        r#"
+        SELECT COUNT(*)::INTEGER
+        FROM ops.task_runs
+        WHERE task_id = $1
+        "#,
+    )
+    .bind(run_lock.task_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    let failure_target = failure.target.or(run_lock.target.as_deref());
+
+    sqlx_core::query::query::<Postgres>(
+        r#"
+        UPDATE ops.task_runs
+        SET status = 'failed',
+            finished_at = now(),
+            summary = $2
+        WHERE id = $1
+        "#,
+    )
+    .bind(run_id)
+    .bind(failure.reason)
+    .execute(&mut *tx)
+    .await?;
+
+    let task_row = sqlx_core::query::query::<Postgres>(
+        r#"
+        UPDATE ops.tasks
+        SET status = 'failed',
+            finished_at = now(),
+            updated_at = now()
+        WHERE id = $1
+        RETURNING id, task_type, status, target, target_appid, created_at::text AS created_at, updated_at::text AS updated_at
+        "#,
+    )
+    .bind(run_lock.task_id)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    sqlx_core::query::query::<Postgres>(
+        r#"
+        INSERT INTO ops.task_failures (
+            task_id,
+            stage,
+            target,
+            provider,
+            retryable,
+            attempt,
+            reason
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        "#,
+    )
+    .bind(run_lock.task_id)
+    .bind(failure.stage)
+    .bind(failure_target)
+    .bind(failure.provider)
+    .bind(failure.retryable)
+    .bind(attempt)
+    .bind(failure.reason)
+    .execute(&mut *tx)
+    .await?;
+
+    let outcome = TaskRunOutcome {
+        task: admin_task_from_row(task_row)?,
+        run_id,
+        run_status: "failed".to_string(),
+    };
+    tx.commit().await?;
+
+    Ok(Some(outcome))
+}
+
 async fn recent_admin_tasks(
     pool: &PgPool,
     limit: i64,
@@ -420,6 +643,39 @@ async fn task_failure_summary(
         retryable_failure_count: row.try_get("retryable_failure_count")?,
         latest_failure,
     })
+}
+
+struct LockedTaskRun {
+    task_id: i64,
+    target: Option<String>,
+}
+
+async fn lock_running_task_run(
+    tx: &mut sqlx_core::transaction::Transaction<'_, Postgres>,
+    run_id: i64,
+) -> Result<Option<LockedTaskRun>, sqlx_core::error::Error> {
+    let row = sqlx_core::query::query::<Postgres>(
+        r#"
+        SELECT runs.task_id, tasks.target
+        FROM ops.task_runs runs
+        JOIN ops.tasks tasks ON tasks.id = runs.task_id
+        WHERE runs.id = $1
+          AND runs.status = 'running'
+          AND tasks.status = 'running'
+        FOR UPDATE OF runs, tasks
+        "#,
+    )
+    .bind(run_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+
+    row.map(|row| {
+        Ok(LockedTaskRun {
+            task_id: row.try_get("task_id")?,
+            target: row.try_get("target")?,
+        })
+    })
+    .transpose()
 }
 
 pub async fn admin_review_queue(

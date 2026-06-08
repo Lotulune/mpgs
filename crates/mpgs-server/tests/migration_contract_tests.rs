@@ -156,3 +156,22 @@ fn ops_tasks_migration_tracks_tasks_and_sanitized_failures() {
     assert!(!lowercase.contains("request_json"));
     assert!(!lowercase.contains("response_json"));
 }
+
+#[test]
+fn ops_task_claiming_uses_transactional_postgres_locks() {
+    let source_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("db.rs");
+    let source = fs::read_to_string(&source_path).expect("db source should exist");
+    let claim_fn = source
+        .split("pub async fn claim_next_task")
+        .nth(1)
+        .and_then(|tail| tail.split("pub async fn complete_task_run").next())
+        .expect("claim_next_task function should exist");
+
+    assert!(claim_fn.contains("pool.begin().await"));
+    assert!(claim_fn.contains("FOR UPDATE SKIP LOCKED"));
+    assert!(claim_fn.contains("status = 'queued'"));
+    assert!(claim_fn.contains("status = 'running'"));
+    assert!(claim_fn.contains("INSERT INTO ops.task_runs"));
+}
