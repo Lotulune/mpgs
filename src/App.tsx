@@ -249,7 +249,7 @@ function App() {
   }, [activeView, dashboard, sectionPages]);
 
   useEffect(() => {
-    if (!dashboard) {
+    if (!dashboard || isPublicServiceMode) {
       return;
     }
 
@@ -289,7 +289,7 @@ function App() {
         window.clearTimeout(timer);
       }
     };
-  }, [dashboard, discoveryTaskRunning, refreshDashboard]);
+  }, [dashboard, discoveryTaskRunning, isPublicServiceMode, refreshDashboard]);
 
   useEffect(() => {
     if (!dashboardLoaded || isPublicServiceMode || !isTauriRuntime()) {

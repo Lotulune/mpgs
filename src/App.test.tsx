@@ -637,6 +637,29 @@ describe("App dashboard interactions", () => {
     expect(listenMock).not.toHaveBeenCalled();
   });
 
+  it("does not poll local task progress in public service mode", async () => {
+    vi.useFakeTimers();
+    getDashboardMock.mockResolvedValue(buildPublicServiceDashboard());
+
+    render(<App />);
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByRole("heading", { name: "新游区" })).toBeInTheDocument();
+    expect(getDashboardMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(2_200);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(getDashboardMock).toHaveBeenCalledTimes(1);
+  });
+
   it("does not expose the local AI assistant entry in public service mode", async () => {
     getDashboardMock.mockResolvedValue(buildPublicServiceDashboard());
 
