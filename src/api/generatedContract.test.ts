@@ -12,6 +12,8 @@ describe("generated MPGS server API contract", () => {
     );
     expect(generatedContractSource).toContain("export interface DiscoveryHomeResponse");
     expect(generatedContractSource).toContain("export interface PublicGamesPage");
+    expect(generatedContractSource).toContain("capsuleUrl: string;");
+    expect(generatedContractSource).toContain("reviewSnippets: PublicReviewSnippet[];");
     expect(generatedContractSource).toContain("export interface HealthResponse");
   });
 });

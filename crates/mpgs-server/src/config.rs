@@ -161,6 +161,7 @@ impl ServerConfig {
         let config_dir = config_dir.as_ref();
         let active_dir = config_dir.join("active");
         promote_pending_service_config(config_dir)?;
+        promote_pending_secret_patch(config_dir)?;
         let service_path = active_dir.join("service.toml");
         let secrets_path = active_dir.join("secrets.toml");
 
@@ -359,6 +360,84 @@ fn promote_pending_service_config(config_dir: &Path) -> Result<(), ConfigError> 
         path: pending_service_path,
         source,
     })
+}
+
+fn promote_pending_secret_patch(config_dir: &Path) -> Result<(), ConfigError> {
+    let pending_secrets_path = config_dir.join("pending").join("secrets.toml");
+    if !pending_secrets_path.exists() {
+        return Ok(());
+    }
+
+    let active_secrets_path = config_dir.join("active").join("secrets.toml");
+    let active_contents = fs::read_to_string(&active_secrets_path).map_err(|source| {
+        ConfigError::UnreadableActiveConfig {
+            path: active_secrets_path.clone(),
+            source,
+        }
+    })?;
+    let pending_contents = fs::read_to_string(&pending_secrets_path).map_err(|source| {
+        ConfigError::UnreadableActiveConfig {
+            path: pending_secrets_path.clone(),
+            source,
+        }
+    })?;
+
+    let active_value = toml::from_str::<toml::Value>(&active_contents).map_err(|source| {
+        ConfigError::InvalidActiveConfigToml {
+            path: active_secrets_path.clone(),
+            source,
+        }
+    })?;
+    let pending_value = toml::from_str::<toml::Value>(&pending_contents).map_err(|source| {
+        ConfigError::InvalidActiveConfigToml {
+            path: pending_secrets_path.clone(),
+            source,
+        }
+    })?;
+    let merged = merge_secret_patch(active_value, pending_value);
+    let merged_contents =
+        toml::to_string_pretty(&merged).expect("merged TOML values should serialize");
+
+    let temp_active_path = active_secrets_path.with_extension("toml.tmp");
+    fs::write(&temp_active_path, merged_contents).map_err(|source| {
+        ConfigError::UnreadableActiveConfig {
+            path: temp_active_path.clone(),
+            source,
+        }
+    })?;
+    fs::rename(&temp_active_path, &active_secrets_path).map_err(|source| {
+        ConfigError::UnreadableActiveConfig {
+            path: active_secrets_path,
+            source,
+        }
+    })?;
+    fs::remove_file(&pending_secrets_path).map_err(|source| ConfigError::UnreadableActiveConfig {
+        path: pending_secrets_path,
+        source,
+    })
+}
+
+fn merge_secret_patch(mut active: toml::Value, pending: toml::Value) -> toml::Value {
+    merge_toml_value(&mut active, pending);
+    active
+}
+
+fn merge_toml_value(active: &mut toml::Value, pending: toml::Value) {
+    match (active, pending) {
+        (toml::Value::Table(active_table), toml::Value::Table(pending_table)) => {
+            for (key, pending_value) in pending_table {
+                match active_table.get_mut(&key) {
+                    Some(active_value) => merge_toml_value(active_value, pending_value),
+                    None => {
+                        active_table.insert(key, pending_value);
+                    }
+                }
+            }
+        }
+        (active_value, pending_value) => {
+            *active_value = pending_value;
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]

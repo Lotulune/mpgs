@@ -2,6 +2,9 @@ param(
     [string] $ImageTag = "mpgs-server:local",
     [string] $OutputTar = "mpgs-server-local.tar",
     [string] $Platform = "",
+    [string] $RustBaseImage = "",
+    [string] $NodeBaseImage = "",
+    [string] $DebianBaseImage = "",
     [switch] $UseBuildx
 )
 
@@ -13,6 +16,20 @@ function Require-Command {
     if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
         throw "$Name is required on the local build machine."
     }
+}
+
+function Add-BuildArg {
+    param(
+        [string[]] $BuildArgs,
+        [string] $Name,
+        [string] $Value
+    )
+
+    if (-not $Value) {
+        return $BuildArgs
+    }
+
+    return $BuildArgs[0..($BuildArgs.Length - 2)] + @("--build-arg", "$Name=$Value") + $BuildArgs[($BuildArgs.Length - 1)]
 }
 
 $root = Resolve-Path (Join-Path $PSScriptRoot "..\..")
@@ -35,6 +52,9 @@ try {
     } else {
         $buildArgs = @("build", "-f", "Dockerfile.mpgs-server", "-t", $ImageTag, ".")
     }
+    $buildArgs = Add-BuildArg $buildArgs "RUST_BASE_IMAGE" $RustBaseImage
+    $buildArgs = Add-BuildArg $buildArgs "NODE_BASE_IMAGE" $NodeBaseImage
+    $buildArgs = Add-BuildArg $buildArgs "DEBIAN_BASE_IMAGE" $DebianBaseImage
 
     Write-Host "Building $ImageTag from Dockerfile.mpgs-server on the local machine..."
     & docker @buildArgs

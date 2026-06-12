@@ -1,6 +1,7 @@
 import type {
   DiscoveryHomeResponse,
   PublicGameAnalysis,
+  PublicGameDetail,
   PublicGameListItem,
   PublicGamesPage,
 } from "./generated/mpgsServerApi";
@@ -102,6 +103,21 @@ export async function fetchPublicGameAnalysis(
   return isGameAnalysisReport(payload.report) ? payload.report : null;
 }
 
+export async function fetchPublicGameDetail(
+  connection: CurrentServiceConnection,
+  baseGame: GameCard,
+  options: PublicServiceFetchOptions = {},
+): Promise<GameCard> {
+  const baseUrl = normalizeServiceBaseUrl(connection.baseUrl);
+  const detail = await fetchJson<PublicGameDetail>(
+    connection,
+    `${baseUrl}/api/v1/games/${baseGame.appid}`,
+    options.fetcher,
+  );
+
+  return mergePublicGameDetail(connection, baseGame, detail.game);
+}
+
 function mapPublicGames(
   connection: CurrentServiceConnection,
   items: PublicGameListItem[],
@@ -116,33 +132,113 @@ function mapPublicGame(
   section: GameCard["section"],
 ): GameCard {
   const score = item.recommendationScore ?? 0;
+  const shortDescription = normalizeOptionalText(item.shortDescription);
 
   return {
     appid: item.appid,
     name: item.name,
-    section,
-    releaseDate: null,
-    releaseDateText: "公开库",
-    releaseState: "unknown",
-    demoStatus: "unknown",
-    supportedLanguages: [],
-    isAdultContent: false,
-    isFree: false,
-    priceText: null,
-    discountPercent: null,
-    positiveReviewPct: null,
-    totalReviews: null,
-    currentPlayers: null,
+    shortDescription,
+    section: normalizeText(item.section) ?? section,
+    releaseDate: item.releaseDate,
+    releaseDateText: normalizeText(item.releaseDateText) ?? "公开库",
+    releaseState: normalizeReleaseState(item.releaseState),
+    demoStatus: normalizeDemoStatus(item.demoStatus),
+    supportedLanguages: [...item.supportedLanguages],
+    isAdultContent: item.isAdultContent,
+    isFree: item.isFree,
+    priceText: item.priceText,
+    discountPercent: item.discountPercent,
+    positiveReviewPct: item.positiveReviewPct,
+    totalReviews: item.totalReviews,
+    currentPlayers: item.currentPlayers,
     recommendationScore: score,
     aiScore: score,
-    aiSummary: "公共发现服务暂未提供客户端详情摘要。",
-    capsuleUrl: steamHeaderUrl(item.appid),
-    storeScreenshotUrls: [],
-    tags: [],
-    multiplayerModes: [],
-    reviewSnippets: [],
+    aiSummary: shortDescription ?? "公共发现服务暂未提供客户端详情摘要。",
+    capsuleUrl: normalizeText(item.capsuleUrl) ?? steamHeaderUrl(item.appid),
+    storeScreenshotUrls: [...item.storeScreenshotUrls],
+    tags: [...item.tags],
+    multiplayerModes: [...item.multiplayerModes],
+    reviewSnippets: item.reviewSnippets.map((snippet) => ({ ...snippet })),
     userState: getStoredUserGameState(connection.info.serviceInstanceId, item.appid),
   };
+}
+
+function mergePublicGameDetail(
+  connection: CurrentServiceConnection,
+  baseGame: GameCard,
+  item: PublicGameListItem,
+): GameCard {
+  const shortDescription = normalizeOptionalText(item.shortDescription);
+
+  return {
+    ...baseGame,
+    appid: item.appid,
+    name: item.name,
+    shortDescription,
+    section: normalizeText(item.section) ?? baseGame.section,
+    releaseDate: item.releaseDate,
+    releaseDateText: normalizeText(item.releaseDateText) ?? baseGame.releaseDateText,
+    releaseState: normalizeReleaseState(item.releaseState, baseGame.releaseState),
+    demoStatus: normalizeDemoStatus(item.demoStatus, baseGame.demoStatus),
+    supportedLanguages: [...item.supportedLanguages],
+    isAdultContent: item.isAdultContent,
+    isFree: item.isFree,
+    priceText: item.priceText,
+    discountPercent: item.discountPercent,
+    positiveReviewPct: item.positiveReviewPct,
+    totalReviews: item.totalReviews,
+    currentPlayers: item.currentPlayers,
+    recommendationScore: item.recommendationScore ?? baseGame.recommendationScore,
+    aiScore: item.recommendationScore ?? baseGame.aiScore,
+    aiSummary: shortDescription ?? baseGame.aiSummary,
+    capsuleUrl: normalizeText(item.capsuleUrl) ?? baseGame.capsuleUrl,
+    storeScreenshotUrls: [...item.storeScreenshotUrls],
+    tags: [...item.tags],
+    multiplayerModes: [...item.multiplayerModes],
+    reviewSnippets: item.reviewSnippets.map((snippet) => ({ ...snippet })),
+    userState: getStoredUserGameState(connection.info.serviceInstanceId, item.appid),
+  };
+}
+
+function normalizeText(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
+}
+
+function normalizeOptionalText(value: string | null | undefined) {
+  return normalizeText(value);
+}
+
+function normalizeReleaseState(
+  value: string,
+  fallback: GameCard["releaseState"] = "unknown",
+): GameCard["releaseState"] {
+  if (
+    value === "upcoming" ||
+    value === "released" ||
+    value === "tba" ||
+    value === "unknown"
+  ) {
+    return value;
+  }
+
+  return fallback;
+}
+
+function normalizeDemoStatus(
+  value: string,
+  fallback: GameCard["demoStatus"] = "unknown",
+): GameCard["demoStatus"] {
+  if (
+    value === "demo_only" ||
+    value === "released_with_demo" ||
+    value === "released" ||
+    value === "unknown"
+  ) {
+    return value;
+  }
+
+  return fallback;
 }
 
 function dedupeGames(games: GameCard[]): GameCard[] {

@@ -30,7 +30,7 @@ fn initial_migration_is_embedded_for_binary_startup() {
     let migrator = db::migrator();
     let migrations: Vec<_> = migrator.iter().collect();
 
-    assert_eq!(migrations.len(), 4);
+    assert_eq!(migrations.len(), 5);
     assert_eq!(migrations[0].version, 1);
     assert_eq!(migrations[0].description, "public_catalog_ops");
     assert!(migrations[0]
@@ -54,6 +54,14 @@ fn initial_migration_is_embedded_for_binary_startup() {
     assert!(migrations[3]
         .sql
         .contains("CREATE TABLE IF NOT EXISTS ops.task_failures"));
+    assert_eq!(migrations[4].version, 5);
+    assert_eq!(migrations[4].description, "public_catalog_game_details");
+    assert!(migrations[4]
+        .sql
+        .contains("ADD COLUMN IF NOT EXISTS capsule_url TEXT"));
+    assert!(migrations[4]
+        .sql
+        .contains("ADD COLUMN IF NOT EXISTS review_snippets JSONB"));
 }
 
 #[test]
@@ -68,6 +76,7 @@ fn database_health_checks_the_sqlx_migration_record() {
     assert!(source.contains("description = 'ops_audit_events'"));
     assert!(source.contains("description = 'admin_review_notes'"));
     assert!(source.contains("description = 'ops_tasks'"));
+    assert!(source.contains("description = 'public_catalog_game_details'"));
     assert!(source.contains("success = TRUE"));
 }
 
@@ -174,4 +183,34 @@ fn ops_task_claiming_uses_transactional_postgres_locks() {
     assert!(claim_fn.contains("status = 'queued'"));
     assert!(claim_fn.contains("status = 'running'"));
     assert!(claim_fn.contains("INSERT INTO ops.task_runs"));
+}
+
+#[test]
+fn public_catalog_game_details_migration_adds_public_display_fields_without_secrets() {
+    let migration_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("migrations")
+        .join("0005_public_catalog_game_details.sql");
+    let sql = fs::read_to_string(&migration_path).expect("game detail migration should exist");
+    let lowercase = sql.to_lowercase();
+
+    for expected in [
+        "short_description TEXT",
+        "release_state TEXT",
+        "demo_status TEXT",
+        "positive_review_pct DOUBLE PRECISION",
+        "current_players INTEGER",
+        "capsule_url TEXT",
+        "store_screenshot_urls JSONB",
+        "tags JSONB",
+        "multiplayer_modes JSONB",
+        "review_snippets JSONB",
+    ] {
+        assert!(
+            sql.contains(expected),
+            "migration should contain {expected}"
+        );
+    }
+    assert!(!lowercase.contains("api_key"));
+    assert!(!lowercase.contains("secret"));
+    assert!(!lowercase.contains("token"));
 }

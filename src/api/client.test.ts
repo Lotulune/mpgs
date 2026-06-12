@@ -5,6 +5,7 @@ import {
   discoverSteamGames,
   generateGameAnalysis,
   getDashboard,
+  getGameDetail,
   getGameAnalysis,
   getUserCollections,
   isTauriRuntime,
@@ -48,45 +49,113 @@ function configureServiceConnection() {
   });
 }
 
+function publicGameItem(
+  overrides: Partial<{
+    appid: number;
+    capsuleUrl: string;
+    currentPlayers: number | null;
+    demoStatus: string;
+    discountPercent: number | null;
+    isAdultContent: boolean;
+    isFree: boolean;
+    multiplayerModes: string[];
+    name: string;
+    positiveReviewPct: number | null;
+    priceText: string | null;
+    recommendationScore: number | null;
+    releaseDate: string | null;
+    releaseDateText: string;
+    releaseState: string;
+    reviewSnippets: Array<{
+      playtimeHours?: number | null;
+      review: string;
+      votedUp: boolean;
+    }>;
+    section: string;
+    shortDescription: string | null;
+    storeScreenshotUrls: string[];
+    supportedLanguages: string[];
+    tags: string[];
+    totalReviews: number | null;
+    updatedAt: string;
+  }>,
+) {
+  return {
+    appid: 3744430,
+    capsuleUrl: "https://assets.example.test/together-moon-escape/header.jpg",
+    currentPlayers: 340,
+    demoStatus: "released_with_demo",
+    discountPercent: 15,
+    isAdultContent: false,
+    isFree: false,
+    multiplayerModes: ["Online Co-op", "Shared/Split Screen Co-op"],
+    name: "Together Moon Escape",
+    positiveReviewPct: 93,
+    priceText: "$12.99",
+    recommendationScore: 92,
+    releaseDate: "2026-06-01",
+    releaseDateText: "Jun 1, 2026",
+    releaseState: "released",
+    reviewSnippets: [
+      {
+        playtimeHours: 8.5,
+        review: "A tidy co-op escape room that makes every switch callout matter.",
+        votedUp: true,
+      },
+    ],
+    section: "new",
+    shortDescription: "A cooperative moonbase escape room built for two players.",
+    storeScreenshotUrls: [
+      "https://assets.example.test/together-moon-escape/screen-1.jpg",
+    ],
+    supportedLanguages: ["English", "Simplified Chinese"],
+    tags: ["Co-op", "Puzzle", "Escape Room"],
+    totalReviews: 1280,
+    updatedAt: "2026-06-08T00:00:00Z",
+    ...overrides,
+  };
+}
+
+const togetherMoonEscape = publicGameItem({});
+const deepRockGalactic = publicGameItem({
+  appid: 548430,
+  capsuleUrl: "https://assets.example.test/deep-rock/header.jpg",
+  currentPlayers: 8600,
+  demoStatus: "released",
+  discountPercent: null,
+  multiplayerModes: ["Online Co-op", "Co-op"],
+  name: "Deep Rock Galactic",
+  positiveReviewPct: 97,
+  priceText: "$29.99",
+  recommendationScore: 95,
+  releaseDate: "2020-05-13",
+  releaseDateText: "May 13, 2020",
+  reviewSnippets: [
+    {
+      playtimeHours: 120,
+      review: "Still the cleanest four-player mining loop around.",
+      votedUp: true,
+    },
+  ],
+  section: "classic",
+  shortDescription: "A four-player mining shooter with strong co-op roles.",
+  storeScreenshotUrls: ["https://assets.example.test/deep-rock/screen-1.jpg"],
+  tags: ["Co-op", "FPS", "Mining"],
+  totalReviews: 250000,
+});
+
 const publicHomePayload = {
   status: "ready",
   totalGames: 2,
   sections: {
-    newlyPublished: [
-      {
-        appid: 3744430,
-        name: "Together Moon Escape",
-        recommendationScore: 92,
-        updatedAt: "2026-06-08T00:00:00Z",
-      },
-    ],
-    highConfidence: [
-      {
-        appid: 548430,
-        name: "Deep Rock Galactic",
-        recommendationScore: 95,
-        updatedAt: "2026-06-08T00:00:00Z",
-      },
-    ],
+    newlyPublished: [togetherMoonEscape],
+    highConfidence: [deepRockGalactic],
     recentlyAdded: [],
   },
 };
 
 const publicGamesPayload = {
-  items: [
-    {
-      appid: 3744430,
-      name: "Together Moon Escape",
-      recommendationScore: 92,
-      updatedAt: "2026-06-08T00:00:00Z",
-    },
-    {
-      appid: 548430,
-      name: "Deep Rock Galactic",
-      recommendationScore: 95,
-      updatedAt: "2026-06-08T00:00:00Z",
-    },
-  ],
+  items: [togetherMoonEscape, deepRockGalactic],
   page: { limit: 100, offset: 0, total: 2 },
 };
 
@@ -207,7 +276,36 @@ describe("game analysis client", () => {
     expect(dashboard.newGames[0]).toMatchObject({
       appid: 3744430,
       name: "Together Moon Escape",
+      shortDescription: "A cooperative moonbase escape room built for two players.",
+      section: "new",
+      releaseDate: "2026-06-01",
+      releaseDateText: "Jun 1, 2026",
+      releaseState: "released",
+      demoStatus: "released_with_demo",
+      supportedLanguages: ["English", "Simplified Chinese"],
+      isAdultContent: false,
+      isFree: false,
+      priceText: "$12.99",
+      discountPercent: 15,
+      positiveReviewPct: 93,
+      totalReviews: 1280,
+      currentPlayers: 340,
       recommendationScore: 92,
+      aiScore: 92,
+      aiSummary: "A cooperative moonbase escape room built for two players.",
+      capsuleUrl: "https://assets.example.test/together-moon-escape/header.jpg",
+      storeScreenshotUrls: [
+        "https://assets.example.test/together-moon-escape/screen-1.jpg",
+      ],
+      tags: ["Co-op", "Puzzle", "Escape Room"],
+      multiplayerModes: ["Online Co-op", "Shared/Split Screen Co-op"],
+      reviewSnippets: [
+        {
+          playtimeHours: 8.5,
+          review: "A tidy co-op escape room that makes every switch callout matter.",
+          votedUp: true,
+        },
+      ],
       userState: {
         favorite: false,
         wishlist: false,
@@ -218,6 +316,19 @@ describe("game analysis client", () => {
     expect(dashboard.classics[0]).toMatchObject({
       appid: 548430,
       name: "Deep Rock Galactic",
+      capsuleUrl: "https://assets.example.test/deep-rock/header.jpg",
+      tags: ["Co-op", "FPS", "Mining"],
+      multiplayerModes: ["Online Co-op", "Co-op"],
+      positiveReviewPct: 97,
+      totalReviews: 250000,
+      currentPlayers: 8600,
+      reviewSnippets: [
+        {
+          playtimeHours: 120,
+          review: "Still the cleanest four-player mining loop around.",
+          votedUp: true,
+        },
+      ],
     });
     expect(dashboard.stats).toMatchObject({
       totalGames: 2,
@@ -338,6 +449,91 @@ describe("game analysis client", () => {
     expect(fetchMock).not.toHaveBeenCalledWith(
       expect.any(String),
       expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("reads public game detail from the configured service without Tauri commands", async () => {
+    configureServiceConnection();
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "https://mpgs.example.test/api/v1/discovery-home") {
+        return fetchJson(publicHomePayload);
+      }
+
+      if (url === "https://mpgs.example.test/api/v1/games?limit=100&offset=0") {
+        return fetchJson(publicGamesPayload);
+      }
+
+      if (url === "https://mpgs.example.test/api/v1/games/548430") {
+        return fetchJson({
+          game: publicGameItem({
+            appid: 548430,
+            capsuleUrl: "https://assets.example.test/deep-rock/detail-header.jpg",
+            currentPlayers: 9100,
+            multiplayerModes: ["Online Co-op", "Co-op", "Cross-Platform Multiplayer"],
+            name: "Deep Rock Galactic - Public Detail",
+            positiveReviewPct: 98,
+            recommendationScore: 97,
+            reviewSnippets: [
+              {
+                playtimeHours: 140,
+                review: "The detail payload keeps the squad loop fresh.",
+                votedUp: true,
+              },
+            ],
+            section: "classic",
+            shortDescription: "Detail payload description from the public service.",
+            storeScreenshotUrls: [
+              "https://assets.example.test/deep-rock/detail-screen-1.jpg",
+            ],
+            tags: ["Co-op", "FPS", "Extraction"],
+            totalReviews: 260000,
+            updatedAt: "2026-06-08T01:00:00Z",
+          }),
+        });
+      }
+
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const baseGame = (await getDashboard()).classics[0];
+
+    await expect(getGameDetail(baseGame)).resolves.toMatchObject({
+      appid: 548430,
+      name: "Deep Rock Galactic - Public Detail",
+      shortDescription: "Detail payload description from the public service.",
+      recommendationScore: 97,
+      aiScore: 97,
+      aiSummary: "Detail payload description from the public service.",
+      capsuleUrl: "https://assets.example.test/deep-rock/detail-header.jpg",
+      storeScreenshotUrls: [
+        "https://assets.example.test/deep-rock/detail-screen-1.jpg",
+      ],
+      tags: ["Co-op", "FPS", "Extraction"],
+      multiplayerModes: ["Online Co-op", "Co-op", "Cross-Platform Multiplayer"],
+      positiveReviewPct: 98,
+      totalReviews: 260000,
+      currentPlayers: 9100,
+      reviewSnippets: [
+        {
+          playtimeHours: 140,
+          review: "The detail payload keeps the squad loop fresh.",
+          votedUp: true,
+        },
+      ],
+      userState: {
+        favorite: false,
+        wishlist: false,
+        followed: false,
+        viewed: false,
+      },
+    });
+
+    expect(invokeMock).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://mpgs.example.test/api/v1/games/548430",
+      expect.objectContaining({ method: "GET" }),
     );
   });
 

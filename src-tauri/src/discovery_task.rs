@@ -1,5 +1,5 @@
-use crate::backfill_task;
 use crate::auto_scheduler;
+use crate::backfill_task;
 use crate::db::{self, DiscoveryProgressPatch};
 use crate::discovery::{
     build_discovered_game_card, store_search_reached_page_budget, store_search_start_for_page,

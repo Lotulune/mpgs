@@ -147,7 +147,10 @@ async fn admin_pending_service_identity_writes_pending_config_and_preserves_acti
         app.clone(),
         Method::POST,
         "/api/v1/admin/config/pending/service-identity",
-        json!({ "serviceName": "MPGS Pending Service" }),
+        json!({
+            "serviceName": "MPGS Pending Service",
+            "publicBaseUrl": "https://friends.example.test/"
+        }),
         Some(&cookie),
     )
     .await;
@@ -165,7 +168,7 @@ async fn admin_pending_service_identity_writes_pending_config_and_preserves_acti
     assert!(pending_service.contains("MPGS Pending Service"));
     assert!(pending_service.contains("018fb770-8998-7699-a6e4-b7b59f2f9c01"));
     assert!(pending_service.contains("[service_connection]"));
-    assert!(pending_service.contains("public_base_url = \"https://mpgs.example.test\""));
+    assert!(pending_service.contains("public_base_url = \"https://friends.example.test\""));
     assert!(pending_service.contains("[public_cors]"));
     assert!(pending_service.contains("allow_any_origin = true"));
     assert!(pending_service.contains("[deployment]"));
@@ -190,6 +193,118 @@ async fn admin_pending_service_identity_writes_pending_config_and_preserves_acti
         .unwrap()
         .starts_with("sha256:"));
     assert_eq!(state["lastStartupStatus"], "ok");
+}
+
+#[tokio::test]
+async fn admin_pending_provider_secrets_writes_patch_without_exposing_or_clearing_active_secrets() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    write_active_config(temp_dir.path());
+    let app = config_management_app(temp_dir.path());
+    let cookie = admin_cookie(app.clone()).await;
+
+    let (status, value, _headers) = request_json(
+        app.clone(),
+        Method::POST,
+        "/api/v1/admin/config/pending/provider-secrets",
+        json!({
+            "llmApiKey": "pending-llm-key",
+            "llmBaseUrl": "https://llm.example.test/v1",
+            "llmModel": "mpgs-test-model",
+            "r2Bucket": "mpgs-images"
+        }),
+        Some(&cookie),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["restartRequired"], true);
+    assert!(value["pendingConfigVersion"]
+        .as_str()
+        .unwrap()
+        .starts_with("sha256:"));
+    assert!(value.get("llmApiKey").is_none());
+    assert!(value.get("steamApiKey").is_none());
+    assert!(value.get("r2SecretAccessKey").is_none());
+
+    let pending_secrets = fs::read_to_string(temp_dir.path().join("pending/secrets.toml")).unwrap();
+    let active_secrets = fs::read_to_string(temp_dir.path().join("active/secrets.toml")).unwrap();
+
+    assert!(pending_secrets.contains("[llm]"));
+    assert!(pending_secrets.contains("api_key = \"pending-llm-key\""));
+    assert!(pending_secrets.contains("base_url = \"https://llm.example.test/v1\""));
+    assert!(pending_secrets.contains("model = \"mpgs-test-model\""));
+    assert!(pending_secrets.contains("[r2]"));
+    assert!(pending_secrets.contains("bucket = \"mpgs-images\""));
+    assert!(!pending_secrets.contains("active-steam-key"));
+    assert!(active_secrets.contains("active-steam-key"));
+    assert!(!active_secrets.contains("pending-llm-key"));
+
+    let (state_status, state, _headers) = request_json(
+        app,
+        Method::GET,
+        "/api/v1/admin/config-state",
+        json!({}),
+        Some(&cookie),
+    )
+    .await;
+
+    assert_eq!(state_status, StatusCode::OK);
+    assert_eq!(state["restartRequired"], true);
+    assert_eq!(state["pendingConfigVersion"], value["pendingConfigVersion"]);
+}
+
+#[tokio::test]
+async fn admin_pending_provider_secrets_rejects_empty_patch() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    write_active_config(temp_dir.path());
+    let app = config_management_app(temp_dir.path());
+    let cookie = admin_cookie(app.clone()).await;
+
+    let (status, value, _headers) = request_json(
+        app,
+        Method::POST,
+        "/api/v1/admin/config/pending/provider-secrets",
+        json!({
+            "steamApiKey": "",
+            "llmApiKey": "   "
+        }),
+        Some(&cookie),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(value["error"]["code"], "provider_secret_patch_empty");
+    assert!(!temp_dir.path().join("pending/secrets.toml").exists());
+}
+
+#[tokio::test]
+async fn admin_pending_provider_secrets_hashes_admin_token_without_storing_plaintext() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    write_active_config(temp_dir.path());
+    let app = config_management_app(temp_dir.path());
+    let cookie = admin_cookie(app.clone()).await;
+
+    let (status, value, _headers) = request_json(
+        app,
+        Method::POST,
+        "/api/v1/admin/config/pending/provider-secrets",
+        json!({
+            "adminToken": "next-admin-token"
+        }),
+        Some(&cookie),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["restartRequired"], true);
+    assert!(value.get("adminToken").is_none());
+
+    let pending_secrets = fs::read_to_string(temp_dir.path().join("pending/secrets.toml")).unwrap();
+    assert!(pending_secrets.contains("[admin]"));
+    assert!(pending_secrets.contains("token_hash = \"sha256:"));
+    assert!(pending_secrets.contains("session_secret = \""));
+    assert!(!pending_secrets.contains("next-admin-token"));
+    assert!(!pending_secrets.contains("admin-session-secret"));
 }
 
 #[tokio::test]

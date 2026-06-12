@@ -10,6 +10,9 @@ import type {
   AdminSessionResponse,
   AdminTasksResponse,
   ConfigStateResponse,
+  PendingConfigResponse,
+  PendingProviderSecretsRequest,
+  PendingServiceIdentityRequest,
   RestartResponse,
   ServiceConnectionFileResponse,
   SetupCompleteRequest,
@@ -65,6 +68,28 @@ export async function getAdminConfigState(): Promise<ConfigStateResponse> {
 
 export async function getAdminConnectionShare(): Promise<ServiceConnectionFileResponse> {
   return readAdminJson("/api/v1/admin/connection-share");
+}
+
+export async function writePendingProviderSecrets(
+  request: PendingProviderSecretsRequest,
+): Promise<PendingConfigResponse> {
+  return readJson("/api/v1/admin/config/pending/provider-secrets", {
+    body: JSON.stringify(request),
+    credentials: "same-origin",
+    headers: jsonHeaders,
+    method: "POST",
+  });
+}
+
+export async function writePendingServiceIdentity(
+  request: PendingServiceIdentityRequest,
+): Promise<PendingConfigResponse> {
+  return readJson("/api/v1/admin/config/pending/service-identity", {
+    body: JSON.stringify(request),
+    credentials: "same-origin",
+    headers: jsonHeaders,
+    method: "POST",
+  });
 }
 
 export async function getAdminAuditEvents(): Promise<AdminAuditEventsResponse> {

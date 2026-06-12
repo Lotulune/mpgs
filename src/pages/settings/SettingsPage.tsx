@@ -6,6 +6,13 @@ import {
   validateLlmConfig,
   validateSteamConfig,
 } from "../../api/client";
+import { validateServiceAddress } from "../../domain/serviceConnection";
+import {
+  getCurrentServiceConnection,
+  getRecentServiceConnections,
+  saveCurrentServiceConnection,
+  type CurrentServiceConnection,
+} from "../../domain/serviceConnectionStorage";
 import { DiscoveryTaskPanel } from "../../features/discovery/DiscoveryTaskPanel";
 import type {
   AiAnalysisQueueFailureItem,
@@ -13,6 +20,7 @@ import type {
   DashboardPayload,
   LlmProvider,
   SaveConfigRequest,
+  ServiceAddressValidationResult,
   SyncMode,
   SteamAppListPreview,
 } from "../../types";
@@ -83,6 +91,7 @@ export function SettingsPage({
   onRefreshDashboard,
   onStatus,
   onImportServiceConnectionFile,
+  onDisconnectService,
   onSave,
   onSync,
   expandedSections,
@@ -100,6 +109,7 @@ export function SettingsPage({
   onRefreshDashboard: () => Promise<unknown>;
   onStatus: (message: string) => void;
   onImportServiceConnectionFile: (fileText: string) => Promise<void>;
+  onDisconnectService?: () => Promise<void>;
   onSave: (request: SaveConfigRequest) => Promise<void>;
   onSync: (mode: SyncMode) => void;
   expandedSections?: SettingsExpandedState;
@@ -111,6 +121,14 @@ export function SettingsPage({
   const [isPreviewing, setIsPreviewing] = useState(false);
   const [isTestingSteam, setIsTestingSteam] = useState(false);
   const [isTestingLlm, setIsTestingLlm] = useState(false);
+  const [serviceAddress, setServiceAddress] = useState("");
+  const [isValidatingService, setIsValidatingService] = useState(false);
+  const [serviceValidation, setServiceValidation] =
+    useState<ServiceAddressValidationResult | null>(null);
+  const [allowPrivateHttp, setAllowPrivateHttp] = useState(false);
+  const [switchingServiceInstanceId, setSwitchingServiceInstanceId] =
+    useState<string | null>(null);
+  const currentServiceConnection = getCurrentServiceConnection();
   const [steamValidation, setSteamValidation] = useState<ConnectionValidationResult | null>(
     config.steamApiKeyValidated
       ? {
@@ -138,6 +156,12 @@ export function SettingsPage({
   );
   const expanded = expandedSections ?? localExpanded;
   const isPublicServiceMode = stats.sourceKind === "public_service";
+  const hasServiceConnection = currentServiceConnection !== null;
+  const recentServiceConnections = getRecentServiceConnections().filter(
+    (connection) =>
+      connection.info.serviceInstanceId !==
+      currentServiceConnection?.info.serviceInstanceId,
+  );
 
   useEffect(() => {
     setForm(buildFormFromConfig(config));
@@ -222,6 +246,100 @@ export function SettingsPage({
     return config.onboardingCompleted ? "已完成" : `${readyCount}/2 已验证`;
   }, [config]);
 
+  async function handleValidateServiceAddress() {
+    if (!serviceAddress.trim()) {
+      setServiceValidation({
+        success: false,
+        message: "请输入服务地址。",
+      });
+      return;
+    }
+
+    setIsValidatingService(true);
+    setServiceValidation(null);
+
+    try {
+      const result = await validateServiceAddress(serviceAddress, undefined, {
+        allowPrivateHttp,
+      });
+      setServiceValidation(result);
+      if (result.success) {
+        onStatus(`服务验证成功：${result.info?.serviceName ?? "未知服务"}。`);
+      } else {
+        onStatus(result.message);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setServiceValidation({
+        success: false,
+        message,
+      });
+      onStatus(message);
+    } finally {
+      setIsValidatingService(false);
+    }
+  }
+
+  async function handleRevalidateCurrentService() {
+    if (!currentServiceConnection) {
+      return;
+    }
+
+    setIsValidatingService(true);
+    setServiceValidation(null);
+
+    try {
+      const result = await validateServiceAddress(
+        currentServiceConnection.baseUrl,
+        undefined,
+        { allowPrivateHttp: true }
+      );
+      setServiceValidation(result);
+      if (result.success) {
+        onStatus(`服务重新验证成功：${result.info?.serviceName ?? "未知服务"}。`);
+      } else {
+        onStatus(`服务验证失败：${result.message}`);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setServiceValidation({
+        success: false,
+        message,
+      });
+      onStatus(message);
+    } finally {
+      setIsValidatingService(false);
+    }
+  }
+
+  async function handleDisconnectCurrentService() {
+    if (!onDisconnectService) {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      "确定要断开当前服务连接吗？\n\n断开后将返回服务连接页面。个人状态缓存将保留。"
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    await onDisconnectService();
+  }
+
+  async function handleSwitchRecentService(connection: CurrentServiceConnection) {
+    setSwitchingServiceInstanceId(connection.info.serviceInstanceId);
+    try {
+      saveCurrentServiceConnection(connection);
+      onStatus(`已切换公共发现服务：${connection.info.serviceName}。`);
+      await onRefreshDashboard();
+    } catch (error) {
+      onStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSwitchingServiceInstanceId(null);
+    }
+  }
+
   if (isPublicServiceMode) {
     return (
       <section className="settings-page">
@@ -231,8 +349,87 @@ export function SettingsPage({
             <div className="backfill-status-block compact">
               <div className="backfill-status-head">
                 <strong>公共发现服务</strong>
-                <span>只读连接</span>
+                <span>已连接</span>
               </div>
+              {currentServiceConnection && (
+                <>
+                  <div className="backfill-status-grid">
+                    <div>
+                      <span>服务名称</span>
+                      <strong>{currentServiceConnection.info.serviceName}</strong>
+                    </div>
+                    <div>
+                      <span>实例 ID</span>
+                      <strong>{currentServiceConnection.info.serviceInstanceId}</strong>
+                    </div>
+                    <div>
+                      <span>API 版本</span>
+                      <strong>{currentServiceConnection.info.apiVersion}</strong>
+                    </div>
+                    <div>
+                      <span>公共库状态</span>
+                      <strong>
+                        {formatPublicCatalogStatus(
+                          currentServiceConnection.info.publicCatalogStatus
+                        )}
+                      </strong>
+                    </div>
+                    <div>
+                      <span>服务地址</span>
+                      <strong>{currentServiceConnection.baseUrl}</strong>
+                    </div>
+                    <div>
+                      <span>最近验证</span>
+                      <strong>{formatDateTime(currentServiceConnection.validatedAt)}</strong>
+                    </div>
+                  </div>
+                  <div className="settings-card-actions">
+                    <button
+                      className="ghost-button"
+                      type="button"
+                      disabled={isValidatingService}
+                      onClick={() => void handleRevalidateCurrentService()}
+                    >
+                      {isValidatingService ? "正在验证…" : "重新验证"}
+                    </button>
+                    {onDisconnectService && (
+                      <button
+                        className="muted-button"
+                        type="button"
+                        disabled={isBusy}
+                        onClick={() => void handleDisconnectCurrentService()}
+                      >
+                        断开连接
+                      </button>
+                    )}
+                  </div>
+                  {serviceValidation && (
+                    <div
+                      className={`settings-copy-block ${
+                        serviceValidation.success
+                          ? "settings-copy-block-muted"
+                          : ""
+                      }`}
+                    >
+                      <p
+                        className={
+                          serviceValidation.success ? "mini-status" : "settings-error"
+                        }
+                      >
+                        {serviceValidation.message}
+                      </p>
+                      {!serviceValidation.success && serviceValidation.diagnostic && (
+                        <p className="mini-status">{serviceValidation.diagnostic}</p>
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
+              <RecentServiceConnectionsBlock
+                connections={recentServiceConnections}
+                switchingServiceInstanceId={switchingServiceInstanceId}
+                onSwitch={handleSwitchRecentService}
+              />
               <div className="backfill-status-grid">
                 <div>
                   <span>数据源</span>
@@ -383,26 +580,190 @@ export function SettingsPage({
         expanded={expanded.serviceConnection}
         onToggle={() => toggle("serviceConnection")}
       >
-        <p className="settings-card-desc">
-          导入维护者提供的无密钥连接文件后，客户端仍会重新读取服务身份信息并验证匿名公共读取能力。
-        </p>
-        <div className="settings-form-stack">
-          <label>
-            导入服务连接文件
-            <input
-              accept="application/json,.json"
-              type="file"
-              onChange={(event) => {
-                const file = event.currentTarget.files?.[0] ?? null;
-                event.currentTarget.value = "";
-                void handleImportServiceConnectionFile(file);
-              }}
+        {hasServiceConnection && currentServiceConnection ? (
+          <>
+            <p className="settings-card-desc">
+              当前已连接到公共发现服务。你可以重新验证连接或断开服务。
+            </p>
+            <div className="settings-copy-block settings-copy-block-muted">
+              <div className="backfill-status-grid">
+                <div>
+                  <span>服务名称</span>
+                  <strong>{currentServiceConnection.info.serviceName}</strong>
+                </div>
+                <div>
+                  <span>实例 ID</span>
+                  <strong>{currentServiceConnection.info.serviceInstanceId}</strong>
+                </div>
+                <div>
+                  <span>API 版本</span>
+                  <strong>{currentServiceConnection.info.apiVersion}</strong>
+                </div>
+                <div>
+                  <span>公共库状态</span>
+                  <strong>
+                    {formatPublicCatalogStatus(
+                      currentServiceConnection.info.publicCatalogStatus
+                    )}
+                  </strong>
+                </div>
+                <div>
+                  <span>服务地址</span>
+                  <strong>{currentServiceConnection.baseUrl}</strong>
+                </div>
+                <div>
+                  <span>最近验证</span>
+                  <strong>{formatDateTime(currentServiceConnection.validatedAt)}</strong>
+                </div>
+              </div>
+            </div>
+            <div className="settings-card-actions">
+              <button
+                className="ghost-button"
+                type="button"
+                disabled={isValidatingService}
+                onClick={() => void handleRevalidateCurrentService()}
+              >
+                {isValidatingService ? "正在验证…" : "重新验证"}
+              </button>
+              {onDisconnectService && (
+                <button
+                  className="muted-button"
+                  type="button"
+                  disabled={isBusy}
+                  onClick={() => void handleDisconnectCurrentService()}
+                >
+                  断开连接
+                </button>
+              )}
+            </div>
+            {serviceValidation && (
+              <div
+                className={`settings-copy-block ${
+                  serviceValidation.success ? "settings-copy-block-muted" : ""
+                }`}
+              >
+                <p
+                  className={
+                    serviceValidation.success ? "mini-status" : "settings-error"
+                  }
+                >
+                  {serviceValidation.message}
+                </p>
+                {!serviceValidation.success && serviceValidation.diagnostic && (
+                  <p className="mini-status">{serviceValidation.diagnostic}</p>
+                )}
+              </div>
+            )}
+            <RecentServiceConnectionsBlock
+              connections={recentServiceConnections}
+              switchingServiceInstanceId={switchingServiceInstanceId}
+              onSwitch={handleSwitchRecentService}
             />
-          </label>
-        </div>
-        <p className="settings-hint">
-          连接文件不能包含引导令牌、管理员令牌或第三方 API Key；导入不会跳过服务身份验证。
-        </p>
+          </>
+        ) : (
+          <>
+            <p className="settings-card-desc">
+              输入服务地址或导入连接文件来连接公共发现服务。连接后客户端会实时读取服务身份和验证公共读取能力。
+            </p>
+            <div className="settings-form-stack">
+              <label>
+                服务地址
+                <input
+                  type="text"
+                  value={serviceAddress}
+                  onChange={(e) => setServiceAddress(e.target.value)}
+                  placeholder="https://example.com"
+                  disabled={isValidatingService}
+                />
+              </label>
+              <label className="service-connection-checkbox">
+                <input
+                  type="checkbox"
+                  checked={allowPrivateHttp}
+                  onChange={(e) => setAllowPrivateHttp(e.target.checked)}
+                  disabled={isValidatingService}
+                />
+                <span>允许局域网 HTTP 地址</span>
+              </label>
+            </div>
+            <div className="settings-card-actions">
+              <button
+                className="gold-button"
+                type="button"
+                disabled={isValidatingService || !serviceAddress.trim()}
+                onClick={() => void handleValidateServiceAddress()}
+              >
+                {isValidatingService ? "正在验证…" : "验证连接"}
+              </button>
+            </div>
+            {serviceValidation && (
+              <div
+                className={`settings-copy-block ${
+                  serviceValidation.success ? "settings-copy-block-muted" : ""
+                }`}
+              >
+                <p
+                  className={
+                    serviceValidation.success ? "mini-status" : "settings-error"
+                  }
+                >
+                  {serviceValidation.message}
+                </p>
+                {!serviceValidation.success && serviceValidation.diagnostic && (
+                  <p className="mini-status">{serviceValidation.diagnostic}</p>
+                )}
+                {serviceValidation.success && serviceValidation.info && (
+                  <div className="backfill-status-grid">
+                    <div>
+                      <span>服务名称</span>
+                      <strong>{serviceValidation.info.serviceName}</strong>
+                    </div>
+                    <div>
+                      <span>实例 ID</span>
+                      <strong>{serviceValidation.info.serviceInstanceId}</strong>
+                    </div>
+                    <div>
+                      <span>API 版本</span>
+                      <strong>{serviceValidation.info.apiVersion}</strong>
+                    </div>
+                    <div>
+                      <span>公共库状态</span>
+                      <strong>
+                        {formatPublicCatalogStatus(
+                          serviceValidation.info.publicCatalogStatus
+                        )}
+                      </strong>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+            <div className="settings-form-stack">
+              <label>
+                导入服务连接文件
+                <input
+                  accept="application/json,.json"
+                  type="file"
+                  onChange={(event) => {
+                    const file = event.currentTarget.files?.[0] ?? null;
+                    event.currentTarget.value = "";
+                    void handleImportServiceConnectionFile(file);
+                  }}
+                  disabled={isValidatingService}
+                />
+              </label>
+            </div>
+            <p className="settings-hint">
+              连接文件不能包含引导令牌、管理员令牌或第三方 API Key；导入不会跳过服务身份验证。
+            </p>
+            <RecentServiceConnectionsBlock
+              connections={recentServiceConnections}
+              switchingServiceInstanceId={switchingServiceInstanceId}
+              onSwitch={handleSwitchRecentService}
+            />
+          </>
+        )}
       </SettingsSection>
 
       <SettingsSection
@@ -956,6 +1317,57 @@ function ValidationBlock({
   );
 }
 
+function RecentServiceConnectionsBlock({
+  connections,
+  switchingServiceInstanceId,
+  onSwitch,
+}: {
+  connections: CurrentServiceConnection[];
+  switchingServiceInstanceId: string | null;
+  onSwitch: (connection: CurrentServiceConnection) => Promise<void>;
+}) {
+  if (connections.length === 0) {
+    return null;
+  }
+
+  return (
+    <div
+      aria-label="最近服务"
+      className="settings-copy-block settings-copy-block-muted"
+    >
+      <strong>最近服务</strong>
+      <ul className="settings-provider-list">
+        {connections.map((connection) => {
+          const isSwitching =
+            switchingServiceInstanceId === connection.info.serviceInstanceId;
+
+          return (
+            <li
+              className="service-history-item"
+              key={connection.info.serviceInstanceId}
+            >
+              <div className="service-history-main">
+                <strong>{connection.info.serviceName}</strong>
+                <code>{connection.baseUrl}</code>
+                <span>最近验证 {formatDateTime(connection.validatedAt)}</span>
+              </div>
+              <button
+                aria-label={`切换到 ${connection.info.serviceName}`}
+                className="muted-button"
+                disabled={switchingServiceInstanceId !== null}
+                type="button"
+                onClick={() => void onSwitch(connection)}
+              >
+                {isSwitching ? "切换中…" : "切换"}
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
 function buildFormFromConfig(config: DashboardPayload["config"]): SaveConfigRequest {
   return {
     llmProvider: config.llmProvider,
@@ -1094,4 +1506,19 @@ function clampClassicDiscoveryMaxPages(value: number | undefined) {
   }
 
   return Math.min(DEFAULT_CLASSIC_DISCOVERY_MAX_PAGES, Math.max(1, Math.round(value)));
+}
+
+function formatPublicCatalogStatus(status: string): string {
+  switch (status) {
+    case "ready":
+      return "就绪";
+    case "empty":
+      return "空库";
+    case "updating":
+      return "更新中";
+    case "unavailable":
+      return "不可用";
+    default:
+      return status;
+  }
 }

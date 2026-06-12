@@ -9,6 +9,10 @@ use time::{format_description::FormatItem, macros::format_description, Date};
 const ISO_DATE: &[FormatItem<'_>] = format_description!("[year]-[month]-[day]");
 
 pub fn normalize_game_signals(game: &GameCard) -> CanonicalGameSignals {
+    normalize_game_signals_at(game, &crate::recommendation::today_iso_utc())
+}
+
+pub fn normalize_game_signals_at(game: &GameCard, today_iso: &str) -> CanonicalGameSignals {
     CanonicalGameSignals {
         language_codes: normalize_languages(&game.supported_languages),
         tags: normalize_tags(&game.tags),
@@ -22,7 +26,7 @@ pub fn normalize_game_signals(game: &GameCard) -> CanonicalGameSignals {
         activity: ActivityStats {
             current_players: game.current_players,
         },
-        release: normalize_release(game),
+        release: normalize_release(game, today_iso),
         demo: DemoInfo {
             has_demo: matches!(
                 game.demo_status,
@@ -162,8 +166,8 @@ fn normalize_multiplayer_modes(modes: &[String]) -> MultiplayerModes {
     normalized
 }
 
-fn normalize_release(game: &GameCard) -> ReleaseInfo {
-    let release_age_days = days_since_release(game.release_date.as_deref());
+fn normalize_release(game: &GameCard, today_iso: &str) -> ReleaseInfo {
+    let release_age_days = days_since_release(game.release_date.as_deref(), today_iso);
     let text = game
         .short_description
         .as_deref()
@@ -308,8 +312,8 @@ fn bump(counter: &mut TopicCounter, voted_up: bool) {
     }
 }
 
-fn days_since_release(release_date: Option<&str>) -> Option<i64> {
+fn days_since_release(release_date: Option<&str>, today_iso: &str) -> Option<i64> {
     let release = Date::parse(release_date?, ISO_DATE).ok()?;
-    let today = Date::parse(&crate::recommendation::today_iso_utc(), ISO_DATE).ok()?;
+    let today = Date::parse(today_iso, ISO_DATE).ok()?;
     Some((today - release).whole_days())
 }

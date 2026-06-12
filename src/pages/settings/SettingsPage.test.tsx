@@ -1,8 +1,13 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mockDashboard } from "../../data/mockDashboard";
+import {
+  getCurrentServiceConnection,
+  saveCurrentServiceConnection,
+  type CurrentServiceConnection,
+} from "../../domain/serviceConnectionStorage";
 import { AboutPage } from "../about/AboutPage";
 import { SettingsPage } from "./SettingsPage";
 
@@ -33,8 +38,33 @@ function renderSettingsPage(
   return render(<SettingsPage {...defaultProps} {...props} />);
 }
 
+function buildServiceConnection(
+  serviceInstanceId: string,
+  serviceName: string,
+  baseUrl: string,
+  validatedAt: string,
+): CurrentServiceConnection {
+  return {
+    baseUrl,
+    info: {
+      serviceInstanceId,
+      serviceName,
+      serviceVersion: "0.1.0",
+      apiVersion: "v1",
+      publicCatalogStatus: "ready",
+      capabilities: ["public_catalog_read"],
+    },
+    validatedAt,
+  };
+}
+
+beforeEach(() => {
+  localStorage.clear();
+});
+
 afterEach(() => {
   cleanup();
+  localStorage.clear();
 });
 
 describe("Settings and About pages", () => {
@@ -318,6 +348,56 @@ describe("Settings and About pages", () => {
     expect(screen.queryByRole("button", { name: /AI 批量重算/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /发现任务/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "发现任务控制台" })).not.toBeInTheDocument();
+  });
+
+  it("switches from the current public service to a recent service", async () => {
+    const currentConnection = buildServiceConnection(
+      "018fb770-8998-7699-a6e4-b7b59f2f9c01",
+      "MPGS Current Service",
+      "https://current.example.test",
+      "2026-06-08T00:00:00.000Z",
+    );
+    const secondaryConnection = buildServiceConnection(
+      "018fb770-8998-7699-a6e4-b7b59f2f9c02",
+      "MPGS Secondary Service",
+      "https://secondary.example.test///",
+      "2026-06-09T00:00:00.000Z",
+    );
+    const onRefreshDashboard = vi.fn(async () => undefined);
+    const onStatus = vi.fn();
+    saveCurrentServiceConnection(secondaryConnection);
+    saveCurrentServiceConnection(currentConnection);
+
+    renderSettingsPage({
+      stats: {
+        ...mockDashboard.stats,
+        sourceKind: "public_service",
+        dataSource: "公共发现服务：MPGS Current Service",
+        totalGames: 42,
+      },
+      onRefreshDashboard,
+      onStatus,
+      status: "公共服务已连接。",
+    });
+
+    const recentServices = screen.getByLabelText("最近服务");
+    expect(within(recentServices).getByText("MPGS Secondary Service")).toBeInTheDocument();
+    expect(within(recentServices).queryByText("MPGS Current Service")).not.toBeInTheDocument();
+
+    fireEvent.click(
+      within(recentServices).getByRole("button", {
+        name: "切换到 MPGS Secondary Service",
+      }),
+    );
+
+    await waitFor(() => {
+      expect(onRefreshDashboard).toHaveBeenCalledTimes(1);
+    });
+    expect(onStatus).toHaveBeenCalledWith("已切换公共发现服务：MPGS Secondary Service。");
+    expect(getCurrentServiceConnection()).toEqual({
+      ...secondaryConnection,
+      baseUrl: "https://secondary.example.test",
+    });
   });
 
   it("imports a service connection file from settings", async () => {

@@ -257,7 +257,10 @@ fn recent_discoveries_follow_first_import_time_instead_of_latest_refresh_time() 
         .map(|game| game.appid)
         .collect::<Vec<_>>();
 
-    assert_eq!(ordered_recent_appids, vec![newer_game.appid, older_game.appid]);
+    assert_eq!(
+        ordered_recent_appids,
+        vec![newer_game.appid, older_game.appid]
+    );
 }
 
 #[test]

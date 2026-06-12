@@ -1208,9 +1208,9 @@ function resolveEntryStep(config: PublicConfig, source: OnboardingSource) {
   const incompleteStep = resolveNextIncompleteStep(config);
   const currentStep = clampStep(config.onboardingCurrentStep);
 
-  // If the user hasn't started or finished, respect the last step they were on
-  // unless that step is effectively finished.
-  if (currentStep > 1 && currentStep <= incompleteStep) {
+  // Once the user has entered the wizard, the saved step is the navigation
+  // source of truth. Readiness still controls validation state, not step choice.
+  if (currentStep > 1) {
     return currentStep;
   }
 

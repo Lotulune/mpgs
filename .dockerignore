@@ -2,12 +2,17 @@ target/
 dist/
 node_modules/
 src-tauri/target/
+src-tauri/target-test/
 .git/
 .github/
 .ace-tool/
 .superpowers/
 .tmp-gh-artifacts-*/
 test-results/
+.vite-*.log
+vite-*.log
+*.tar
+*.tar.gz
 *.log
 *.local
 tmp_store_results.html

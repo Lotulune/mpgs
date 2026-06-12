@@ -3,7 +3,7 @@ use crate::models::{
     AnalysisPoint, AnalysisReviewEvidenceItem, AnalysisReviewStance, AnalysisSource,
     GameAnalysisReport, GameCard,
 };
-use crate::scoring::score_game_v2;
+use crate::scoring::score_game_v2_at;
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -47,7 +47,8 @@ pub fn build_rule_report(game: &GameCard, generated_at: String) -> Result<GameAn
         return Err(anyhow!("数据不足，暂时无法分析"));
     }
 
-    let scoring = score_game_v2(game);
+    let scoring_today = scoring_today_from_generated_at(&generated_at);
+    let scoring = score_game_v2_at(game, &scoring_today);
     let evidence = build_evidence(game);
     let review_evidence = build_review_evidence(game);
     let strengths = build_strengths(game, &scoring.dimension_scores);
@@ -82,6 +83,22 @@ pub fn build_rule_report(game: &GameCard, generated_at: String) -> Result<GameAn
         evidence,
         review_evidence,
     })
+}
+
+fn scoring_today_from_generated_at(generated_at: &str) -> String {
+    let candidate = generated_at.split('T').next().unwrap_or_default().trim();
+    let bytes = candidate.as_bytes();
+    if bytes.len() == 10
+        && bytes[0..4].iter().all(u8::is_ascii_digit)
+        && bytes[4] == b'-'
+        && bytes[5..7].iter().all(u8::is_ascii_digit)
+        && bytes[7] == b'-'
+        && bytes[8..10].iter().all(u8::is_ascii_digit)
+    {
+        candidate.to_string()
+    } else {
+        crate::recommendation::today_iso_utc()
+    }
 }
 
 pub fn apply_narrative_patch(

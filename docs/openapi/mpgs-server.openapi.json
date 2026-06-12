@@ -99,6 +99,76 @@
         }
       }
     },
+    "/api/v1/admin/config/pending/provider-secrets": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "admin_pending_provider_secrets",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PendingProviderSecretsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Pending provider secret patch configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PendingConfigResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Provider secret patch was empty",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Admin session required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorEnvelope"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config manager unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/admin/config/pending/service-identity": {
       "post": {
         "tags": [
@@ -1683,12 +1753,71 @@
           }
         }
       },
+      "PendingProviderSecretsRequest": {
+        "type": "object",
+        "properties": {
+          "adminToken": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "llmApiKey": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "llmBaseUrl": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "llmModel": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "r2AccessKeyId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "r2Bucket": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "r2SecretAccessKey": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "steamApiKey": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "PendingServiceIdentityRequest": {
         "type": "object",
         "required": [
           "serviceName"
         ],
         "properties": {
+          "publicBaseUrl": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "serviceName": {
             "type": "string"
           }
@@ -1738,6 +1867,18 @@
         "required": [
           "appid",
           "name",
+          "section",
+          "releaseDateText",
+          "releaseState",
+          "demoStatus",
+          "supportedLanguages",
+          "isAdultContent",
+          "isFree",
+          "capsuleUrl",
+          "storeScreenshotUrls",
+          "tags",
+          "multiplayerModes",
+          "reviewSnippets",
           "updatedAt"
         ],
         "properties": {
@@ -1746,8 +1887,55 @@
             "format": "int32",
             "minimum": 0
           },
+          "capsuleUrl": {
+            "type": "string"
+          },
+          "currentPlayers": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "demoStatus": {
+            "type": "string"
+          },
+          "discountPercent": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "isAdultContent": {
+            "type": "boolean"
+          },
+          "isFree": {
+            "type": "boolean"
+          },
+          "multiplayerModes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "name": {
             "type": "string"
+          },
+          "positiveReviewPct": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "priceText": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "recommendationScore": {
             "type": [
@@ -1755,6 +1943,59 @@
               "null"
             ],
             "format": "double"
+          },
+          "releaseDate": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "releaseDateText": {
+            "type": "string"
+          },
+          "releaseState": {
+            "type": "string"
+          },
+          "reviewSnippets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PublicReviewSnippet"
+            }
+          },
+          "section": {
+            "type": "string"
+          },
+          "shortDescription": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "storeScreenshotUrls": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "supportedLanguages": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "totalReviews": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
           },
           "updatedAt": {
             "type": "string"
@@ -1776,6 +2017,28 @@
           },
           "page": {
             "$ref": "#/components/schemas/PageMeta"
+          }
+        }
+      },
+      "PublicReviewSnippet": {
+        "type": "object",
+        "required": [
+          "votedUp",
+          "review"
+        ],
+        "properties": {
+          "playtimeHours": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "review": {
+            "type": "string"
+          },
+          "votedUp": {
+            "type": "boolean"
           }
         }
       },

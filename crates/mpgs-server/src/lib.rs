@@ -7,6 +7,7 @@ pub mod health;
 pub mod public_catalog;
 pub mod rate_limit;
 pub mod restart;
+pub mod sample_seed;
 pub mod setup;
 pub mod steam;
 pub mod worker;
@@ -28,7 +29,7 @@ use axum::{
 pub use config::{ConfigError, ConfigHealth, ServerConfig, StartupConfig};
 use config_files::{
     ConfigDeploymentDiagnostics, ConfigFileManager, ConfigStateResponse, PendingConfigResponse,
-    PendingServiceIdentityRequest, ServiceConnectionFileResponse,
+    PendingProviderSecretsRequest, PendingServiceIdentityRequest, ServiceConnectionFileResponse,
 };
 pub use cors::PublicCorsConfig;
 use health::{HealthResponse, HealthStatus};
@@ -521,6 +522,10 @@ pub fn build_router_with_state(state: AppState) -> Router {
             "/api/v1/admin/config/pending/service-identity",
             post(admin_pending_service_identity),
         )
+        .route(
+            "/api/v1/admin/config/pending/provider-secrets",
+            post(admin_pending_provider_secrets),
+        )
         .route("/api/v1/admin/restart", post(admin_restart))
         .route("/api/v1/setup/status", get(setup_status))
         .route("/api/v1/setup/complete", post(setup_complete))
@@ -592,7 +597,7 @@ async fn discovery_home(State(state): State<AppState>, headers: HeaderMap) -> Re
 
     match state.database_health.discovery_home().await {
         Ok(payload) => public_response(&state, json_with_etag(payload, etag)),
-        Err(error) if state.database_health.is_safe_mode() => {
+        Err(_error) if state.database_health.is_safe_mode() => {
             public_response(&state, safe_mode_error_response())
         }
         Err(error) => public_response(
@@ -655,7 +660,7 @@ async fn games(
 
     match state.database_health.public_games_page(limit, offset).await {
         Ok(payload) => public_response(&state, json_with_etag(payload, etag)),
-        Err(error) if state.database_health.is_safe_mode() => {
+        Err(_error) if state.database_health.is_safe_mode() => {
             public_response(&state, safe_mode_error_response())
         }
         Err(error) => public_response(
@@ -710,7 +715,7 @@ async fn game_detail(
                 "公开游戏不存在。",
             ),
         ),
-        Err(error) if state.database_health.is_safe_mode() => {
+        Err(_error) if state.database_health.is_safe_mode() => {
             public_response(&state, safe_mode_error_response())
         }
         Err(error) => public_response(
@@ -765,7 +770,7 @@ async fn game_analysis(
                 "公开游戏分析不存在。",
             ),
         ),
-        Err(error) if state.database_health.is_safe_mode() => {
+        Err(_error) if state.database_health.is_safe_mode() => {
             public_response(&state, safe_mode_error_response())
         }
         Err(error) => public_response(
@@ -964,7 +969,7 @@ async fn admin_tasks(State(state): State<AppState>, headers: HeaderMap) -> Respo
             failures: task_state.failures,
         })
         .into_response(),
-        Err(error) if state.database_health.is_safe_mode() => safe_mode_error_response(),
+        Err(_error) if state.database_health.is_safe_mode() => safe_mode_error_response(),
         Err(error) => service_error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "admin_tasks_unavailable",
@@ -1019,7 +1024,7 @@ async fn admin_create_task(
                 .await;
             (StatusCode::CREATED, Json(AdminCreateTaskResponse { task })).into_response()
         }
-        Err(error) if state.database_health.is_safe_mode() => safe_mode_error_response(),
+        Err(_error) if state.database_health.is_safe_mode() => safe_mode_error_response(),
         Err(error) => service_error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "admin_task_create_failed",
@@ -1050,7 +1055,7 @@ async fn admin_review_queue(State(state): State<AppState>, headers: HeaderMap) -
 
     match state.database_health.admin_review_queue().await {
         Ok(items) => Json(AdminReviewQueueResponse { items }).into_response(),
-        Err(error) if state.database_health.is_safe_mode() => safe_mode_error_response(),
+        Err(_error) if state.database_health.is_safe_mode() => safe_mode_error_response(),
         Err(error) => service_error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "public_catalog_unavailable",
@@ -1108,7 +1113,7 @@ async fn admin_review_action(
             "admin_review_candidate_not_found",
             "待审核游戏不存在。",
         ),
-        Err(error) if state.database_health.is_safe_mode() => safe_mode_error_response(),
+        Err(_error) if state.database_health.is_safe_mode() => safe_mode_error_response(),
         Err(error) => service_error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "public_catalog_unavailable",
@@ -1297,6 +1302,65 @@ async fn admin_pending_service_identity(
                 .await;
             Json(payload).into_response()
         }
+        Err(_) => service_error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "pending_config_write_failed",
+            "待生效配置写入失败。",
+        ),
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/config/pending/provider-secrets",
+    tag = "admin",
+    request_body = PendingProviderSecretsRequest,
+    responses(
+        (status = 200, description = "Pending provider secret patch configuration", body = PendingConfigResponse),
+        (status = 400, description = "Provider secret patch was empty", body = ServiceErrorEnvelope),
+        (status = 401, description = "Admin session required", body = ServiceErrorEnvelope),
+        (status = 429, description = "Request rate limited", body = ServiceErrorEnvelope),
+        (status = 503, description = "Config manager unavailable", body = ServiceErrorEnvelope)
+    )
+)]
+async fn admin_pending_provider_secrets(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<PendingProviderSecretsRequest>,
+) -> Response {
+    if !state.rate_limits.allow(RateLimitBucket::Admin) {
+        return rate_limited_response();
+    }
+
+    if !admin_session_is_valid(&state, &headers) {
+        return admin_session_required_response();
+    }
+
+    let Some(config_file_manager) = state.config_file_manager.as_ref() else {
+        return service_error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "config_manager_unavailable",
+            "配置管理器不可用。",
+        );
+    };
+
+    match config_file_manager.write_pending_provider_secrets(&request) {
+        Ok(Some(payload)) => {
+            state
+                .database_health
+                .mark_pending_config(&payload.pending_config_version)
+                .await;
+            state
+                .audit
+                .record("admin.config.pending_provider_secrets", "admin", "success")
+                .await;
+            Json(payload).into_response()
+        }
+        Ok(None) => service_error_response(
+            StatusCode::BAD_REQUEST,
+            "provider_secret_patch_empty",
+            "没有可写入的密钥配置变更。",
+        ),
         Err(_) => service_error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "pending_config_write_failed",
@@ -1936,6 +2000,7 @@ fn content_type_for_path(path: &FsPath) -> HeaderValue {
         admin_config_state,
         admin_connection_share,
         admin_pending_service_identity,
+        admin_pending_provider_secrets,
         admin_restart,
         setup_status,
         setup_complete,
@@ -1959,6 +2024,7 @@ fn content_type_for_path(path: &FsPath) -> HeaderValue {
         admin::AdminTaskSummary,
         config_files::ConfigStateResponse,
         config_files::PendingConfigResponse,
+        config_files::PendingProviderSecretsRequest,
         config_files::PendingServiceIdentityRequest,
         config_files::ServiceConnectionFileResponse,
         restart::RestartRequest,

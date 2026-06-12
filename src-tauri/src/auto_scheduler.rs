@@ -339,8 +339,8 @@ mod tests {
 
     #[test]
     fn startup_new_discovery_is_due_without_previous_run() {
-        let due = startup_new_discovery_is_due(None, "2026-05-05T12:00:00Z")
-            .expect("evaluate due state");
+        let due =
+            startup_new_discovery_is_due(None, "2026-05-05T12:00:00Z").expect("evaluate due state");
         assert!(due);
     }
 
@@ -352,16 +352,10 @@ mod tests {
             Some("2026-05-05T10:30:00Z"),
         );
 
-        let blocked = startup_new_discovery_is_due(
-            Some(&latest),
-            "2026-05-05T12:59:59Z",
-        )
-        .expect("evaluate blocked state");
-        let allowed = startup_new_discovery_is_due(
-            Some(&latest),
-            "2026-05-05T13:30:00Z",
-        )
-        .expect("evaluate allowed state");
+        let blocked = startup_new_discovery_is_due(Some(&latest), "2026-05-05T12:59:59Z")
+            .expect("evaluate blocked state");
+        let allowed = startup_new_discovery_is_due(Some(&latest), "2026-05-05T13:30:00Z")
+            .expect("evaluate allowed state");
 
         assert!(!blocked);
         assert!(allowed);
@@ -375,11 +369,8 @@ mod tests {
             None,
         );
 
-        let blocked = startup_new_discovery_is_due(
-            Some(&latest),
-            "2026-05-05T11:59:59Z",
-        )
-        .expect("evaluate blocked state");
+        let blocked = startup_new_discovery_is_due(Some(&latest), "2026-05-05T11:59:59Z")
+            .expect("evaluate blocked state");
         let allowed = startup_new_discovery_is_due(
             Some(&latest),
             &format!(

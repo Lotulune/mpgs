@@ -4,9 +4,10 @@ use crate::admin::{
 };
 use crate::public_catalog::{
     AdminReviewCandidate, DiscoveryHomeResponse, DiscoveryHomeSections, PageMeta,
-    PublicGameAnalysis, PublicGameDetail, PublicGameListItem, PublicGamesPage,
+    PublicGameAnalysis, PublicGameDetail, PublicGameListItem, PublicGamesPage, PublicReviewSnippet,
 };
 use mpgs_core::models::{GameAnalysisReport, GameCard, PublicCatalogStatus};
+use serde::Serialize;
 use sqlx_core::migrate::{Migration, MigrationType, Migrator};
 use sqlx_core::row::Row;
 use sqlx_postgres::{PgPool, PgPoolOptions, Postgres};
@@ -17,6 +18,8 @@ const AUDIT_EVENTS_MIGRATION_SQL: &str = include_str!("../migrations/0002_ops_au
 const ADMIN_REVIEW_NOTES_MIGRATION_SQL: &str =
     include_str!("../migrations/0003_admin_review_notes.sql");
 const OPS_TASKS_MIGRATION_SQL: &str = include_str!("../migrations/0004_ops_tasks.sql");
+const PUBLIC_CATALOG_GAME_DETAILS_MIGRATION_SQL: &str =
+    include_str!("../migrations/0005_public_catalog_game_details.sql");
 
 #[derive(Debug, Clone)]
 pub struct ServiceConfigState {
@@ -117,6 +120,13 @@ pub fn migrator() -> Migrator {
                 Cow::Borrowed(OPS_TASKS_MIGRATION_SQL),
                 false,
             ),
+            Migration::new(
+                5,
+                Cow::Borrowed("public_catalog_game_details"),
+                MigrationType::Simple,
+                Cow::Borrowed(PUBLIC_CATALOG_GAME_DETAILS_MIGRATION_SQL),
+                false,
+            ),
         ]),
         ignore_missing: false,
         locking: true,
@@ -189,6 +199,12 @@ pub async fn migration_health_check(pool: &PgPool) -> Result<bool, sqlx_core::er
             FROM _sqlx_migrations
             WHERE version = 4
               AND description = 'ops_tasks'
+              AND success = TRUE
+        ) AND EXISTS (
+            SELECT 1
+            FROM _sqlx_migrations
+            WHERE version = 5
+              AND description = 'public_catalog_game_details'
               AND success = TRUE
         )
         "#,
@@ -780,13 +796,55 @@ pub async fn upsert_public_catalog_game(
         INSERT INTO public_catalog.games (
             appid,
             name,
+            short_description,
+            section,
+            release_date,
+            release_date_text,
+            release_state,
+            demo_status,
+            supported_languages,
+            is_adult_content,
+            is_free,
+            price_text,
+            discount_percent,
+            positive_review_pct,
+            total_reviews,
+            current_players,
+            capsule_url,
+            store_screenshot_urls,
+            tags,
+            multiplayer_modes,
+            review_snippets,
             review_status,
             visibility,
             recommendation_score
         )
-        VALUES ($1, $2, $3, $4, $5)
+        VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+            $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
+            $21, $22, $23, $24
+        )
         ON CONFLICT (appid) DO UPDATE
         SET name = EXCLUDED.name,
+            short_description = EXCLUDED.short_description,
+            section = EXCLUDED.section,
+            release_date = EXCLUDED.release_date,
+            release_date_text = EXCLUDED.release_date_text,
+            release_state = EXCLUDED.release_state,
+            demo_status = EXCLUDED.demo_status,
+            supported_languages = EXCLUDED.supported_languages,
+            is_adult_content = EXCLUDED.is_adult_content,
+            is_free = EXCLUDED.is_free,
+            price_text = EXCLUDED.price_text,
+            discount_percent = EXCLUDED.discount_percent,
+            positive_review_pct = EXCLUDED.positive_review_pct,
+            total_reviews = EXCLUDED.total_reviews,
+            current_players = EXCLUDED.current_players,
+            capsule_url = EXCLUDED.capsule_url,
+            store_screenshot_urls = EXCLUDED.store_screenshot_urls,
+            tags = EXCLUDED.tags,
+            multiplayer_modes = EXCLUDED.multiplayer_modes,
+            review_snippets = EXCLUDED.review_snippets,
             review_status = CASE
                 WHEN public_catalog.games.review_status IN ('accepted', 'archived')
                 THEN public_catalog.games.review_status
@@ -804,6 +862,25 @@ pub async fn upsert_public_catalog_game(
     )
     .bind(game.appid as i32)
     .bind(&game.name)
+    .bind(&game.short_description)
+    .bind(&game.section)
+    .bind(&game.release_date)
+    .bind(&game.release_date_text)
+    .bind(enum_json_string(&game.release_state)?)
+    .bind(enum_json_string(&game.demo_status)?)
+    .bind(json_value(&game.supported_languages)?)
+    .bind(game.is_adult_content)
+    .bind(game.is_free)
+    .bind(&game.price_text)
+    .bind(game.discount_percent.map(|value| value as i32))
+    .bind(game.positive_review_pct)
+    .bind(game.total_reviews.map(|value| value as i32))
+    .bind(game.current_players.map(|value| value as i32))
+    .bind(&game.capsule_url)
+    .bind(json_value(&game.store_screenshot_urls)?)
+    .bind(json_value(&game.tags)?)
+    .bind(json_value(&game.multiplayer_modes)?)
+    .bind(json_value(&game.review_snippets)?)
     .bind(review_status)
     .bind(visibility)
     .bind(game.recommendation_score)
@@ -974,7 +1051,30 @@ pub async fn public_game_detail(
 ) -> Result<Option<PublicGameDetail>, sqlx_core::error::Error> {
     let row = sqlx_core::query::query::<Postgres>(
         r#"
-        SELECT appid, name, recommendation_score, updated_at::text AS updated_at
+        SELECT
+            appid,
+            name,
+            short_description,
+            section,
+            release_date,
+            release_date_text,
+            release_state,
+            demo_status,
+            supported_languages,
+            is_adult_content,
+            is_free,
+            price_text,
+            discount_percent,
+            positive_review_pct,
+            total_reviews,
+            current_players,
+            recommendation_score,
+            capsule_url,
+            store_screenshot_urls,
+            tags,
+            multiplayer_modes,
+            review_snippets,
+            updated_at::text AS updated_at
         FROM public_catalog.games
         WHERE appid = $1
           AND review_status = 'accepted'
@@ -1039,7 +1139,30 @@ async fn public_games_list(
 ) -> Result<Vec<PublicGameListItem>, sqlx_core::error::Error> {
     let rows = sqlx_core::query::query::<Postgres>(
         r#"
-        SELECT appid, name, recommendation_score, updated_at::text AS updated_at
+        SELECT
+            appid,
+            name,
+            short_description,
+            section,
+            release_date,
+            release_date_text,
+            release_state,
+            demo_status,
+            supported_languages,
+            is_adult_content,
+            is_free,
+            price_text,
+            discount_percent,
+            positive_review_pct,
+            total_reviews,
+            current_players,
+            recommendation_score,
+            capsule_url,
+            store_screenshot_urls,
+            tags,
+            multiplayer_modes,
+            review_snippets,
+            updated_at::text AS updated_at
         FROM public_catalog.games
         WHERE review_status = 'accepted'
           AND visibility = 'public'
@@ -1063,7 +1186,30 @@ async fn public_games_by_score(
 ) -> Result<Vec<PublicGameListItem>, sqlx_core::error::Error> {
     let rows = sqlx_core::query::query::<Postgres>(
         r#"
-        SELECT appid, name, recommendation_score, updated_at::text AS updated_at
+        SELECT
+            appid,
+            name,
+            short_description,
+            section,
+            release_date,
+            release_date_text,
+            release_state,
+            demo_status,
+            supported_languages,
+            is_adult_content,
+            is_free,
+            price_text,
+            discount_percent,
+            positive_review_pct,
+            total_reviews,
+            current_players,
+            recommendation_score,
+            capsule_url,
+            store_screenshot_urls,
+            tags,
+            multiplayer_modes,
+            review_snippets,
+            updated_at::text AS updated_at
         FROM public_catalog.games
         WHERE review_status = 'accepted'
           AND visibility = 'public'
@@ -1084,11 +1230,59 @@ fn public_game_list_item_from_row(
     row: sqlx_postgres::PgRow,
 ) -> Result<PublicGameListItem, sqlx_core::error::Error> {
     let appid: i32 = row.try_get("appid")?;
+    let discount_percent: Option<i32> = row.try_get("discount_percent")?;
+    let total_reviews: Option<i32> = row.try_get("total_reviews")?;
+    let current_players: Option<i32> = row.try_get("current_players")?;
 
     Ok(PublicGameListItem {
         appid: appid as u32,
         name: row.try_get("name")?,
+        short_description: row.try_get("short_description")?,
+        section: row.try_get("section")?,
+        release_date: row.try_get("release_date")?,
+        release_date_text: row.try_get("release_date_text")?,
+        release_state: row.try_get("release_state")?,
+        demo_status: row.try_get("demo_status")?,
+        supported_languages: json_array_from_row(&row, "supported_languages")?,
+        is_adult_content: row.try_get("is_adult_content")?,
+        is_free: row.try_get("is_free")?,
+        price_text: row.try_get("price_text")?,
+        discount_percent: discount_percent.map(|value| value as u32),
+        positive_review_pct: row.try_get("positive_review_pct")?,
+        total_reviews: total_reviews.map(|value| value as u32),
+        current_players: current_players.map(|value| value as u32),
         recommendation_score: row.try_get("recommendation_score")?,
+        capsule_url: row
+            .try_get::<Option<String>, _>("capsule_url")?
+            .unwrap_or_else(|| steam_header_url(appid as u32)),
+        store_screenshot_urls: json_array_from_row(&row, "store_screenshot_urls")?,
+        tags: json_array_from_row(&row, "tags")?,
+        multiplayer_modes: json_array_from_row(&row, "multiplayer_modes")?,
+        review_snippets: json_array_from_row::<PublicReviewSnippet>(&row, "review_snippets")?,
         updated_at: row.try_get("updated_at")?,
     })
+}
+
+fn json_value<T: Serialize>(value: &T) -> anyhow::Result<serde_json::Value> {
+    Ok(serde_json::to_value(value)?)
+}
+
+fn enum_json_string<T: Serialize>(value: &T) -> anyhow::Result<String> {
+    let value = serde_json::to_value(value)?;
+    value
+        .as_str()
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| anyhow::anyhow!("expected enum to serialize as string"))
+}
+
+fn json_array_from_row<T: serde::de::DeserializeOwned>(
+    row: &sqlx_postgres::PgRow,
+    column: &str,
+) -> Result<Vec<T>, sqlx_core::error::Error> {
+    let value: serde_json::Value = row.try_get(column)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
+}
+
+fn steam_header_url(appid: u32) -> String {
+    format!("https://cdn.cloudflare.steamstatic.com/steam/apps/{appid}/header.jpg")
 }

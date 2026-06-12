@@ -212,7 +212,7 @@ describe("AdminApp", () => {
     fireEvent.click(screen.getByRole("button", { name: "登录" }));
 
     expect(await screen.findByRole("heading", { name: "管理概览" })).toBeInTheDocument();
-    expect(screen.getByText("MPGS Public")).toBeInTheDocument();
+    expect(screen.getAllByText("MPGS Public").length).toBeGreaterThan(0);
     expect(screen.getByText("公共库为空")).toBeInTheDocument();
     expect(screen.getByText("Postgres")).toBeInTheDocument();
     expect(screen.getByText("sha256:pending")).toBeInTheDocument();
@@ -708,6 +708,368 @@ describe("AdminApp", () => {
     });
     expect(await screen.findByText("手动 AppID 任务已入队。")).toBeInTheDocument();
     expect(screen.getByText("任务 #8")).toBeInTheDocument();
+  });
+
+  it("writes provider secret patches without showing existing secret values", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ configured: true }))
+      .mockResolvedValueOnce(jsonResponse({ authenticated: true }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          serviceName: "MPGS Public",
+          publicCatalogStatus: "empty",
+          publicGameCount: 0,
+          pendingReviewCount: 0,
+          latestTask: null,
+          failureSummary: {
+            openFailureCount: 0,
+            retryableFailureCount: 0,
+            latestFailure: null,
+          },
+          restartRequired: false,
+          connectionShareConfigured: true,
+          latestAuditEvent: null,
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          postgres: "ok",
+          activeConfig: "ok",
+          safeMode: false,
+          publicBaseUrlStatus: "configured",
+          httpsStatus: "ok",
+          publicCors: "disabled",
+          restartPolicy: "configured",
+          steam: "configured",
+          llm: "missing",
+          r2: "missing",
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          activeConfigVersion: "sha256:active",
+          pendingConfigVersion: null,
+          restartRequired: false,
+          lastStartupStatus: "ok",
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          serviceName: "MPGS Public",
+          serviceInstanceId: "018fb770-8998-7699-a6e4-b7b59f2f9c01",
+          apiVersion: "v1",
+          baseUrl: "https://mpgs.example.test",
+          serviceInfoUrl: "https://mpgs.example.test/api/v1/service-info",
+          capabilities: ["public_catalog_read"],
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ events: [] }))
+      .mockResolvedValueOnce(jsonResponse({ items: [] }))
+      .mockResolvedValueOnce(jsonResponse(emptyTasksResponse()))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          pendingConfigVersion: "sha256:pending-secrets",
+          restartRequired: true,
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          serviceName: "MPGS Public",
+          publicCatalogStatus: "empty",
+          publicGameCount: 0,
+          pendingReviewCount: 0,
+          latestTask: null,
+          failureSummary: {
+            openFailureCount: 0,
+            retryableFailureCount: 0,
+            latestFailure: null,
+          },
+          restartRequired: true,
+          connectionShareConfigured: true,
+          latestAuditEvent: {
+            eventType: "admin.config.pending_provider_secrets",
+            actor: "admin",
+            outcome: "success",
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          postgres: "ok",
+          activeConfig: "ok",
+          safeMode: false,
+          publicBaseUrlStatus: "configured",
+          httpsStatus: "ok",
+          publicCors: "disabled",
+          restartPolicy: "configured",
+          steam: "configured",
+          llm: "configured",
+          r2: "configured",
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          activeConfigVersion: "sha256:active",
+          pendingConfigVersion: "sha256:pending-secrets",
+          restartRequired: true,
+          lastStartupStatus: "ok",
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          serviceName: "MPGS Public",
+          serviceInstanceId: "018fb770-8998-7699-a6e4-b7b59f2f9c01",
+          apiVersion: "v1",
+          baseUrl: "https://mpgs.example.test",
+          serviceInfoUrl: "https://mpgs.example.test/api/v1/service-info",
+          capabilities: ["public_catalog_read"],
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          events: [
+            {
+              eventType: "admin.config.pending_provider_secrets",
+              actor: "admin",
+              outcome: "success",
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ items: [] }))
+      .mockResolvedValueOnce(jsonResponse(emptyTasksResponse()));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<AdminApp />);
+
+    fireEvent.change(await screen.findByLabelText("管理员令牌"), {
+      target: { value: "admin-token" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "登录" }));
+
+    await screen.findByRole("heading", { name: "管理概览" });
+    expect(screen.queryByDisplayValue("active-steam-key")).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("管理员令牌更新"), {
+      target: { value: "next-admin-token" },
+    });
+    fireEvent.change(screen.getByLabelText("Steam API Key 更新"), {
+      target: { value: "steam-key" },
+    });
+    fireEvent.change(screen.getByLabelText("LLM API Key 更新"), {
+      target: { value: "llm-key" },
+    });
+    fireEvent.change(screen.getByLabelText("LLM Base URL"), {
+      target: { value: "https://llm.example.test/v1" },
+    });
+    fireEvent.change(screen.getByLabelText("LLM Model"), {
+      target: { value: "mpgs-model" },
+    });
+    fireEvent.change(screen.getByLabelText("R2 Access Key ID"), {
+      target: { value: "r2-access" },
+    });
+    fireEvent.change(screen.getByLabelText("R2 Secret Access Key 更新"), {
+      target: { value: "r2-secret" },
+    });
+    fireEvent.change(screen.getByLabelText("R2 Bucket"), {
+      target: { value: "mpgs-images" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存密钥配置" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/v1/admin/config/pending/provider-secrets",
+        {
+          body: JSON.stringify({
+            adminToken: "next-admin-token",
+            steamApiKey: "steam-key",
+            llmApiKey: "llm-key",
+            llmBaseUrl: "https://llm.example.test/v1",
+            llmModel: "mpgs-model",
+            r2AccessKeyId: "r2-access",
+            r2SecretAccessKey: "r2-secret",
+            r2Bucket: "mpgs-images",
+          }),
+          credentials: "same-origin",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+          },
+          method: "POST",
+        },
+      );
+    });
+    expect(await screen.findByText("密钥配置已保存，重启后生效。")).toBeInTheDocument();
+    expect(screen.getByText("sha256:pending-secrets")).toBeInTheDocument();
+  });
+
+  it("writes pending service identity changes from the admin overview", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ configured: true }))
+      .mockResolvedValueOnce(jsonResponse({ authenticated: true }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          serviceName: "MPGS Public",
+          publicCatalogStatus: "empty",
+          publicGameCount: 0,
+          pendingReviewCount: 0,
+          latestTask: null,
+          failureSummary: {
+            openFailureCount: 0,
+            retryableFailureCount: 0,
+            latestFailure: null,
+          },
+          restartRequired: false,
+          connectionShareConfigured: true,
+          latestAuditEvent: null,
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          postgres: "ok",
+          activeConfig: "ok",
+          safeMode: false,
+          publicBaseUrlStatus: "configured",
+          httpsStatus: "ok",
+          publicCors: "disabled",
+          restartPolicy: "configured",
+          steam: "configured",
+          llm: "missing",
+          r2: "missing",
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          activeConfigVersion: "sha256:active",
+          pendingConfigVersion: null,
+          restartRequired: false,
+          lastStartupStatus: "ok",
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          serviceName: "MPGS Public",
+          serviceInstanceId: "018fb770-8998-7699-a6e4-b7b59f2f9c01",
+          apiVersion: "v1",
+          baseUrl: "https://mpgs.example.test",
+          serviceInfoUrl: "https://mpgs.example.test/api/v1/service-info",
+          capabilities: ["public_catalog_read"],
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ events: [] }))
+      .mockResolvedValueOnce(jsonResponse({ items: [] }))
+      .mockResolvedValueOnce(jsonResponse(emptyTasksResponse()))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          pendingConfigVersion: "sha256:pending-service",
+          restartRequired: true,
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          serviceName: "MPGS Public",
+          publicCatalogStatus: "empty",
+          publicGameCount: 0,
+          pendingReviewCount: 0,
+          latestTask: null,
+          failureSummary: {
+            openFailureCount: 0,
+            retryableFailureCount: 0,
+            latestFailure: null,
+          },
+          restartRequired: true,
+          connectionShareConfigured: true,
+          latestAuditEvent: {
+            eventType: "admin.config.pending_service_identity",
+            actor: "admin",
+            outcome: "success",
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          postgres: "ok",
+          activeConfig: "ok",
+          safeMode: false,
+          publicBaseUrlStatus: "configured",
+          httpsStatus: "ok",
+          publicCors: "disabled",
+          restartPolicy: "configured",
+          steam: "configured",
+          llm: "missing",
+          r2: "missing",
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          activeConfigVersion: "sha256:active",
+          pendingConfigVersion: "sha256:pending-service",
+          restartRequired: true,
+          lastStartupStatus: "ok",
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          serviceName: "MPGS Public",
+          serviceInstanceId: "018fb770-8998-7699-a6e4-b7b59f2f9c01",
+          apiVersion: "v1",
+          baseUrl: "https://mpgs.example.test",
+          serviceInfoUrl: "https://mpgs.example.test/api/v1/service-info",
+          capabilities: ["public_catalog_read"],
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          events: [
+            {
+              eventType: "admin.config.pending_service_identity",
+              actor: "admin",
+              outcome: "success",
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ items: [] }))
+      .mockResolvedValueOnce(jsonResponse(emptyTasksResponse()));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<AdminApp />);
+
+    fireEvent.change(await screen.findByLabelText("管理员令牌"), {
+      target: { value: "admin-token" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "登录" }));
+
+    await screen.findByRole("heading", { name: "管理概览" });
+    fireEvent.change(screen.getByLabelText("服务名称更新"), {
+      target: { value: "MPGS Friends Service" },
+    });
+    fireEvent.change(screen.getByLabelText("公开服务地址更新"), {
+      target: { value: "https://friends.example.test" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存服务身份" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/v1/admin/config/pending/service-identity",
+        {
+          body: JSON.stringify({
+            serviceName: "MPGS Friends Service",
+            publicBaseUrl: "https://friends.example.test",
+          }),
+          credentials: "same-origin",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+          },
+          method: "POST",
+        },
+      );
+    });
+    expect(await screen.findByText("服务身份配置已保存，重启后生效。")).toBeInTheDocument();
+    expect(screen.getByText("sha256:pending-service")).toBeInTheDocument();
   });
 });
 

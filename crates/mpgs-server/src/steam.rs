@@ -18,6 +18,7 @@ const LONG_STEAM_DATE: &[FormatItem<'_>] =
 const ISO_DATE: &[FormatItem<'_>] = format_description!("[year]-[month]-[day]");
 const APP_DETAILS_FILTERS: &str =
     "basic,price_overview,release_date,categories,genres,demos,content_descriptors,screenshots";
+const CURRENT_PLAYERS_BASE_URL: &str = "https://api.steampowered.com";
 const APP_DETAILS_MAX_ATTEMPTS: u8 = 3;
 const APP_DETAILS_RETRY_BASE_DELAY_MS: u64 = 350;
 
@@ -69,6 +70,7 @@ pub async fn fetch_game_snapshot(
     } else {
         (None, None)
     };
+    let current_players = fetch_current_players(client, appid).await.ok();
     let release_date = details
         .release_date
         .as_ref()
@@ -112,7 +114,7 @@ pub async fn fetch_game_snapshot(
             .and_then(|price| price.discount_percent),
         positive_review_pct,
         total_reviews,
-        current_players: None,
+        current_players,
         capsule_url: details.header_image.clone(),
         store_screenshot_urls: details.store_screenshot_urls(),
         tags: details.tags(),
@@ -248,6 +250,52 @@ fn review_metrics_from_summary(summary: Option<&ReviewFetch>) -> (Option<f64>, O
     };
 
     (positive_review_pct, total_reviews)
+}
+
+async fn fetch_current_players(client: &Client, appid: u32) -> Result<u32> {
+    fetch_current_players_from_base_url(client, CURRENT_PLAYERS_BASE_URL, appid).await
+}
+
+async fn fetch_current_players_from_base_url(
+    client: &Client,
+    base_url: &str,
+    appid: u32,
+) -> Result<u32> {
+    let url = format!(
+        "{}/ISteamUserStats/GetNumberOfCurrentPlayers/v1/",
+        base_url.trim_end_matches('/')
+    );
+    let response = client
+        .get(url)
+        .query(&[("appid", appid.to_string())])
+        .send()
+        .await
+        .map_err(|error| {
+            anyhow!(
+                "Steam current players for appid {appid}: request failed ({})",
+                describe_reqwest_error(&error)
+            )
+        })?
+        .error_for_status()
+        .map_err(|error| {
+            anyhow!(
+                "Steam current players for appid {appid}: Steam returned {}",
+                error
+                    .status()
+                    .map(|status| format!("HTTP {status}"))
+                    .unwrap_or_else(|| describe_reqwest_error(&error))
+            )
+        })?
+        .json::<CurrentPlayersEnvelope>()
+        .await
+        .map_err(|error| {
+            anyhow!(
+                "Steam current players for appid {appid}: parse response failed ({})",
+                describe_reqwest_error(&error)
+            )
+        })?;
+
+    Ok(response.response.player_count)
 }
 
 fn describe_reqwest_error(error: &reqwest::Error) -> String {
@@ -630,9 +678,23 @@ struct ReviewFetch {
     total_negative: Option<u32>,
 }
 
+#[derive(Debug, Deserialize)]
+struct CurrentPlayersEnvelope {
+    response: CurrentPlayersResponse,
+}
+
+#[derive(Debug, Deserialize)]
+struct CurrentPlayersResponse {
+    player_count: u32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{extract::Query, routing::get, Json, Router};
+    use serde_json::json;
+    use std::collections::HashMap;
+    use tokio::net::TcpListener;
 
     #[test]
     fn app_details_extract_multiplayer_modes_from_localized_categories() {
@@ -678,5 +740,41 @@ mod tests {
             parse_steam_date(Some("2026 年 5 月 5 日")).as_deref(),
             Some("2026-05-05")
         );
+    }
+
+    #[tokio::test]
+    async fn fetch_current_players_reads_player_count_response() {
+        async fn handler(Query(params): Query<HashMap<String, String>>) -> Json<serde_json::Value> {
+            assert_eq!(params.get("appid").map(String::as_str), Some("548430"));
+            Json(json!({
+                "response": {
+                    "player_count": 12345
+                }
+            }))
+        }
+
+        let app = Router::new().route(
+            "/ISteamUserStats/GetNumberOfCurrentPlayers/v1/",
+            get(handler),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let addr = listener.local_addr().expect("read test server addr");
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve current players fixture");
+        });
+
+        let players = fetch_current_players_from_base_url(
+            &Client::new(),
+            &format!("http://{addr}"),
+            548430,
+        )
+        .await
+        .expect("fetch current players");
+
+        assert_eq!(players, 12345);
     }
 }

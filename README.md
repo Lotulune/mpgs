@@ -52,6 +52,8 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -OutputTar mpgs-server-local.tar
 ```
 
+如果本地 Docker 无法稳定访问 Docker Hub，可以先从可用镜像源预拉取等价基础镜像，并用 `-RustBaseImage`、`-NodeBaseImage`、`-DebianBaseImage` 覆盖默认基础镜像。
+
 Arm VPS（例如 `ora_vps`）需要在本地或 CI 构建 `linux/arm64` 镜像：
 
 ```powershell
@@ -62,6 +64,8 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -UseBuildx `
   -Platform linux/arm64
 ```
+
+GitHub Release 会分别产出 `linux-amd64` 和 `linux-arm64` 的 `mpgs-server` 镜像 tar；远程部署时选择与 VPS 架构匹配的 tar。
 
 远程部署脚本只上传镜像 tar 和 Compose 资产，不覆盖远端真实 `.env`、active secrets 或 active service config：
 
@@ -175,6 +179,23 @@ npm test
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File docs/deployment/deployment_contract_tests.ps1
+```
+
+生产与发布验证入口：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File deploy/scripts/test-mpgs-public-catalog-live.ps1 `
+  -BaseUrl https://mpgs.example.com `
+  -MinGames 1
+
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File deploy/scripts/test-mpgs-production-readiness.ps1 `
+  -BaseUrl https://mpgs.example.com `
+  -RequirePublicCors
+
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File deploy/scripts/test-mpgs-release-readiness.ps1
 ```
 
 ## 项目结构

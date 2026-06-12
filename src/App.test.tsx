@@ -7,11 +7,13 @@ import { mockDashboard } from "./data/mockDashboard";
 import {
   clearCurrentServiceConnection,
   getCurrentServiceConnection,
+  saveCurrentServiceConnection,
 } from "./domain/serviceConnectionStorage";
 import type { AiRecommendationResponse, GameAnalysisReport } from "./types";
 
 const assessGameWithAiMock = vi.fn();
 const getDashboardMock = vi.fn();
+const getGameDetailMock = vi.fn();
 const getGameAnalysisMock = vi.fn();
 const generateGameAnalysisMock = vi.fn();
 const recommendGamesWithAiMock = vi.fn();
@@ -32,6 +34,7 @@ vi.mock("./api/client", async () => {
     ...actual,
     assessGameWithAi: (...args: unknown[]) => assessGameWithAiMock(...args),
     getDashboard: () => getDashboardMock(),
+    getGameDetail: (...args: unknown[]) => getGameDetailMock(...args),
     getGameAnalysis: (...args: unknown[]) => getGameAnalysisMock(...args),
     generateGameAnalysis: (...args: unknown[]) => generateGameAnalysisMock(...args),
     isTauriRuntime: () => isTauriRuntimeMock(),
@@ -65,6 +68,21 @@ function buildPublicServiceDashboard() {
     onboardingCompleted: true,
   };
   return dashboard;
+}
+
+function saveCompatibleServiceConnection() {
+  saveCurrentServiceConnection({
+    baseUrl: "https://mpgs.example.test",
+    info: {
+      serviceInstanceId: "018fb770-8998-7699-a6e4-b7b59f2f9c01",
+      serviceName: "MPGS Test Service",
+      serviceVersion: "0.1.0",
+      apiVersion: "v1",
+      publicCatalogStatus: "ready",
+      capabilities: ["public_catalog_read"],
+    },
+    validatedAt: "2026-06-09T00:00:00.000Z",
+  });
 }
 
 function createGames(count: number, prefix: string) {
@@ -307,6 +325,7 @@ describe("App dashboard interactions", () => {
     isTauriRuntimeMock.mockReturnValue(false);
     listenMock.mockResolvedValue(() => undefined);
     getDashboardMock.mockResolvedValue(buildDashboard());
+    getGameDetailMock.mockImplementation(async (game) => game);
     assessGameWithAiMock.mockResolvedValue({
       appid: 0,
       score: 80,
@@ -568,6 +587,7 @@ describe("App dashboard interactions", () => {
 
   it("does not reopen auto onboarding after dismissing it in the same session", async () => {
     isTauriRuntimeMock.mockReturnValue(true);
+    saveCompatibleServiceConnection();
     const dashboard = buildDashboard();
     dashboard.config.onboardingCompleted = false;
     getDashboardMock.mockResolvedValue(dashboard);
@@ -594,6 +614,7 @@ describe("App dashboard interactions", () => {
   it("refreshes the dashboard when discovery task events arrive in tauri runtime", async () => {
     vi.useFakeTimers();
     isTauriRuntimeMock.mockReturnValue(true);
+    saveCompatibleServiceConnection();
     let discoveryEventHandler:
       | ((event: { payload: unknown }) => void)
       | null = null;
@@ -633,6 +654,7 @@ describe("App dashboard interactions", () => {
 
   it("does not subscribe to local discovery task events in public service mode", async () => {
     isTauriRuntimeMock.mockReturnValue(true);
+    saveCompatibleServiceConnection();
     getDashboardMock.mockResolvedValue(buildPublicServiceDashboard());
 
     render(<App />);
@@ -682,6 +704,38 @@ describe("App dashboard interactions", () => {
     expect(
       screen.queryByRole("heading", { name: "AI 智能推荐助手 Beta" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("keeps the public service source visible in the sidebar across views", async () => {
+    getDashboardMock.mockResolvedValue(buildPublicServiceDashboard());
+
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "新游区" });
+
+    const sidebar = screen.getByRole("complementary", { name: "主侧边栏" });
+    expect(within(sidebar).getByLabelText("当前数据源")).toHaveTextContent(
+      "公共发现服务：MPGS Test Service",
+    );
+
+    fireEvent.click(within(sidebar).getByRole("button", { name: "设置" }));
+
+    expect(within(sidebar).getByLabelText("当前数据源")).toHaveTextContent(
+      "公共发现服务：MPGS Test Service",
+    );
+    expect(screen.getAllByRole("heading", { name: "设置" }).length).toBeGreaterThan(0);
+  });
+
+  it("opens the service connection page first in Tauri when no service is saved", async () => {
+    isTauriRuntimeMock.mockReturnValue(true);
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("heading", { name: "连接 MPGS 服务" }),
+    ).toBeInTheDocument();
+    expect(getDashboardMock).not.toHaveBeenCalled();
+    expect(screen.queryByRole("heading", { name: "新游区" })).not.toBeInTheDocument();
   });
 
   it("imports a service connection file, validates public reads, and refreshes dashboard", async () => {
@@ -834,6 +888,30 @@ describe("App dashboard interactions", () => {
     expect(screen.queryByRole("button", { name: "重新 AI 评估" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "刷新分析" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "重试生成" })).not.toBeInTheDocument();
+  });
+
+  it("hydrates public service game detail before showing the final detail title", async () => {
+    const dashboard = buildPublicServiceDashboard();
+    const target = dashboard.newGames[0];
+    const detailGame = {
+      ...target,
+      name: `${target.name} - Public Detail`,
+      recommendationScore: target.recommendationScore + 1,
+    };
+    getDashboardMock.mockResolvedValue(dashboard);
+    getGameDetailMock.mockResolvedValue(detailGame);
+    getGameAnalysisMock.mockResolvedValue(null);
+
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "新游区" });
+    fireEvent.click(screen.getAllByRole("button", { name: new RegExp(target.name) })[0]);
+
+    await screen.findByRole("heading", { level: 1, name: detailGame.name });
+
+    expect(getGameDetailMock).toHaveBeenCalledWith(target);
+    expect(getGameAnalysisMock).toHaveBeenCalledWith(detailGame.appid);
+    expect(generateGameAnalysisMock).not.toHaveBeenCalled();
   });
 
   it("shows a toast when classic discovery finishes and dismisses it on click", async () => {

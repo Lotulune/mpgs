@@ -5,6 +5,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use utoipa::ToSchema;
+use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 pub struct ConfigFileManager {
@@ -15,6 +16,20 @@ pub struct ConfigFileManager {
 #[serde(rename_all = "camelCase")]
 pub struct PendingServiceIdentityRequest {
     pub service_name: String,
+    pub public_base_url: Option<String>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingProviderSecretsRequest {
+    pub admin_token: Option<String>,
+    pub steam_api_key: Option<String>,
+    pub llm_api_key: Option<String>,
+    pub llm_base_url: Option<String>,
+    pub llm_model: Option<String>,
+    pub r2_access_key_id: Option<String>,
+    pub r2_secret_access_key: Option<String>,
+    pub r2_bucket: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -113,7 +128,8 @@ impl ConfigFileManager {
         Ok(ConfigStateResponse {
             active_config_version: self.active_config_version()?,
             pending_config_version: self.pending_config_version()?,
-            restart_required: pending_service_path(&self.config_dir).is_file(),
+            restart_required: pending_service_path(&self.config_dir).is_file()
+                || pending_secrets_path(&self.config_dir).is_file(),
             last_startup_status: "ok".to_string(),
         })
     }
@@ -150,20 +166,30 @@ version = "{version}"
                     .unwrap_or(env!("CARGO_PKG_VERSION"))
             )
         );
-        let service_toml =
-            if let Some(service_connection) = active_service.service_connection.as_ref() {
-                format!(
-                    r#"{service_toml}
+        let requested_public_base_url = request
+            .public_base_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let active_public_base_url =
+            active_service
+                .service_connection
+                .as_ref()
+                .map(|service_connection| {
+                    normalize_public_base_url(&service_connection.public_base_url)
+                });
+        let public_base_url = requested_public_base_url.or(active_public_base_url);
+        let service_toml = if let Some(public_base_url) = public_base_url {
+            format!(
+                r#"{service_toml}
 [service_connection]
 public_base_url = "{public_base_url}"
 "#,
-                    public_base_url = escape_toml_string(normalize_public_base_url(
-                        &service_connection.public_base_url
-                    ))
-                )
-            } else {
-                service_toml
-            };
+                public_base_url = escape_toml_string(normalize_public_base_url(public_base_url))
+            )
+        } else {
+            service_toml
+        };
         let service_toml = if let Some(public_cors) = active_service.public_cors.as_ref() {
             format!(
                 r#"{service_toml}
@@ -196,6 +222,68 @@ restart_policy = "{restart_policy}"
             pending_config_version: hash_token(&service_toml),
             restart_required: true,
         })
+    }
+
+    pub fn write_pending_provider_secrets(
+        &self,
+        request: &PendingProviderSecretsRequest,
+    ) -> io::Result<Option<PendingConfigResponse>> {
+        let mut lines = Vec::new();
+
+        let admin_token = request
+            .admin_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        if let Some(admin_token) = admin_token {
+            let admin_token_hash = hash_token(admin_token);
+            let session_secret = Uuid::now_v7().to_string();
+            push_secret_section(
+                &mut lines,
+                "admin",
+                &[
+                    ("token_hash", Some(admin_token_hash.as_str())),
+                    ("session_secret", Some(session_secret.as_str())),
+                ],
+            );
+        }
+        push_secret_section(
+            &mut lines,
+            "steam",
+            &[("api_key", request.steam_api_key.as_deref())],
+        );
+        push_secret_section(
+            &mut lines,
+            "llm",
+            &[
+                ("api_key", request.llm_api_key.as_deref()),
+                ("base_url", request.llm_base_url.as_deref()),
+                ("model", request.llm_model.as_deref()),
+            ],
+        );
+        push_secret_section(
+            &mut lines,
+            "r2",
+            &[
+                ("access_key_id", request.r2_access_key_id.as_deref()),
+                ("secret_access_key", request.r2_secret_access_key.as_deref()),
+                ("bucket", request.r2_bucket.as_deref()),
+            ],
+        );
+
+        if lines.is_empty() {
+            return Ok(None);
+        }
+
+        let pending_dir = self.config_dir.join("pending");
+        fs::create_dir_all(&pending_dir)?;
+        let secrets_toml = format!("{}\n", lines.join("\n"));
+        atomic_write(&pending_secrets_path(&self.config_dir), &secrets_toml)?;
+
+        Ok(Some(PendingConfigResponse {
+            pending_config_version: hash_token(&secrets_toml),
+            restart_required: true,
+        }))
     }
 
     pub fn service_connection_file(&self) -> io::Result<ServiceConnectionFileResponse> {
@@ -259,12 +347,19 @@ restart_policy = "{restart_policy}"
     }
 
     pub fn validate_pending_service_config(&self) -> io::Result<bool> {
-        let path = pending_service_path(&self.config_dir);
-        if !path.is_file() {
+        let service_path = pending_service_path(&self.config_dir);
+        let secrets_path = pending_secrets_path(&self.config_dir);
+        if !service_path.is_file() && !secrets_path.is_file() {
             return Ok(false);
         }
 
-        read_service_config(&path).map(|_| true)
+        if service_path.is_file() {
+            read_service_config(&service_path)?;
+        }
+        if secrets_path.is_file() {
+            read_secrets_toml(&secrets_path)?;
+        }
+        Ok(true)
     }
 
     pub fn active_config_version(&self) -> io::Result<String> {
@@ -274,13 +369,29 @@ restart_policy = "{restart_policy}"
     }
 
     fn pending_config_version(&self) -> io::Result<Option<String>> {
-        let path = pending_service_path(&self.config_dir);
-        if !path.is_file() {
+        let service_path = pending_service_path(&self.config_dir);
+        let secrets_path = pending_secrets_path(&self.config_dir);
+        if !service_path.is_file() && !secrets_path.is_file() {
             return Ok(None);
         }
 
-        let service_toml = fs::read_to_string(path)?;
-        Ok(Some(hash_token(&service_toml)))
+        let service_toml = if service_path.is_file() {
+            Some(fs::read_to_string(service_path)?)
+        } else {
+            None
+        };
+        let secrets_toml = if secrets_path.is_file() {
+            Some(fs::read_to_string(secrets_path)?)
+        } else {
+            None
+        };
+        let config = match (service_toml, secrets_toml) {
+            (Some(service_toml), Some(secrets_toml)) => format!("{service_toml}\n{secrets_toml}"),
+            (Some(service_toml), None) => service_toml,
+            (None, Some(secrets_toml)) => secrets_toml,
+            (None, None) => return Ok(None),
+        };
+        Ok(Some(hash_token(&config)))
     }
 }
 
@@ -306,6 +417,10 @@ fn pending_service_path(config_dir: &Path) -> PathBuf {
     config_dir.join("pending").join("service.toml")
 }
 
+fn pending_secrets_path(config_dir: &Path) -> PathBuf {
+    config_dir.join("pending").join("secrets.toml")
+}
+
 fn atomic_write(path: &Path, contents: &str) -> io::Result<()> {
     let temp_path = path.with_extension("tmp");
     fs::write(&temp_path, contents)?;
@@ -318,6 +433,32 @@ fn escape_toml_string(value: &str) -> String {
 
 fn normalize_public_base_url(value: &str) -> &str {
     value.trim().trim_end_matches('/')
+}
+
+fn push_secret_section(lines: &mut Vec<String>, section: &str, fields: &[(&str, Option<&str>)]) {
+    let cleaned_fields: Vec<(&str, &str)> = fields
+        .iter()
+        .filter_map(|(key, value)| {
+            value
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| (*key, value))
+        })
+        .collect();
+
+    if cleaned_fields.is_empty() {
+        return;
+    }
+
+    if !lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines.push(format!("[{section}]"));
+    lines.extend(
+        cleaned_fields
+            .into_iter()
+            .map(|(key, value)| format!("{key} = \"{}\"", escape_toml_string(value))),
+    );
 }
 
 fn public_base_url_status(base_url: Option<&str>) -> String {

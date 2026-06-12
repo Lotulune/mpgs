@@ -4,6 +4,7 @@ import { setStoredUserGameState } from "../domain/userGameStateStorage";
 import {
   fetchPublicDashboard,
   fetchPublicGameAnalysis,
+  fetchPublicGameDetail,
 } from "./publicServiceClient";
 import { mockDashboard } from "../data/mockDashboard";
 import type {
@@ -545,6 +546,15 @@ export async function generateGameAnalysis(
     appid,
     forceRefresh,
   });
+}
+
+export async function getGameDetail(game: GameCard): Promise<GameCard> {
+  const serviceConnection = getCurrentServiceConnection();
+  if (serviceConnection) {
+    return fetchPublicGameDetail(serviceConnection, game);
+  }
+
+  return { ...game, userState: { ...game.userState } };
 }
 
 export async function setGameUserState(

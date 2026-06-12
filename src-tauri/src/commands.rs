@@ -15,8 +15,8 @@ use crate::models::{
     AiAnalysisQueueSource, AiAssessment, AiBatchRefreshReport, AiRecommendationRequest,
     AiRecommendationResponse, ClassicDiscoveryRunSnapshot, ClassicDiscoveryTaskRequest,
     ConnectionValidationResult, DashboardPayload, DiscoveryRunSnapshot, DiscoveryRunStatus,
-    DiscoveryTaskRequest, GameAnalysisReport, PublicConfig, SaveConfigRequest,
-    SyncMode, SyncReport, SyncRequest, UserCollections, UserGameState, UserGameStatePatch,
+    DiscoveryTaskRequest, GameAnalysisReport, PublicConfig, SaveConfigRequest, SyncMode,
+    SyncReport, SyncRequest, UserCollections, UserGameState, UserGameStatePatch,
     ValidateLlmConfigRequest, ValidateSteamConfigRequest,
 };
 use crate::recommendation::{bucket_game, ReleaseBucket};
@@ -240,8 +240,12 @@ pub fn save_config(
     }
 
     if let Some(value) = request.onboarding_current_step {
-        db::set_config(&conn, "onboarding_current_step", &value.clamp(1, 5).to_string())
-            .map_err(to_command_error)?;
+        db::set_config(
+            &conn,
+            "onboarding_current_step",
+            &value.clamp(1, 5).to_string(),
+        )
+        .map_err(to_command_error)?;
     }
 
     if let Some(value) = request.onboarding_llm_provider_draft {
@@ -263,8 +267,7 @@ pub fn save_config(
     if llm_validation_invalidated {
         db::set_bool_config(&conn, "llm_config_validated", false).map_err(to_command_error)?;
     } else if let Some(validated) = request.llm_config_validated {
-        db::set_bool_config(&conn, "llm_config_validated", validated)
-            .map_err(to_command_error)?;
+        db::set_bool_config(&conn, "llm_config_validated", validated).map_err(to_command_error)?;
     }
 
     db::public_config(&conn).map_err(to_command_error)
@@ -1442,9 +1445,8 @@ mod tests {
         db::migrate(&conn).expect("migrate");
         db::set_config(&conn, "llm_api_key", "saved-llm-key").expect("seed saved key");
 
-        let missing_draft =
-            resolve_validation_api_key(&conn, None, "llm_api_key", "missing key")
-                .expect("resolve saved key without draft");
+        let missing_draft = resolve_validation_api_key(&conn, None, "llm_api_key", "missing key")
+            .expect("resolve saved key without draft");
         let empty_draft =
             resolve_validation_api_key(&conn, Some("   "), "llm_api_key", "missing key")
                 .expect("resolve saved key with empty draft");
@@ -1458,9 +1460,8 @@ mod tests {
         let conn = Connection::open_in_memory().expect("open in-memory db");
         db::migrate(&conn).expect("migrate");
 
-        let error =
-            resolve_validation_api_key(&conn, Some(""), "steam_api_key", "missing key")
-                .expect_err("missing key should fail");
+        let error = resolve_validation_api_key(&conn, Some(""), "steam_api_key", "missing key")
+            .expect_err("missing key should fail");
 
         assert_eq!(error, "missing key");
     }
@@ -2228,10 +2229,7 @@ mod tests {
         assert_eq!(response.source, AnalysisSource::Hybrid);
         assert!(response.llm_used);
         assert!(response.items.is_empty());
-        assert_eq!(
-            response.reply,
-            "我理解你的需求，但当前库内候选不足。"
-        );
+        assert_eq!(response.reply, "我理解你的需求，但当前库内候选不足。");
         assert_eq!(
             response.follow_up_question.as_deref(),
             Some("你愿意放宽题材或联机方式吗？")

@@ -7,7 +7,7 @@ use crate::scoring::confidence::score_confidence;
 use crate::scoring::content_depth::score_content_depth;
 use crate::scoring::discovery_value::{freshness_score, score_discovery_value};
 use crate::scoring::multiplayer_fit::score_multiplayer_fit;
-use crate::scoring::normalize::normalize_game_signals;
+use crate::scoring::normalize::{normalize_game_signals, normalize_game_signals_at};
 use crate::scoring::review_quality::score_review_quality;
 use crate::scoring::risk::{score_risks, RiskScore};
 
@@ -23,7 +23,16 @@ pub struct GameScoreV2 {
 }
 
 pub fn score_game_v2(game: &crate::models::GameCard) -> GameScoreV2 {
-    let signals = normalize_game_signals(game);
+    score_game_v2_from_signals(normalize_game_signals(game))
+}
+
+pub fn score_game_v2_at(game: &crate::models::GameCard, today_iso: &str) -> GameScoreV2 {
+    score_game_v2_from_signals(normalize_game_signals_at(game, today_iso))
+}
+
+fn score_game_v2_from_signals(
+    signals: crate::scoring::signals::CanonicalGameSignals,
+) -> GameScoreV2 {
     let review_quality = score_review_quality(&signals.review_stats);
     let multiplayer_fit = score_multiplayer_fit(&signals);
     let activity_health = score_activity_health(&signals.activity);

@@ -151,7 +151,19 @@ export interface PendingConfigResponse {
   restartRequired: boolean;
 }
 
+export interface PendingProviderSecretsRequest {
+  adminToken?: string | null;
+  llmApiKey?: string | null;
+  llmBaseUrl?: string | null;
+  llmModel?: string | null;
+  r2AccessKeyId?: string | null;
+  r2Bucket?: string | null;
+  r2SecretAccessKey?: string | null;
+  steamApiKey?: string | null;
+}
+
 export interface PendingServiceIdentityRequest {
+  publicBaseUrl?: string | null;
   serviceName: string;
 }
 
@@ -169,14 +181,39 @@ export interface PublicGameDetail {
 
 export interface PublicGameListItem {
   appid: number;
+  capsuleUrl: string;
+  currentPlayers?: number | null;
+  demoStatus: string;
+  discountPercent?: number | null;
+  isAdultContent: boolean;
+  isFree: boolean;
+  multiplayerModes: string[];
   name: string;
+  positiveReviewPct?: number | null;
+  priceText?: string | null;
   recommendationScore?: number | null;
+  releaseDate?: string | null;
+  releaseDateText: string;
+  releaseState: string;
+  reviewSnippets: PublicReviewSnippet[];
+  section: string;
+  shortDescription?: string | null;
+  storeScreenshotUrls: string[];
+  supportedLanguages: string[];
+  tags: string[];
+  totalReviews?: number | null;
   updatedAt: string;
 }
 
 export interface PublicGamesPage {
   items: PublicGameListItem[];
   page: PageMeta;
+}
+
+export interface PublicReviewSnippet {
+  playtimeHours?: number | null;
+  review: string;
+  votedUp: boolean;
 }
 
 export interface RestartRequest {

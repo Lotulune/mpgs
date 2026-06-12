@@ -21,6 +21,18 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -OutputTar mpgs-server-local.tar
 ```
 
+If Docker Hub access is unreliable, pre-pull equivalent base images from an accessible registry and pass them through without editing the Dockerfile:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File deploy/scripts/build-mpgs-server-image.ps1 `
+  -ImageTag mpgs-server:local `
+  -OutputTar mpgs-server-local.tar `
+  -RustBaseImage mirror.example/rust:1-bookworm `
+  -NodeBaseImage mirror.example/node:22-bookworm `
+  -DebianBaseImage mirror.example/debian:bookworm-slim
+```
+
 For an Arm VPS such as `ora_vps`, build a `linux/arm64` image locally or in CI before uploading:
 
 ```powershell
@@ -31,6 +43,8 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -UseBuildx `
   -Platform linux/arm64
 ```
+
+Tagged GitHub releases publish separate server image archives for `linux/amd64` and `linux/arm64`. Choose the archive that matches the deployment host before running the remote deploy script.
 
 Upload `mpgs-server-local.tar` plus the `deploy/` directory to the server, then load the image there:
 
@@ -163,6 +177,8 @@ curl http://127.0.0.1:4310/healthz
 curl http://127.0.0.1:4310/api/v1/service-info
 ```
 
+For Windows client testing against a service running in WSL Docker, use the local validation checklist in `docs/local-wsl-docker-validation.md`. That path documents the `127.0.0.1:4311` override used when Windows port `4310` is already occupied, plus the Windows-side client probes and browser checks.
+
 ## Start With Caddy
 
 Point DNS for `CADDY_DOMAIN` at the server first. Then run:
@@ -253,6 +269,43 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 The remote script uploads only compose files, Caddy config, example TOML files, and the image archive. It does not overwrite remote `deploy/.env`, active secrets, or active service config. The server-side steps are limited to `docker load`, `docker compose up -d`, `curl` probes, and `docker compose ps`.
 
 If the remote deploy user cannot access `/var/run/docker.sock` directly but has passwordless sudo for Docker, pass `-UseSudoDocker`. The remote commands then use `sudo -n docker load`, `sudo -n docker compose up -d`, probes, and `sudo -n docker compose ps`; they still do not compile or build anything on the VPS.
+
+## Production Validation
+
+After remote deployment succeeds, run the production validation checklist in `docs/deployment/production-validation.md`.
+
+At minimum, validate the public service surface:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File deploy/scripts/test-mpgs-production-readiness.ps1 `
+  -BaseUrl https://$env:CADDY_DOMAIN `
+  -RequirePublicCors
+```
+
+When the admin token is available on the validation machine, also validate admin diagnostics and keyless connection sharing:
+
+```powershell
+$env:MPGS_ADMIN_TOKEN = "<admin-token>"
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File deploy/scripts/test-mpgs-production-readiness.ps1 `
+  -BaseUrl https://$env:CADDY_DOMAIN `
+  -RequirePublicCors `
+  -RequireAdminDiagnostics `
+  -RequireSteamConfigured
+Remove-Item Env:\MPGS_ADMIN_TOKEN
+```
+
+After first-run setup and real admin discovery jobs have produced public catalog data, validate that the public catalog is not merely the local deterministic sample catalog:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File deploy/scripts/test-mpgs-public-catalog-live.ps1 `
+  -BaseUrl https://$env:CADDY_DOMAIN `
+  -MinGames 1
+```
+
+The live catalog script checks `/api/v1/discovery-home`, paginated games, detail hydration, rich display fields, and read-only public analysis. It rejects the deterministic sample-only catalog unless `-AllowSampleCatalog` is explicitly passed for local validation.
 
 ## Operational Boundary
 

@@ -131,6 +131,119 @@ version = "0.1.0"
 }
 
 #[test]
+fn server_config_promotes_pending_secret_patch_without_clearing_unmentioned_secrets() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let active_dir = temp_dir.path().join("active");
+    let pending_dir = temp_dir.path().join("pending");
+    fs::create_dir(&active_dir).unwrap();
+    fs::create_dir(&pending_dir).unwrap();
+    fs::write(
+        active_dir.join("service.toml"),
+        r#"
+bind_addr = "127.0.0.1:4310"
+
+[service_identity]
+instance_id = "018fb770-8998-7699-a6e4-b7b59f2f9c01"
+name = "MPGS Active"
+version = "0.1.0"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        active_dir.join("secrets.toml"),
+        r#"
+[database]
+url = "postgres://mpgs:secret@localhost:5432/mpgs"
+
+[admin]
+token_hash = "sha256:test-hash"
+session_secret = "test-session-secret"
+
+[steam]
+api_key = "active-steam-key"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        pending_dir.join("secrets.toml"),
+        r#"
+[llm]
+api_key = "pending-llm-key"
+model = "mpgs-test-model"
+"#,
+    )
+    .unwrap();
+
+    let config = ServerConfig::from_config_dir(temp_dir.path())
+        .expect("pending secret patch should be promoted before startup");
+
+    assert_eq!(config.steam.api_key.as_deref(), Some("active-steam-key"));
+    assert!(!pending_dir.join("secrets.toml").exists());
+    let active_secrets = fs::read_to_string(active_dir.join("secrets.toml")).unwrap();
+    assert!(active_secrets.contains("active-steam-key"));
+    assert!(active_secrets.contains("pending-llm-key"));
+    assert!(active_secrets.contains("mpgs-test-model"));
+}
+
+#[test]
+fn server_config_promotes_pending_admin_token_hash_and_session_secret() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let active_dir = temp_dir.path().join("active");
+    let pending_dir = temp_dir.path().join("pending");
+    fs::create_dir(&active_dir).unwrap();
+    fs::create_dir(&pending_dir).unwrap();
+    fs::write(
+        active_dir.join("service.toml"),
+        r#"
+bind_addr = "127.0.0.1:4310"
+
+[service_identity]
+instance_id = "018fb770-8998-7699-a6e4-b7b59f2f9c01"
+name = "MPGS Active"
+version = "0.1.0"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        active_dir.join("secrets.toml"),
+        r#"
+[database]
+url = "postgres://mpgs:secret@localhost:5432/mpgs"
+
+[admin]
+token_hash = "sha256:old-admin-hash"
+session_secret = "old-session-secret"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        pending_dir.join("secrets.toml"),
+        format!(
+            r#"
+[admin]
+token_hash = "{}"
+session_secret = "new-session-secret"
+"#,
+            hash_token("next-admin-token")
+        ),
+    )
+    .unwrap();
+
+    let config = ServerConfig::from_config_dir(temp_dir.path())
+        .expect("pending admin token patch should be promoted before startup");
+
+    let admin_auth = config.admin_auth.expect("admin auth should be configured");
+    assert!(admin_auth.verify_token("next-admin-token"));
+    assert!(!admin_auth.verify_token("old-admin-token"));
+    assert!(!pending_dir.join("secrets.toml").exists());
+    let active_secrets = fs::read_to_string(active_dir.join("secrets.toml")).unwrap();
+    assert!(active_secrets.contains(&hash_token("next-admin-token")));
+    assert!(active_secrets.contains("new-session-secret"));
+    assert!(!active_secrets.contains("next-admin-token"));
+    assert!(!active_secrets.contains("old-session-secret"));
+}
+
+#[test]
 fn server_config_rejects_invalid_pending_service_config_without_overwriting_active() {
     let temp_dir = tempfile::tempdir().unwrap();
     let active_dir = temp_dir.path().join("active");

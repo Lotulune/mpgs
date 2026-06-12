@@ -1,6 +1,8 @@
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
-use mpgs_server::public_catalog::{PublicGameAnalysis, PublicGameDetail, PublicGameListItem};
+use mpgs_server::public_catalog::{
+    PublicGameAnalysis, PublicGameDetail, PublicGameListItem, PublicReviewSnippet,
+};
 use mpgs_server::{
     build_router_with_state, AppState, DatabaseHealth, RateLimitConfig, RateLimiters,
     ServiceInfoConfig,
@@ -24,12 +26,7 @@ fn public_empty_app() -> axum::Router {
 }
 
 fn public_fixture_app() -> axum::Router {
-    let game = PublicGameListItem {
-        appid: 730,
-        name: "Counter-Strike 2".to_string(),
-        recommendation_score: Some(91.5),
-        updated_at: "2026-06-08 03:00:00+00".to_string(),
-    };
+    let game = fixture_game_item(730, "Counter-Strike 2");
     let detail = PublicGameDetail { game };
     let analysis = PublicGameAnalysis {
         appid: 730,
@@ -45,6 +42,38 @@ fn public_fixture_app() -> axum::Router {
             analysis: Some(analysis),
         },
     ))
+}
+
+fn fixture_game_item(appid: u32, name: &str) -> PublicGameListItem {
+    PublicGameListItem {
+        appid,
+        name: name.to_string(),
+        short_description: Some("Fixture public game detail.".to_string()),
+        section: "classic".to_string(),
+        release_date: Some("2026-06-08".to_string()),
+        release_date_text: "Jun 8, 2026".to_string(),
+        release_state: "released".to_string(),
+        demo_status: "released_with_demo".to_string(),
+        supported_languages: vec!["English".to_string()],
+        is_adult_content: false,
+        is_free: false,
+        price_text: Some("$19.99".to_string()),
+        discount_percent: Some(10),
+        positive_review_pct: Some(93.0),
+        total_reviews: Some(12_000),
+        current_players: Some(4_200),
+        recommendation_score: Some(91.5),
+        capsule_url: format!("https://cdn.example.test/{appid}.jpg"),
+        store_screenshot_urls: vec![format!("https://cdn.example.test/{appid}-1.jpg")],
+        tags: vec!["Co-op".to_string()],
+        multiplayer_modes: vec!["Online Co-op".to_string()],
+        review_snippets: vec![PublicReviewSnippet {
+            voted_up: true,
+            review: "Public fixture review.".to_string(),
+            playtime_hours: Some(12.0),
+        }],
+        updated_at: "2026-06-08 03:00:00+00".to_string(),
+    }
 }
 
 fn public_unavailable_app() -> axum::Router {

@@ -10,6 +10,8 @@ import type {
   AdminTaskSummary,
   AdminTasksResponse,
   ConfigStateResponse,
+  PendingProviderSecretsRequest,
+  PendingServiceIdentityRequest,
   ServiceConnectionFileResponse,
   SetupCompleteRequest,
 } from "../api/generated/mpgsServerApi";
@@ -27,6 +29,8 @@ import {
   getSetupStatus,
   loginAdmin,
   requestRestart,
+  writePendingProviderSecrets,
+  writePendingServiceIdentity,
 } from "./adminApi";
 import "./AdminApp.css";
 
@@ -55,6 +59,22 @@ const initialSetupForm: SetupCompleteRequest = {
   steamApiKey: "",
 };
 
+const initialProviderSecretsForm: PendingProviderSecretsRequest = {
+  adminToken: "",
+  steamApiKey: "",
+  llmApiKey: "",
+  llmBaseUrl: "",
+  llmModel: "",
+  r2AccessKeyId: "",
+  r2SecretAccessKey: "",
+  r2Bucket: "",
+};
+
+const initialServiceIdentityForm: PendingServiceIdentityRequest = {
+  serviceName: "",
+  publicBaseUrl: "",
+};
+
 export function AdminApp() {
   const [screen, setScreen] = useState<AdminScreen>({ type: "loading" });
   const [setupForm, setSetupForm] =
@@ -64,6 +84,16 @@ export function AdminApp() {
   const [isBusy, setIsBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [restartMessage, setRestartMessage] = useState<string | null>(null);
+  const [providerSecretsForm, setProviderSecretsForm] =
+    useState<PendingProviderSecretsRequest>(initialProviderSecretsForm);
+  const [providerSecretsMessage, setProviderSecretsMessage] = useState<
+    string | null
+  >(null);
+  const [serviceIdentityForm, setServiceIdentityForm] =
+    useState<PendingServiceIdentityRequest>(initialServiceIdentityForm);
+  const [serviceIdentityMessage, setServiceIdentityMessage] = useState<
+    string | null
+  >(null);
 
   useEffect(() => {
     let disposed = false;
@@ -180,6 +210,40 @@ export function AdminApp() {
     }
   }
 
+  async function handleProviderSecretsSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setIsBusy(true);
+    setError(null);
+    setProviderSecretsMessage(null);
+    try {
+      await writePendingProviderSecrets(providerSecretsForm);
+      setProviderSecretsForm(initialProviderSecretsForm);
+      setProviderSecretsMessage("密钥配置已保存，重启后生效。");
+      await refreshAdminData();
+    } catch (nextError) {
+      setError(errorMessage(nextError));
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function handleServiceIdentitySubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setIsBusy(true);
+    setError(null);
+    setServiceIdentityMessage(null);
+    try {
+      await writePendingServiceIdentity(serviceIdentityForm);
+      setServiceIdentityForm(initialServiceIdentityForm);
+      setServiceIdentityMessage("服务身份配置已保存，重启后生效。");
+      await refreshAdminData();
+    } catch (nextError) {
+      setError(errorMessage(nextError));
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
   return (
     <main className="admin-shell">
       <aside className="admin-sidebar">
@@ -232,10 +296,18 @@ export function AdminApp() {
             data={adminData}
             isBusy={isBusy}
             restartMessage={restartMessage}
+            serviceIdentityForm={serviceIdentityForm}
+            serviceIdentityMessage={serviceIdentityMessage}
+            providerSecretsForm={providerSecretsForm}
+            providerSecretsMessage={providerSecretsMessage}
             onReviewAction={async (appid, action) => {
               await applyAdminReviewAction(appid, { action });
               await refreshAdminData();
             }}
+            onServiceIdentityChange={setServiceIdentityForm}
+            onServiceIdentitySubmit={handleServiceIdentitySubmit}
+            onProviderSecretsChange={setProviderSecretsForm}
+            onProviderSecretsSubmit={handleProviderSecretsSubmit}
             onTaskCreate={async (appid) => {
               await createAdminTask({
                 taskType: "manual_appid_discovery",
@@ -365,17 +437,33 @@ function OverviewPanel({
   data,
   isBusy,
   restartMessage,
+  serviceIdentityForm,
+  serviceIdentityMessage,
+  providerSecretsForm,
+  providerSecretsMessage,
   onRefresh,
   onRestart,
   onReviewAction,
+  onServiceIdentityChange,
+  onServiceIdentitySubmit,
+  onProviderSecretsChange,
+  onProviderSecretsSubmit,
   onTaskCreate,
 }: {
   data: AdminData;
   isBusy: boolean;
   restartMessage: string | null;
+  serviceIdentityForm: PendingServiceIdentityRequest;
+  serviceIdentityMessage: string | null;
+  providerSecretsForm: PendingProviderSecretsRequest;
+  providerSecretsMessage: string | null;
   onRefresh: () => void;
   onRestart: () => void;
   onReviewAction: (appid: number, action: AdminReviewAction) => Promise<void>;
+  onServiceIdentityChange: (form: PendingServiceIdentityRequest) => void;
+  onServiceIdentitySubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onProviderSecretsChange: (form: PendingProviderSecretsRequest) => void;
+  onProviderSecretsSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onTaskCreate: (appid: number) => Promise<void>;
 }) {
   const [shareMessage, setShareMessage] = useState<string | null>(null);
@@ -525,6 +613,44 @@ function OverviewPanel({
         </div>
 
         <div className="admin-panel">
+          <h2>服务身份配置</h2>
+          <DefinitionList
+            items={[
+              ["当前名称", data.connectionShare.serviceName],
+              ["Service info", data.connectionShare.serviceInfoUrl],
+            ]}
+          />
+          <form className="admin-inline-form" onSubmit={onServiceIdentitySubmit}>
+            <AdminInput
+              label="服务名称更新"
+              value={serviceIdentityForm.serviceName}
+              onChange={(value) =>
+                onServiceIdentityChange({
+                  ...serviceIdentityForm,
+                  serviceName: value,
+                })
+              }
+            />
+            <AdminInput
+              label="公开服务地址更新"
+              value={serviceIdentityForm.publicBaseUrl ?? ""}
+              onChange={(value) =>
+                onServiceIdentityChange({
+                  ...serviceIdentityForm,
+                  publicBaseUrl: value,
+                })
+              }
+            />
+            <button className="admin-primary" disabled={isBusy} type="submit">
+              保存服务身份
+            </button>
+          </form>
+          {serviceIdentityMessage && (
+            <p className="admin-success block">{serviceIdentityMessage}</p>
+          )}
+        </div>
+
+        <div className="admin-panel">
           <h2>运行状态</h2>
           <DefinitionList
             items={[
@@ -538,6 +664,104 @@ function OverviewPanel({
             ]}
           />
           {restartMessage && <p className="admin-success block">{restartMessage}</p>}
+        </div>
+
+        <div className="admin-panel">
+          <h2>密钥配置</h2>
+          <form className="admin-secret-form" onSubmit={onProviderSecretsSubmit}>
+            <AdminInput
+              label="管理员令牌更新"
+              type="password"
+              value={providerSecretsForm.adminToken ?? ""}
+              onChange={(value) =>
+                onProviderSecretsChange({
+                  ...providerSecretsForm,
+                  adminToken: value,
+                })
+              }
+            />
+            <AdminInput
+              label="Steam API Key 更新"
+              type="password"
+              value={providerSecretsForm.steamApiKey ?? ""}
+              onChange={(value) =>
+                onProviderSecretsChange({
+                  ...providerSecretsForm,
+                  steamApiKey: value,
+                })
+              }
+            />
+            <AdminInput
+              label="LLM API Key 更新"
+              type="password"
+              value={providerSecretsForm.llmApiKey ?? ""}
+              onChange={(value) =>
+                onProviderSecretsChange({
+                  ...providerSecretsForm,
+                  llmApiKey: value,
+                })
+              }
+            />
+            <AdminInput
+              label="LLM Base URL"
+              value={providerSecretsForm.llmBaseUrl ?? ""}
+              onChange={(value) =>
+                onProviderSecretsChange({
+                  ...providerSecretsForm,
+                  llmBaseUrl: value,
+                })
+              }
+            />
+            <AdminInput
+              label="LLM Model"
+              value={providerSecretsForm.llmModel ?? ""}
+              onChange={(value) =>
+                onProviderSecretsChange({
+                  ...providerSecretsForm,
+                  llmModel: value,
+                })
+              }
+            />
+            <AdminInput
+              label="R2 Access Key ID"
+              value={providerSecretsForm.r2AccessKeyId ?? ""}
+              onChange={(value) =>
+                onProviderSecretsChange({
+                  ...providerSecretsForm,
+                  r2AccessKeyId: value,
+                })
+              }
+            />
+            <AdminInput
+              label="R2 Secret Access Key 更新"
+              type="password"
+              value={providerSecretsForm.r2SecretAccessKey ?? ""}
+              onChange={(value) =>
+                onProviderSecretsChange({
+                  ...providerSecretsForm,
+                  r2SecretAccessKey: value,
+                })
+              }
+            />
+            <AdminInput
+              label="R2 Bucket"
+              value={providerSecretsForm.r2Bucket ?? ""}
+              onChange={(value) =>
+                onProviderSecretsChange({
+                  ...providerSecretsForm,
+                  r2Bucket: value,
+                })
+              }
+            />
+            <div className="admin-actions admin-panel-actions">
+              <button className="admin-primary" disabled={isBusy} type="submit">
+                保存密钥配置
+              </button>
+            </div>
+          </form>
+          {providerSecretsMessage && (
+            <p className="admin-success block">{providerSecretsMessage}</p>
+          )}
         </div>
 
         <div className="admin-panel">

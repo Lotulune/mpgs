@@ -188,9 +188,7 @@ fn assistant_recommendation_uses_review_quality_when_intent_match_is_equal() {
     assert_eq!(response.items[0].game.appid, 30);
     assert!(response.items[0].match_score > response.items[1].match_score);
     assert!(response.items[0].match_score <= 100.0);
-    assert!(response.items[0]
-        .reason
-        .contains("好评"));
+    assert!(response.items[0].reason.contains("好评"));
 }
 
 #[test]

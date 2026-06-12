@@ -482,7 +482,10 @@ mod tests {
 
         assert!(anchor_consumed);
         assert_eq!(
-            remaining.into_iter().map(|item| item.appid).collect::<Vec<_>>(),
+            remaining
+                .into_iter()
+                .map(|item| item.appid)
+                .collect::<Vec<_>>(),
             vec![400]
         );
     }

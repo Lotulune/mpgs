@@ -17,10 +17,15 @@
         "height": 960,
         "minWidth": 1100,
         "minHeight": 760
-      }
-    ],
+    }
+  ],
     "security": {
-      "csp": null
+      "csp": {
+        "default-src": "'self' customprotocol: asset:",
+        "connect-src": "ipc: http://ipc.localhost https: http://localhost:* http://127.0.0.1:* http://[::1]:*",
+        "img-src": "'self' asset: http://asset.localhost https: data: blob:",
+        "style-src": "'self' 'unsafe-inline'"
+      }
     }
   },
   "bundle": {

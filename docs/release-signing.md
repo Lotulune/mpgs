@@ -1,19 +1,29 @@
-# Desktop Release and Signing Notes
+# Release and Signing Notes
 
 ## Current state
 
-The repository now has two GitHub Actions workflows:
+The repository has release and validation workflows:
 
 - `.github/workflows/ci.yml`
 - `.github/workflows/release.yml`
 
 The current release posture is intentionally staged:
 
-- Windows builds are generated without code signing.
-- macOS builds are generated with ad-hoc signing by setting `APPLE_SIGNING_IDENTITY=-` in GitHub Actions.
+- Windows client builds are generated without code signing.
+- The public discovery service is released as a Docker image archive plus Docker Compose deployment assets.
+- macOS and Linux desktop client packages are not published in the first split-architecture release.
 - The release workflow creates a draft prerelease when a `v*` tag is pushed.
 
-This gives the project a repeatable desktop build pipeline now, while keeping the upgrade path to formal signing and notarization clear.
+This gives the project a repeatable split-architecture release pipeline now, while keeping the upgrade path to formal signing and notarization clear.
+
+Before cutting a tag, run the local release readiness check:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File deploy/scripts/test-mpgs-release-readiness.ps1
+```
+
+This verifies version alignment, release workflow shape, deployment validation script packaging, and regenerated OpenAPI consistency.
 
 ## What the workflows do
 
@@ -21,10 +31,12 @@ This gives the project a repeatable desktop build pipeline now, while keeping th
 
 `ci.yml` runs on pull requests and on pushes to `main`.
 
-It validates the app on:
+It validates source compatibility on:
 
 - `windows-latest`
 - `macos-latest`
+
+The macOS validation job is not a release job and does not publish a macOS client package.
 
 Each run performs:
 
@@ -37,13 +49,16 @@ Each run performs:
 
 `release.yml` runs when a Git tag matching `v*` is pushed.
 
-It publishes desktop bundles for:
+It publishes:
 
-- Windows x64
-- macOS arm64
-- macOS x64
+- Windows Tauri user client installer
+- `mpgs-server` Docker image archives for `linux/amd64` and `linux/arm64`
+- Docker Compose deployment files
+- optional Caddy Compose profile
+- example service configuration files
+- generated OpenAPI JSON
 
-The macOS jobs use ad-hoc signing only. This is enough to produce signed binaries for Apple Silicon compatibility, but it is not equivalent to a trusted public macOS release.
+It intentionally does not publish macOS or Linux desktop client packages for the first split-architecture release.
 
 ## User-facing limitations right now
 
@@ -54,14 +69,6 @@ Because the Windows installer is not code-signed yet:
 - users downloading from the browser should expect a SmartScreen warning
 - Microsoft Store submission is not ready
 
-### macOS
-
-Because the macOS build is ad-hoc signed and not notarized:
-
-- users may need to open **System Settings > Privacy & Security** and explicitly allow the app
-- Gatekeeper trust is not established
-- this is suitable for internal testing and early distribution, not for a polished public release
-
 ## How to cut a release
 
 1. Bump the application version in:
@@ -70,8 +77,16 @@ Because the macOS build is ad-hoc signed and not notarized:
    - `src-tauri/tauri.conf.json`
 2. Commit the version change.
 3. Create and push a tag such as `v0.1.0`.
-4. Wait for `Release Desktop App` to finish in GitHub Actions.
+4. Wait for `Release Split Architecture` to finish in GitHub Actions.
 5. Open the generated draft prerelease and review the uploaded assets before publishing or sharing them.
+6. Verify the draft release contains the Windows client installer, `mpgs-server` `linux-amd64` and `linux-arm64` image archives, deployment assets archive, and OpenAPI JSON.
+7. Download the draft release assets locally and run:
+
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass `
+     -File deploy/scripts/test-mpgs-release-readiness.ps1 `
+     -ArtifactsDir .\release-assets
+   ```
 
 ## Future upgrade: formal macOS signing and notarization
 
@@ -94,9 +109,9 @@ In addition, the CI runner must have the signing certificate imported into the m
 Recommended next change when the Apple credentials exist:
 
 1. Store the `Developer ID Application` certificate securely for CI import.
-2. Add a macOS keychain import step before `tauri-action`.
+2. Add a macOS release job and keychain import step before `tauri-action`.
 3. Add notarization credentials as repository or environment secrets.
-4. Remove the ad-hoc `APPLE_SIGNING_IDENTITY=-` fallback.
+4. Confirm the release policy has been expanded beyond Windows client packages.
 
 ## Future upgrade: formal Windows signing
 
@@ -118,6 +133,7 @@ Typical follow-up change:
 
 This setup deliberately does **not** include:
 
+- macOS or Linux desktop client release packages
 - macOS notarization
 - Apple certificate import
 - Windows certificate import

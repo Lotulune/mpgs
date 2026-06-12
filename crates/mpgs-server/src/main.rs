@@ -1,18 +1,26 @@
 use anyhow::Result;
 use mpgs_server::{
-    build_router_with_state, db, steam::SteamHttpSnapshotSource, worker, AppState, AuditSink,
-    DatabaseHealth, StartupConfig,
+    build_router_with_state, db, sample_seed, steam::SteamHttpSnapshotSource, worker, AppState,
+    AuditSink, DatabaseHealth, StartupConfig,
 };
 use std::path::PathBuf;
 use std::time::Duration;
 
+const EXPORT_OPENAPI_ARG: &str = "--export-openapi";
+const SEED_SAMPLE_PUBLIC_CATALOG_ARG: &str = "--seed-sample-public-catalog";
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    if std::env::args().any(|arg| arg == "--export-openapi") {
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|arg| arg == EXPORT_OPENAPI_ARG) {
         println!(
             "{}",
             serde_json::to_string_pretty(&mpgs_server::build_openapi())?
         );
+        return Ok(());
+    }
+    if args.iter().any(|arg| arg == SEED_SAMPLE_PUBLIC_CATALOG_ARG) {
+        seed_sample_public_catalog_from_env().await?;
         return Ok(());
     }
 
@@ -79,6 +87,25 @@ async fn main() -> Result<()> {
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
 
     axum::serve(listener, app).await?;
+    Ok(())
+}
+
+async fn seed_sample_public_catalog_from_env() -> Result<()> {
+    if std::env::var(sample_seed::SAMPLE_PUBLIC_CATALOG_SEED_CONFIRM_ENV).as_deref() != Ok("1") {
+        anyhow::bail!(
+            "{SEED_SAMPLE_PUBLIC_CATALOG_ARG} requires {}=1",
+            sample_seed::SAMPLE_PUBLIC_CATALOG_SEED_CONFIRM_ENV
+        );
+    }
+
+    let startup_config = StartupConfig::from_env()?;
+    let StartupConfig::Ready(config) = startup_config else {
+        anyhow::bail!("{SEED_SAMPLE_PUBLIC_CATALOG_ARG} requires ready active service config");
+    };
+    let pool = db::connect_and_migrate(&config.database_url).await?;
+    let summary = sample_seed::seed_sample_public_catalog(&pool).await?;
+
+    println!("{}", serde_json::to_string_pretty(&summary)?);
     Ok(())
 }
 

@@ -1,6 +1,8 @@
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
-use mpgs_server::public_catalog::{AdminReviewFixture, PublicGameDetail, PublicGameListItem};
+use mpgs_server::public_catalog::{
+    AdminReviewFixture, PublicGameDetail, PublicGameListItem, PublicReviewSnippet,
+};
 use mpgs_server::{
     build_router_with_state, AdminAuthConfig, AppState, AuditSink, DatabaseHealth, RateLimitConfig,
     RateLimiters, ServiceInfoConfig,
@@ -132,8 +134,50 @@ async fn admin_session_sets_http_only_cookie_for_valid_token() {
         .unwrap();
 
     assert!(cookie.contains("mpgs_admin_session="));
+    assert!(cookie.contains("Max-Age="));
     assert!(cookie.contains("HttpOnly"));
     assert!(cookie.contains("SameSite=Strict"));
+}
+
+#[tokio::test]
+async fn admin_session_rejects_expired_signed_cookie() {
+    let admin_auth = AdminAuthConfig::new(
+        mpgs_server::admin::hash_admin_token("correct-admin-token"),
+        "test-admin-session-secret".to_string(),
+    );
+    let expired_payload = "v1:1";
+    let signature = {
+        use base64::Engine;
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+
+        let mut mac =
+            Hmac::<Sha256>::new_from_slice("test-admin-session-secret".as_bytes()).unwrap();
+        mac.update(expired_payload.as_bytes());
+        base64::engine::general_purpose::STANDARD_NO_PAD.encode(mac.finalize().into_bytes())
+    };
+    let app = build_router_with_state(AppState::new_with_admin_auth(
+        test_config().service_info(),
+        DatabaseHealth::HealthyForTest,
+        admin_auth,
+    ));
+
+    let response = request_json_from(
+        app,
+        Method::GET,
+        "/api/v1/admin/overview",
+        json!({}),
+        Some(&format!("mpgs_admin_session={expired_payload}.{signature}")),
+    )
+    .await;
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(value["error"]["code"], "admin_session_required");
 }
 
 #[tokio::test]
@@ -221,12 +265,7 @@ async fn admin_session_cookie_allows_overview_and_diagnostics() {
 
 #[tokio::test]
 async fn admin_overview_reports_public_catalog_fixture_counts() {
-    let game = PublicGameListItem {
-        appid: 730,
-        name: "Counter-Strike 2".to_string(),
-        recommendation_score: Some(91.5),
-        updated_at: "2026-06-08 03:00:00+00".to_string(),
-    };
+    let game = fixture_public_game(730, "Counter-Strike 2");
     let app = build_router_with_state(AppState::new_with_admin_auth(
         test_config()
             .service_info_with_catalog_status(mpgs_core::models::PublicCatalogStatus::Ready),
@@ -260,6 +299,38 @@ async fn admin_overview_reports_public_catalog_fixture_counts() {
     assert_eq!(overview["restartRequired"], false);
     assert_eq!(overview["connectionShareConfigured"], false);
     assert!(overview["latestAuditEvent"].is_null());
+}
+
+fn fixture_public_game(appid: u32, name: &str) -> PublicGameListItem {
+    PublicGameListItem {
+        appid,
+        name: name.to_string(),
+        short_description: Some("Admin fixture public game.".to_string()),
+        section: "classic".to_string(),
+        release_date: Some("2026-06-08".to_string()),
+        release_date_text: "Jun 8, 2026".to_string(),
+        release_state: "released".to_string(),
+        demo_status: "released_with_demo".to_string(),
+        supported_languages: vec!["English".to_string()],
+        is_adult_content: false,
+        is_free: false,
+        price_text: Some("$19.99".to_string()),
+        discount_percent: Some(10),
+        positive_review_pct: Some(93.0),
+        total_reviews: Some(12_000),
+        current_players: Some(4_200),
+        recommendation_score: Some(91.5),
+        capsule_url: format!("https://cdn.example.test/{appid}.jpg"),
+        store_screenshot_urls: vec![format!("https://cdn.example.test/{appid}-1.jpg")],
+        tags: vec!["Co-op".to_string()],
+        multiplayer_modes: vec!["Online Co-op".to_string()],
+        review_snippets: vec![PublicReviewSnippet {
+            voted_up: true,
+            review: "Admin fixture review.".to_string(),
+            playtime_hours: Some(12.0),
+        }],
+        updated_at: "2026-06-08 03:00:00+00".to_string(),
+    }
 }
 
 #[tokio::test]

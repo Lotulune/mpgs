@@ -5,7 +5,8 @@ use mpgs_core::steam_mapping::SteamGameSnapshot;
 use mpgs_server::admin::AdminReviewAction;
 use mpgs_server::admin::AdminTaskKind;
 use mpgs_server::{
-    build_router_with_state, db, worker, AppState, ConfigHealth, DatabaseHealth, ServiceInfoConfig,
+    build_router_with_state, db, sample_seed, worker, AppState, ConfigHealth, DatabaseHealth,
+    ServiceInfoConfig,
 };
 
 use anyhow::Result;
@@ -518,4 +519,94 @@ async fn manual_appid_worker_imports_public_catalog_candidate_from_claimed_task(
         .recent_tasks
         .iter()
         .any(|item| item.id == task.id && item.status == "completed"));
+}
+
+#[tokio::test]
+async fn sample_seed_populates_public_catalog_reads_in_postgres() {
+    let Ok(database_url) = std::env::var("MPGS_TEST_DATABASE_URL") else {
+        return;
+    };
+
+    let pool = db::connect_and_migrate(&database_url)
+        .await
+        .expect("connect to Postgres and run migrations");
+    let sample_appids: Vec<u32> = sample_seed::sample_public_catalog_games()
+        .expect("sample games should build")
+        .into_iter()
+        .map(|sample| sample.game.appid)
+        .collect();
+
+    for appid in &sample_appids {
+        sqlx_core::query::query::<sqlx_postgres::Postgres>(
+            "DELETE FROM public_catalog.games WHERE appid = $1",
+        )
+        .bind(*appid as i32)
+        .execute(&pool)
+        .await
+        .expect("clear existing sample game");
+    }
+
+    let summary = sample_seed::seed_sample_public_catalog(&pool)
+        .await
+        .expect("seed sample public catalog");
+    let status = db::public_catalog_status(&pool)
+        .await
+        .expect("read public catalog status");
+    let home = db::discovery_home(&pool)
+        .await
+        .expect("read seeded discovery home");
+    let page = db::public_games_page(&pool, 10, 0)
+        .await
+        .expect("read seeded games page");
+    let first_appid = *summary
+        .appids
+        .first()
+        .expect("sample seed should report appids");
+    let detail = db::public_game_detail(&pool, first_appid)
+        .await
+        .expect("read seeded game detail")
+        .expect("seeded game detail should exist");
+    let analysis = db::public_game_analysis(&pool, first_appid)
+        .await
+        .expect("read seeded game analysis")
+        .expect("seeded game analysis should exist");
+
+    assert_eq!(status, PublicCatalogStatus::Ready);
+    assert_eq!(summary.public_games, sample_appids.len());
+    assert!(home.total_games >= summary.public_games as i64);
+    assert!(!home.sections.newly_published.is_empty());
+    assert!(!home.sections.high_confidence.is_empty());
+    assert!(page.items.iter().any(|game| game.appid == first_appid));
+    assert_eq!(detail.game.appid, first_appid);
+    assert_eq!(
+        detail.game.short_description.as_deref(),
+        Some("A compact four-player harbor defense game built around quick co-op sessions.")
+    );
+    assert_eq!(detail.game.release_state, "released");
+    assert_eq!(detail.game.demo_status, "released_with_demo");
+    assert!(detail
+        .game
+        .capsule_url
+        .starts_with("data:image/svg+xml;base64,"));
+    assert!(!detail.game.store_screenshot_urls.is_empty());
+    assert!(detail.game.tags.iter().any(|tag| tag == "Co-op"));
+    assert!(detail
+        .game
+        .multiplayer_modes
+        .iter()
+        .any(|mode| mode == "Online Co-op"));
+    assert_eq!(detail.game.positive_review_pct, Some(94.0));
+    assert_eq!(detail.game.total_reviews, Some(8_400));
+    assert_eq!(detail.game.current_players, Some(2_300));
+    assert!(detail
+        .game
+        .review_snippets
+        .iter()
+        .any(|snippet| snippet.review.contains("weeknight squad")));
+    assert_eq!(analysis.appid, first_appid);
+    assert!(!analysis.report["overview"]
+        .as_str()
+        .unwrap_or("")
+        .trim()
+        .is_empty());
 }

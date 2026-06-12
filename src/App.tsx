@@ -16,6 +16,7 @@ import {
 import {
   assessGameWithAi,
   getDashboard,
+  getGameDetail,
   getDiscoveryTaskSnapshot,
   isTauriRuntime,
   recommendGamesWithAi,
@@ -48,7 +49,13 @@ import {
   type SettingsExpandedState,
 } from "./pages/settings/SettingsPage";
 import { validateServiceConnectionFileText } from "./domain/serviceConnection";
-import { saveCurrentServiceConnection } from "./domain/serviceConnectionStorage";
+import {
+  clearCurrentServiceConnection,
+  getCurrentServiceConnection,
+  saveCurrentServiceConnection,
+} from "./domain/serviceConnectionStorage";
+import { ServiceConnectionPage } from "./pages/serviceConnection/ServiceConnectionPage";
+import type { ServiceAddressValidationResult } from "./types";
 import { UpcomingPage } from "./pages/upcoming/UpcomingPage";
 import type { LibraryFilters, ViewId, LibrarySortMode } from "./pages/types";
 import type {
@@ -85,7 +92,8 @@ type AiConversation = {
 
 type AppMode =
   | { type: "main" }
-  | { type: "onboarding"; source: "auto" | "settings" };
+  | { type: "onboarding"; source: "auto" | "settings" }
+  | { type: "serviceConnection" };
 
 function createAiConversation(id: number): AiConversation {
   return {
@@ -205,6 +213,12 @@ function App() {
   const isPublicServiceMode = dashboard?.stats.sourceKind === "public_service";
 
   useEffect(() => {
+    if (isTauriRuntime() && !getCurrentServiceConnection()) {
+      setAppMode({ type: "serviceConnection" });
+      setStatus("请先连接公共发现服务。");
+      return;
+    }
+
     void loadDashboard();
   }, []);
 
@@ -597,12 +611,35 @@ function App() {
         validatedAt: new Date().toISOString(),
       });
       setStatus(`已连接公共发现服务：${result.info.serviceName}。`);
+      setAppMode({ type: "main" });
       await loadDashboard(false);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
     } finally {
       setIsBusy(false);
     }
+  }
+
+  async function handleConnectService(result: ServiceAddressValidationResult) {
+    if (!result.success || !result.info || !result.baseUrl) {
+      return;
+    }
+
+    saveCurrentServiceConnection({
+      baseUrl: result.baseUrl,
+      info: result.info,
+      validatedAt: new Date().toISOString(),
+    });
+    setStatus(`已连接公共发现服务：${result.info.serviceName}。`);
+    setAppMode({ type: "main" });
+    await loadDashboard(false);
+  }
+
+  async function handleDisconnectService() {
+    clearCurrentServiceConnection();
+    setDashboard(null);
+    setAppMode({ type: "serviceConnection" });
+    setStatus("已断开服务连接。");
   }
 
   async function handleExitOnboarding(target: "app" | "settings") {
@@ -718,7 +755,20 @@ function App() {
     detailReturnViewRef.current = activeView;
     setActiveView("detail");
     scrollCurrentViewToTop();
-    void handleUserState(game.appid, { viewed: true }, `已打开《${game.name}》详情。`);
+    void (async () => {
+      await handleUserState(game.appid, { viewed: true }, `已打开《${game.name}》详情。`);
+      if (!isPublicServiceMode) {
+        return;
+      }
+      try {
+        const detail = await getGameDetail(game);
+        setSelectedGame((current) =>
+          current?.appid === detail.appid ? detail : current,
+        );
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : String(error));
+      }
+    })();
   }
 
   function returnFromDetail() {
@@ -850,6 +900,17 @@ function App() {
     aiConversations[0] ??
     createAiConversation(1);
 
+  if (appMode.type === "serviceConnection") {
+    return (
+      <ErrorBoundary>
+        <ServiceConnectionPage
+          onConnected={(result) => void handleConnectService(result)}
+          onImportFile={(fileText) => void handleImportServiceConnectionFile(fileText)}
+        />
+      </ErrorBoundary>
+    );
+  }
+
   if (!dashboard) {
     return (
       <main className="loading-shell">
@@ -879,7 +940,12 @@ function App() {
   return (
     <ErrorBoundary>
       <main className="coplay-shell">
-        <Sidebar activeView={activeView} onNavigate={setActiveView} />
+        <Sidebar
+          activeView={activeView}
+          onNavigate={setActiveView}
+          isPublicServiceMode={isPublicServiceMode}
+          dataSource={dashboard.stats.dataSource}
+        />
 
         <section
           className="page-surface"
@@ -1009,6 +1075,7 @@ function App() {
             onStartClassicDiscovery={handleStartClassicDiscovery}
             onRefreshDashboard={refreshDashboard}
             onImportServiceConnectionFile={handleImportServiceConnectionFile}
+            onDisconnectService={handleDisconnectService}
             onSave={handleSaveConfig}
             onStatus={setStatus}
             onSync={handleSync}
@@ -1185,18 +1252,30 @@ function isTerminalDiscoveryStatus(status: DiscoveryRunStatus) {
 function Sidebar({
   activeView,
   onNavigate,
+  isPublicServiceMode,
+  dataSource,
 }: {
   activeView: ViewId;
   onNavigate: (view: ViewId) => void;
+  isPublicServiceMode: boolean;
+  dataSource: string;
 }) {
   return (
-    <aside className="coplay-sidebar">
+    <aside aria-label="主侧边栏" className="coplay-sidebar">
       <div className="brand-row">
         <LogoMark />
         <div>
           <strong>Co-Play</strong>
           <span>发现好玩的多人游戏</span>
         </div>
+      </div>
+
+      <div
+        aria-label="当前数据源"
+        className={`source-status-card ${isPublicServiceMode ? "public" : "local"}`}
+      >
+        <span>{isPublicServiceMode ? "已连接" : "本地模式"}</span>
+        <strong>{dataSource}</strong>
       </div>
 
       <nav className="sidebar-nav" aria-label="主导航">
@@ -1213,14 +1292,22 @@ function Sidebar({
       <div className="nav-divider" />
 
       <nav className="sidebar-nav" aria-label="工具导航">
-        {navUtility.map((item) => (
-          <NavButton
-            active={activeView === item.id}
-            item={item}
-            key={item.id}
-            onClick={() => onNavigate(item.id)}
-          />
-        ))}
+        {navUtility
+          .filter((item) => {
+            // 公共服务模式下不显示 AI 助手
+            if (isPublicServiceMode && item.id === "ai") {
+              return false;
+            }
+            return true;
+          })
+          .map((item) => (
+            <NavButton
+              active={activeView === item.id}
+              item={item}
+              key={item.id}
+              onClick={() => onNavigate(item.id)}
+            />
+          ))}
       </nav>
 
       <div className="invite-card">

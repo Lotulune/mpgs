@@ -3,9 +3,11 @@ use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
+use time::{Duration, OffsetDateTime};
 use utoipa::ToSchema;
 
 const ADMIN_SESSION_COOKIE: &str = "mpgs_admin_session";
+const ADMIN_SESSION_TTL_SECONDS: i64 = 8 * 60 * 60;
 
 #[derive(Debug, Clone)]
 pub struct AdminAuthConfig {
@@ -222,9 +224,12 @@ impl AdminAuthConfig {
     }
 
     pub fn session_cookie(&self) -> String {
-        let payload = "v1";
-        let signature = sign_session(payload, &self.session_secret);
-        format!("{ADMIN_SESSION_COOKIE}={payload}.{signature}; Path=/; HttpOnly; SameSite=Strict")
+        let expires_at = OffsetDateTime::now_utc() + Duration::seconds(ADMIN_SESSION_TTL_SECONDS);
+        let payload = format!("v1:{expires_at}", expires_at = expires_at.unix_timestamp());
+        let signature = sign_session(&payload, &self.session_secret);
+        format!(
+            "{ADMIN_SESSION_COOKIE}={payload}.{signature}; Path=/; Max-Age={ADMIN_SESSION_TTL_SECONDS}; HttpOnly; SameSite=Strict"
+        )
     }
 
     pub fn verify_cookie_header(&self, cookie_header: Option<&str>) -> bool {
@@ -239,6 +244,10 @@ impl AdminAuthConfig {
             let Some((payload, signature)) = value.split_once('.') else {
                 return false;
             };
+
+            if !session_payload_is_valid(payload) {
+                return false;
+            }
 
             constant_time_eq(signature, &sign_session(payload, &self.session_secret))
         })
@@ -270,4 +279,15 @@ fn sign_session(payload: &str, secret: &str) -> String {
 
 fn constant_time_eq(left: &str, right: &str) -> bool {
     left.as_bytes().ct_eq(right.as_bytes()).into()
+}
+
+fn session_payload_is_valid(payload: &str) -> bool {
+    let Some(expires_at) = payload.strip_prefix("v1:") else {
+        return false;
+    };
+    let Ok(expires_at) = expires_at.parse::<i64>() else {
+        return false;
+    };
+
+    OffsetDateTime::now_utc().unix_timestamp() <= expires_at
 }

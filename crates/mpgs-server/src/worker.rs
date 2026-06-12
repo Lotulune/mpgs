@@ -2,6 +2,7 @@ use crate::admin::AdminTaskKind;
 use crate::db::{self, ClaimedTask, TaskFailureInput};
 use anyhow::{anyhow, Context, Result};
 use mpgs_core::analysis::build_rule_report;
+use mpgs_core::models::GameAnalysisReport;
 use mpgs_core::steam_mapping::{build_discovered_game_card, SteamAppListItem, SteamGameSnapshot};
 use sqlx_postgres::PgPool;
 use std::future::Future;
@@ -117,10 +118,11 @@ async fn process_manual_appid(
         name: format!("Steam App {appid}"),
     };
     let today = mpgs_core::recommendation::today_iso_utc();
-    let game = build_discovered_game_card(&app, snapshot, &today)
+    let mut game = build_discovered_game_card(&app, snapshot, &today)
         .ok_or_else(|| anyhow!("Steam snapshot for appid {appid} did not pass discovery rules"))?;
     let generated_at = format!("{}T00:00:00Z", mpgs_core::recommendation::today_iso_utc());
     let report = build_rule_report(&game, generated_at)?;
+    game.recommendation_score = catalog_recommendation_score(game.recommendation_score, &report);
     let (review_status, visibility) = review_state_for_score(game.recommendation_score);
 
     db::upsert_public_catalog_game(pool, &game, &report, review_status, visibility)
@@ -144,6 +146,17 @@ fn review_state_for_score(recommendation_score: f64) -> (&'static str, &'static 
         ("needs_review", "hidden")
     } else {
         ("rejected", "hidden")
+    }
+}
+
+fn catalog_recommendation_score(
+    legacy_recommendation_score: f64,
+    report: &GameAnalysisReport,
+) -> f64 {
+    if report.recommendation_score > 0.0 {
+        report.recommendation_score
+    } else {
+        legacy_recommendation_score
     }
 }
 
@@ -175,11 +188,42 @@ async fn fail_claimed_task(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mpgs_core::models::{
+        AnalysisConfidence, AnalysisSource, GameAnalysisReport, RecommendationPool,
+    };
 
     #[test]
     fn high_score_candidates_become_public_and_medium_score_candidates_need_review() {
         assert_eq!(review_state_for_score(82.0), ("accepted", "public"));
         assert_eq!(review_state_for_score(70.0), ("needs_review", "hidden"));
         assert_eq!(review_state_for_score(54.9), ("rejected", "hidden"));
+    }
+
+    #[test]
+    fn v2_report_score_drives_catalog_review_state() {
+        let report = GameAnalysisReport {
+            appid: 548430,
+            generated_at: "2026-06-12T00:00:00Z".to_string(),
+            source: AnalysisSource::Rule,
+            confidence: AnalysisConfidence::Medium,
+            score_version: "v2".to_string(),
+            quality_score: 66.6,
+            recommendation_score: 60.1,
+            confidence_score: 0.68,
+            pool_type: RecommendationPool::Evergreen,
+            risk_flags: Vec::new(),
+            overall_score: 60.1,
+            overview: String::new(),
+            dimension_scores: Vec::new(),
+            strengths: Vec::new(),
+            risks: Vec::new(),
+            evidence: Vec::new(),
+            review_evidence: Vec::new(),
+        };
+
+        let catalog_score = catalog_recommendation_score(46.7, &report);
+
+        assert_eq!(catalog_score, 60.1);
+        assert_eq!(review_state_for_score(catalog_score), ("needs_review", "hidden"));
     }
 }

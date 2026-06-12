@@ -16,6 +16,8 @@ target/
 vite-dev*.log
 tmp_store_results.html
 =
+.tmp-gh-artifacts-*/
+test-results/
 
 # Editor directories and files
 .vscode/*

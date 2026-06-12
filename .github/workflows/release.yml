@@ -1,4 +1,4 @@
-name: Release Desktop App
+name: Release Split Architecture
 
 on:
   push:
@@ -10,27 +10,12 @@ permissions:
 
 env:
   NODE_VERSION: 20
+  SERVER_IMAGE: mpgs-server
 
 jobs:
-  release:
-    name: Bundle (${{ matrix.label }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            label: windows-x64
-            args: ""
-            apple_signing_identity: ""
-          - os: macos-latest
-            label: macos-arm64
-            args: --target aarch64-apple-darwin
-            apple_signing_identity: "-"
-          - os: macos-latest
-            label: macos-x64
-            args: --target x86_64-apple-darwin
-            apple_signing_identity: "-"
+  windows-client:
+    name: Windows client installer
+    runs-on: windows-latest
 
     steps:
       - name: Check out repository
@@ -42,15 +27,8 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
-      - name: Set up Rust for Windows
-        if: runner.os == 'Windows'
+      - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Set up Rust for macOS targets
-        if: runner.os == 'macOS'
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - name: Cache Rust build outputs
         uses: swatinem/rust-cache@v2
@@ -61,21 +39,119 @@ jobs:
       - name: Install JavaScript dependencies
         run: npm ci
 
-      - name: Build and upload desktop bundles
+      - name: Build and upload Windows client bundle
         uses: tauri-apps/tauri-action@v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          APPLE_SIGNING_IDENTITY: ${{ matrix.apple_signing_identity }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: MPGS ${{ github.ref_name }}
           releaseBody: |
-            Automated desktop build for MPGS.
+            MPGS split-architecture prerelease.
+
+            Release artifacts:
+            - Windows Tauri user client installer
+            - mpgs-server Docker image archive
+            - Docker Compose deployment files and optional Caddy profile
+            - example service configuration files
+            - generated OpenAPI JSON
 
             Current release posture:
             - Windows artifacts are not code-signed yet, so SmartScreen warnings are expected.
-            - macOS artifacts are ad-hoc signed only, so users may need to allow the app in Privacy & Security before opening it.
-            - Apple notarization and formal Windows trust signing are not enabled in this repository yet.
+            - macOS and Linux desktop client packages are intentionally not published in this first split-architecture release.
+            - The public discovery service is distributed as a Docker image archive plus Compose assets.
           releaseDraft: true
           prerelease: true
-          args: ${{ matrix.args }}
+
+  server-artifacts:
+    name: Server image and deployment artifacts (${{ matrix.label }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: linux-amd64
+            platform: linux/amd64
+          - label: linux-arm64
+            platform: linux/arm64
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Cache Rust build outputs
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+
+      - name: Install JavaScript dependencies
+        run: npm ci
+
+      - name: Verify generated OpenAPI
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run -p mpgs-server -- --export-openapi > /tmp/mpgs-server.openapi.json
+          diff -u docs/openapi/mpgs-server.openapi.json /tmp/mpgs-server.openapi.json
+
+      - name: Build mpgs-server Docker image
+        run: |
+          docker buildx build \
+            -f Dockerfile.mpgs-server \
+            --platform "${{ matrix.platform }}" \
+            --load \
+            -t "${SERVER_IMAGE}:${GITHUB_REF_NAME}-${{ matrix.label }}" \
+            .
+
+      - name: Save mpgs-server Docker image
+        run: docker save "${SERVER_IMAGE}:${GITHUB_REF_NAME}-${{ matrix.label }}" -o mpgs-server-${GITHUB_REF_NAME}-${{ matrix.label }}.tar
+
+      - name: Package deployment assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          mkdir -p release-assets/deploy/config/active release-assets/deploy/scripts
+          cp deploy/compose.yml release-assets/deploy/compose.yml
+          cp deploy/compose.caddy.yml release-assets/deploy/compose.caddy.yml
+          cp deploy/Caddyfile release-assets/deploy/Caddyfile
+          cp deploy/mpgs-server.env.example release-assets/deploy/mpgs-server.env.example
+          cp deploy/config/setup.toml.example release-assets/deploy/config/setup.toml.example
+          cp deploy/config/active/service.toml release-assets/deploy/config/active/service.toml
+          cp deploy/config/active/secrets.toml.example release-assets/deploy/config/active/secrets.toml.example
+          cp deploy/scripts/build-mpgs-server-image.ps1 release-assets/deploy/scripts/build-mpgs-server-image.ps1
+          cp deploy/scripts/deploy-mpgs-server-remote.ps1 release-assets/deploy/scripts/deploy-mpgs-server-remote.ps1
+          cp deploy/scripts/test-mpgs-server-remote-preflight.ps1 release-assets/deploy/scripts/test-mpgs-server-remote-preflight.ps1
+          cp deploy/scripts/test-mpgs-public-catalog-live.ps1 release-assets/deploy/scripts/test-mpgs-public-catalog-live.ps1
+          cp deploy/scripts/test-mpgs-production-readiness.ps1 release-assets/deploy/scripts/test-mpgs-production-readiness.ps1
+          cp deploy/scripts/test-mpgs-release-readiness.ps1 release-assets/deploy/scripts/test-mpgs-release-readiness.ps1
+          mkdir -p release-assets/docs/openapi
+          cp docs/openapi/mpgs-server.openapi.json release-assets/docs/openapi/mpgs-server.openapi.json
+          tar -czf "mpgs-server-deploy-${GITHUB_REF_NAME}.tar.gz" -C release-assets .
+
+      - name: Upload server release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          draft: true
+          prerelease: true
+          files: |
+            mpgs-server-${{ github.ref_name }}-${{ matrix.label }}.tar
+            mpgs-server-deploy-${{ github.ref_name }}.tar.gz
+            docs/openapi/mpgs-server.openapi.json

@@ -222,7 +222,10 @@ async fn run_ai_batch_refresh_worker(app: AppHandle, concurrency: u8) -> Result<
             .lock()
             .map_err(|err| anyhow::anyhow!(err.to_string()))?;
         if classic_running {
-            db::list_ai_analysis_queue_ready_jobs_by_source(&conn, AiAnalysisQueueSource::NewRelease)?
+            db::list_ai_analysis_queue_ready_jobs_by_source(
+                &conn,
+                AiAnalysisQueueSource::NewRelease,
+            )?
         } else {
             db::list_ai_analysis_queue_ready_jobs(&conn)?
         }

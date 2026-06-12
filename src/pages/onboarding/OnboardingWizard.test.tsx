@@ -81,6 +81,66 @@ describe("OnboardingWizard", () => {
     expect(screen.queryByRole("heading", { level: 1, name: "欢迎使用 Co-Play" })).not.toBeInTheDocument();
   });
 
+  it("keeps the Steam key step selected after an auto onboarding config refresh", async () => {
+    const { rerender } = render(
+      <OnboardingWizard
+        config={{ ...baseConfig, steamApiKeyConfigured: false, onboardingCurrentStep: 2 }}
+        source="auto"
+        onExit={() => {}}
+      />,
+    );
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { level: 1, name: "准备 Steam Web API" })).toBeInTheDocument();
+    });
+
+    rerender(
+      <OnboardingWizard
+        config={{ ...baseConfig, steamApiKeyConfigured: false, onboardingCurrentStep: 3 }}
+        source="auto"
+        onExit={() => {}}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { level: 1, name: "填写 Steam Key" })).toBeInTheDocument();
+    });
+    expect(screen.queryByRole("heading", { level: 1, name: "准备 Steam Web API" })).not.toBeInTheDocument();
+  });
+
+  it("keeps the AI key step selected after an auto onboarding config refresh", async () => {
+    const aiSetupConfig = {
+      ...baseConfig,
+      steamApiKeyConfigured: true,
+      steamApiKeyValidated: true,
+      llmApiKeyConfigured: false,
+      llmConfigValidated: false,
+      onboardingCurrentStep: 4,
+    };
+    const { rerender } = render(
+      <OnboardingWizard
+        config={aiSetupConfig}
+        source="auto"
+        onExit={() => {}}
+      />,
+    );
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { level: 1, name: "准备 DeepSeek API" })).toBeInTheDocument();
+    });
+
+    rerender(
+      <OnboardingWizard
+        config={{ ...aiSetupConfig, onboardingCurrentStep: 5 }}
+        source="auto"
+        onExit={() => {}}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { level: 1, name: "填写 DeepSeek Key 并完成配置" })).toBeInTheDocument();
+    });
+    expect(screen.queryByRole("heading", { level: 1, name: "准备 AI 提供方" })).not.toBeInTheDocument();
+  });
+
   it("tests the Steam API key from the onboarding form", async () => {
     render(
       <OnboardingWizard

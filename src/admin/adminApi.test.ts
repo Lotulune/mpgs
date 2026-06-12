@@ -13,6 +13,8 @@ import {
   getSetupStatus,
   loginAdmin,
   requestRestart,
+  writePendingProviderSecrets,
+  writePendingServiceIdentity,
 } from "./adminApi";
 
 describe("admin API client", () => {
@@ -305,6 +307,94 @@ describe("admin API client", () => {
       },
       method: "POST",
     });
+  });
+
+  it("writes provider secret patches through the authenticated same-origin API", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        jsonResponse({
+          pendingConfigVersion: "sha256:pending-secrets",
+          restartRequired: true,
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      writePendingProviderSecrets({
+        adminToken: "next-admin-token",
+        steamApiKey: "steam-key",
+        llmApiKey: "llm-key",
+        llmBaseUrl: "https://llm.example.test/v1",
+        llmModel: "mpgs-model",
+        r2AccessKeyId: "r2-access",
+        r2SecretAccessKey: "r2-secret",
+        r2Bucket: "mpgs-images",
+      }),
+    ).resolves.toEqual({
+      pendingConfigVersion: "sha256:pending-secrets",
+      restartRequired: true,
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/admin/config/pending/provider-secrets",
+      {
+        body: JSON.stringify({
+          adminToken: "next-admin-token",
+          steamApiKey: "steam-key",
+          llmApiKey: "llm-key",
+          llmBaseUrl: "https://llm.example.test/v1",
+          llmModel: "mpgs-model",
+          r2AccessKeyId: "r2-access",
+          r2SecretAccessKey: "r2-secret",
+          r2Bucket: "mpgs-images",
+        }),
+        credentials: "same-origin",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        method: "POST",
+      },
+    );
+  });
+
+  it("writes pending service identity through the authenticated same-origin API", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        jsonResponse({
+          pendingConfigVersion: "sha256:pending-service",
+          restartRequired: true,
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      writePendingServiceIdentity({
+        serviceName: "MPGS Friends Service",
+        publicBaseUrl: "https://friends.example.test",
+      }),
+    ).resolves.toEqual({
+      pendingConfigVersion: "sha256:pending-service",
+      restartRequired: true,
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/admin/config/pending/service-identity",
+      {
+        body: JSON.stringify({
+          serviceName: "MPGS Friends Service",
+          publicBaseUrl: "https://friends.example.test",
+        }),
+        credentials: "same-origin",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        method: "POST",
+      },
+    );
   });
 });
 

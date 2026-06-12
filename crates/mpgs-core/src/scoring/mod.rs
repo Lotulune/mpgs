@@ -10,4 +10,4 @@ pub mod review_quality;
 pub mod risk;
 pub mod signals;
 
-pub use aggregate::{score_game_v2, GameScoreV2};
+pub use aggregate::{score_game_v2, score_game_v2_at, GameScoreV2};

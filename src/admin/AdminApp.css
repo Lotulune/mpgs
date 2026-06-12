@@ -215,6 +215,16 @@ p {
   margin-bottom: 14px;
 }
 
+.admin-secret-form {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.admin-secret-form .admin-actions {
+  grid-column: 1 / -1;
+}
+
 .admin-panel-actions {
   margin-top: 16px;
 }
@@ -485,7 +495,8 @@ p {
 
   .admin-metrics,
   .admin-grid,
-  .admin-form-grid {
+  .admin-form-grid,
+  .admin-secret-form {
     grid-template-columns: 1fr;
   }
 }

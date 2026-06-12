@@ -8,8 +8,35 @@ use utoipa::{IntoParams, ToSchema};
 pub struct PublicGameListItem {
     pub appid: u32,
     pub name: String,
+    pub short_description: Option<String>,
+    pub section: String,
+    pub release_date: Option<String>,
+    pub release_date_text: String,
+    pub release_state: String,
+    pub demo_status: String,
+    pub supported_languages: Vec<String>,
+    pub is_adult_content: bool,
+    pub is_free: bool,
+    pub price_text: Option<String>,
+    pub discount_percent: Option<u32>,
+    pub positive_review_pct: Option<f64>,
+    pub total_reviews: Option<u32>,
+    pub current_players: Option<u32>,
     pub recommendation_score: Option<f64>,
+    pub capsule_url: String,
+    pub store_screenshot_urls: Vec<String>,
+    pub tags: Vec<String>,
+    pub multiplayer_modes: Vec<String>,
+    pub review_snippets: Vec<PublicReviewSnippet>,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicReviewSnippet {
+    pub voted_up: bool,
+    pub review: String,
+    pub playtime_hours: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema, PartialEq)]

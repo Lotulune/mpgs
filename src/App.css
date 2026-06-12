@@ -108,6 +108,40 @@ p {
   margin-top: 2px;
 }
 
+.source-status-card {
+  background: #fffaf0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  display: grid;
+  gap: 6px;
+  margin: -8px 4px 0;
+  padding: 12px;
+}
+
+.source-status-card span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.source-status-card strong {
+  color: #2f281f;
+  font-size: 13px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.source-status-card.public {
+  background: #eef8f4;
+  border-color: #b8dfcf;
+}
+
+.source-status-card.local {
+  background: #fff7e8;
+}
+
 .logo-mark {
   display: grid;
   grid-template-columns: repeat(2, 18px);
@@ -1281,6 +1315,22 @@ p {
   gap: 6px;
   min-width: 0;
   padding: 10px 12px;
+}
+
+.settings-provider-list .service-history-item {
+  align-items: center;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.service-history-main {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.service-history-main strong {
+  color: #352b22;
+  font-size: 14px;
 }
 
 .settings-provider-list span {
@@ -2728,6 +2778,13 @@ p {
   line-height: 1.2;
   padding: 4px 7px;
   white-space: normal;
+}
+
+@media (max-width: 640px) {
+  .settings-provider-list .service-history-item {
+    align-items: stretch;
+    grid-template-columns: 1fr;
+  }
 }
 
 .recommend-row strong {

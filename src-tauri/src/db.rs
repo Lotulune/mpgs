@@ -5,9 +5,8 @@ use crate::models::{
     AiAnalysisQueueFailureItem, AiAnalysisQueueSource, ClassicDiscoveryRejectCacheEntry,
     ClassicDiscoveryRunSnapshot, ClassicRejectReasonCode, DashboardPayload, DashboardStats,
     DiscoveryCompletionReason, DiscoveryFailureItem, DiscoveryRunSnapshot, DiscoveryRunStatus,
-    DiscoveryTaskRequest, GameAnalysisReport, GameCard, LlmProvider, PublicConfig,
-    ReviewSnippet, StoreReleaseState, SyncMode, UserCollections, UserGameState,
-    UserGameStatePatch,
+    DiscoveryTaskRequest, GameAnalysisReport, GameCard, LlmProvider, PublicConfig, ReviewSnippet,
+    StoreReleaseState, SyncMode, UserCollections, UserGameState, UserGameStatePatch,
 };
 use crate::recommendation::{
     bucket_game, compute_recommendation_score, today_iso_utc, DemoStatus, GameFacts, ReleaseBucket,
@@ -534,7 +533,7 @@ pub fn load_dashboard(conn: &Connection) -> Result<DashboardPayload> {
         upcoming,
         recent_discoveries,
         collections,
-            ai_analysis_queue_failures: ai_queue_failed_items.clone(),
+        ai_analysis_queue_failures: ai_queue_failed_items.clone(),
         stats: DashboardStats {
             last_sync_at: get_config(conn, "last_sync_at")?,
             seed_count: total_games,
@@ -805,7 +804,9 @@ pub fn load_game(conn: &Connection, appid: u32) -> Result<Option<GameCard>> {
 
 pub fn list_game_appids_with_sections(conn: &Connection) -> Result<Vec<(u32, String)>> {
     let mut stmt = conn.prepare("SELECT appid, section FROM games ORDER BY appid ASC")?;
-    let rows = stmt.query_map([], |row| Ok((row.get::<_, u32>(0)?, row.get::<_, String>(1)?)))?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, u32>(0)?, row.get::<_, String>(1)?))
+    })?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(Into::into)
 }
@@ -2374,7 +2375,11 @@ fn ensure_games_metadata_columns(conn: &Connection) -> Result<()> {
         "store_screenshot_urls_json",
         "ALTER TABLE games ADD COLUMN store_screenshot_urls_json TEXT NOT NULL DEFAULT '[]'",
     )?;
-    add_games_column_if_missing(conn, "created_at", "ALTER TABLE games ADD COLUMN created_at TEXT")?;
+    add_games_column_if_missing(
+        conn,
+        "created_at",
+        "ALTER TABLE games ADD COLUMN created_at TEXT",
+    )?;
     conn.execute(
         "UPDATE games SET created_at = updated_at WHERE created_at IS NULL OR TRIM(created_at) = ''",
         [],
@@ -2509,8 +2514,7 @@ fn ensure_ai_analysis_queue_columns(conn: &Connection) -> Result<()> {
 }
 
 fn perform_classic_v2_cleanup(conn: &Connection) -> Result<()> {
-    if get_config(conn, CLASSIC_DISCOVERY_CLEANUP_VERSION_CONFIG_KEY)?
-        .as_deref()
+    if get_config(conn, CLASSIC_DISCOVERY_CLEANUP_VERSION_CONFIG_KEY)?.as_deref()
         == Some(CLASSIC_DISCOVERY_RULE_VERSION)
     {
         return Ok(());
@@ -2589,12 +2593,18 @@ pub fn delete_game_and_related_state(conn: &Connection, appid: u32) -> Result<()
         "DELETE FROM metadata_backfill_queue WHERE appid = ?1",
         params![appid],
     )?;
-    conn.execute("DELETE FROM ai_analysis_queue WHERE appid = ?1", params![appid])?;
+    conn.execute(
+        "DELETE FROM ai_analysis_queue WHERE appid = ?1",
+        params![appid],
+    )?;
     conn.execute(
         "DELETE FROM analysis_narrative_cache WHERE appid = ?1",
         params![appid],
     )?;
-    conn.execute("DELETE FROM classic_reject_cache WHERE appid = ?1", params![appid])?;
+    conn.execute(
+        "DELETE FROM classic_reject_cache WHERE appid = ?1",
+        params![appid],
+    )?;
     conn.execute("DELETE FROM games WHERE appid = ?1", params![appid])?;
     Ok(())
 }
@@ -3365,11 +3375,10 @@ fn now_rfc3339() -> Result<String> {
 mod tests {
     use super::{
         classic_discovery_is_due, delete_game_and_related_state, enqueue_ai_analysis_jobs,
-        get_config, load_dashboard, list_ai_analysis_queue_ready_jobs, migrate, public_config,
-        set_config, upsert_game, CLASSIC_DISCOVERY_LAST_RUN_STATUS_CONFIG_KEY,
-        CLASSIC_DISCOVERY_LAST_STARTED_AT_CONFIG_KEY, CLASSIC_DISCOVERY_LAST_OFFSET_CONFIG_KEY,
-        CLASSIC_DISCOVERY_CLEANUP_VERSION_CONFIG_KEY,
-        CLASSIC_DISCOVERY_RULE_VERSION,
+        get_config, list_ai_analysis_queue_ready_jobs, load_dashboard, migrate, public_config,
+        set_config, upsert_game, CLASSIC_DISCOVERY_CLEANUP_VERSION_CONFIG_KEY,
+        CLASSIC_DISCOVERY_LAST_OFFSET_CONFIG_KEY, CLASSIC_DISCOVERY_LAST_RUN_STATUS_CONFIG_KEY,
+        CLASSIC_DISCOVERY_LAST_STARTED_AT_CONFIG_KEY, CLASSIC_DISCOVERY_RULE_VERSION,
     };
     use crate::models::{
         AiAnalysisQueueSource, GameCard, ReviewSnippet, StoreReleaseState, UserGameState,
@@ -3409,8 +3418,10 @@ mod tests {
             .expect("enqueue new jobs");
 
         let jobs = list_ai_analysis_queue_ready_jobs(&conn).expect("list ready jobs");
-        let ordered: Vec<(u32, AiAnalysisQueueSource)> =
-            jobs.into_iter().map(|job| (job.appid, job.source)).collect();
+        let ordered: Vec<(u32, AiAnalysisQueueSource)> = jobs
+            .into_iter()
+            .map(|job| (job.appid, job.source))
+            .collect();
 
         assert_eq!(
             ordered,
@@ -3535,19 +3546,39 @@ mod tests {
         delete_game_and_related_state(&conn, game.appid).expect("delete related state");
 
         let games_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM games WHERE appid = ?1", [game.appid], |row| row.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM games WHERE appid = ?1",
+                [game.appid],
+                |row| row.get(0),
+            )
             .expect("count games");
         let sync_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM sync_queue WHERE appid = ?1", [game.appid], |row| row.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM sync_queue WHERE appid = ?1",
+                [game.appid],
+                |row| row.get(0),
+            )
             .expect("count sync queue");
         let backfill_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM metadata_backfill_queue WHERE appid = ?1", [game.appid], |row| row.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM metadata_backfill_queue WHERE appid = ?1",
+                [game.appid],
+                |row| row.get(0),
+            )
             .expect("count backfill queue");
         let ai_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM ai_analysis_queue WHERE appid = ?1", [game.appid], |row| row.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM ai_analysis_queue WHERE appid = ?1",
+                [game.appid],
+                |row| row.get(0),
+            )
             .expect("count ai queue");
         let cache_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM analysis_narrative_cache WHERE appid = ?1", [game.appid], |row| row.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM analysis_narrative_cache WHERE appid = ?1",
+                [game.appid],
+                |row| row.get(0),
+            )
             .expect("count cache");
 
         assert_eq!(games_count, 0);

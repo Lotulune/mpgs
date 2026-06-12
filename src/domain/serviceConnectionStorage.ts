@@ -12,6 +12,9 @@ export interface CurrentServiceConnection {
 
 export const CURRENT_SERVICE_CONNECTION_STORAGE_KEY =
   "mpgs.currentServiceConnection.v1";
+export const RECENT_SERVICE_CONNECTIONS_STORAGE_KEY =
+  "mpgs.recentServiceConnections.v1";
+const RECENT_SERVICE_CONNECTIONS_LIMIT = 5;
 
 export function getCurrentServiceConnection(): CurrentServiceConnection | null {
   const storage = getStorage();
@@ -30,13 +33,36 @@ export function getCurrentServiceConnection(): CurrentServiceConnection | null {
       return null;
     }
 
-    return {
-      baseUrl: normalizeServiceBaseUrl(parsed.baseUrl),
-      info: parsed.info,
-      validatedAt: parsed.validatedAt,
-    };
+    return normalizeCurrentServiceConnection(parsed);
   } catch {
     return null;
+  }
+}
+
+export function getRecentServiceConnections(): CurrentServiceConnection[] {
+  const storage = getStorage();
+  if (!storage) {
+    return [];
+  }
+
+  const rawValue = storage.getItem(RECENT_SERVICE_CONNECTIONS_STORAGE_KEY);
+  if (!rawValue) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(rawValue);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return deduplicateRecentConnections(
+      parsed
+        .filter(isCurrentServiceConnection)
+        .map(normalizeCurrentServiceConnection),
+    ).slice(0, RECENT_SERVICE_CONNECTIONS_LIMIT);
+  } catch {
+    return [];
   }
 }
 
@@ -46,11 +72,7 @@ export function saveCurrentServiceConnection(connection: CurrentServiceConnectio
     return;
   }
 
-  const normalizedConnection: CurrentServiceConnection = {
-    baseUrl: normalizeServiceBaseUrl(connection.baseUrl),
-    info: connection.info,
-    validatedAt: connection.validatedAt,
-  };
+  const normalizedConnection = normalizeCurrentServiceConnection(connection);
   if (!isCompatibleServiceInfo(normalizedConnection.info)) {
     throw new Error("服务身份信息格式不兼容。");
   }
@@ -58,6 +80,10 @@ export function saveCurrentServiceConnection(connection: CurrentServiceConnectio
   storage.setItem(
     CURRENT_SERVICE_CONNECTION_STORAGE_KEY,
     JSON.stringify(normalizedConnection),
+  );
+  storage.setItem(
+    RECENT_SERVICE_CONNECTIONS_STORAGE_KEY,
+    JSON.stringify(upsertRecentConnection(normalizedConnection)),
   );
 }
 
@@ -88,6 +114,46 @@ function isCurrentServiceConnection(value: unknown): value is CurrentServiceConn
     typeof candidate.validatedAt === "string" &&
     isCompatibleServiceInfo(candidate.info)
   );
+}
+
+function normalizeCurrentServiceConnection(
+  connection: CurrentServiceConnection,
+): CurrentServiceConnection {
+  return {
+    baseUrl: normalizeServiceBaseUrl(connection.baseUrl),
+    info: connection.info,
+    validatedAt: connection.validatedAt,
+  };
+}
+
+function upsertRecentConnection(
+  connection: CurrentServiceConnection,
+): CurrentServiceConnection[] {
+  return [
+    connection,
+    ...getRecentServiceConnections().filter(
+      (recentConnection) =>
+        recentConnection.info.serviceInstanceId !== connection.info.serviceInstanceId,
+    ),
+  ].slice(0, RECENT_SERVICE_CONNECTIONS_LIMIT);
+}
+
+function deduplicateRecentConnections(
+  connections: CurrentServiceConnection[],
+): CurrentServiceConnection[] {
+  const seenServiceInstanceIds = new Set<string>();
+  const deduplicatedConnections: CurrentServiceConnection[] = [];
+
+  for (const connection of connections) {
+    if (seenServiceInstanceIds.has(connection.info.serviceInstanceId)) {
+      continue;
+    }
+
+    seenServiceInstanceIds.add(connection.info.serviceInstanceId);
+    deduplicatedConnections.push(connection);
+  }
+
+  return deduplicatedConnections;
 }
 
 function isCompatibleServiceInfo(value: unknown): value is ServiceInfo {
