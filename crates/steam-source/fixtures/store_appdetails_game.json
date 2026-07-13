@@ -1,0 +1,32 @@
+{
+  "892970": {
+    "success": true,
+    "data": {
+      "type": "game",
+      "name": "Valheim",
+      "steam_appid": 892970,
+      "is_free": false,
+      "short_description": "A brutal exploration and survival game for 1-10 players.",
+      "developers": ["Iron Gate AB"],
+      "publishers": ["Coffee Stain Publishing"],
+      "categories": [
+        { "description": "Single-player" },
+        { "description": "Online Co-op" },
+        { "description": "LAN Co-op" },
+        { "description": "Multi-player" }
+      ],
+      "genres": [
+        { "description": "Action" },
+        { "description": "Adventure" },
+        { "description": "Indie" }
+      ],
+      "release_date": {
+        "coming_soon": false,
+        "date": "2 Feb, 2021"
+      },
+      "demos": [
+        { "appid": 1888930 }
+      ]
+    }
+  }
+}

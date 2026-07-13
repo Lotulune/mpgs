@@ -1,0 +1,68 @@
+# MPGS
+
+MPGS（Multiplayer Game Scout）是一款面向熟人联机的 Steam 游戏发现工具。它优先推荐私人房间、合作模式、P2P 或可自建服务器的游戏，而不是简单复制 Steam 热门榜。
+
+当前状态：`MVP 0.1` — M0 骨架 + M1 数据可行性 + M2 SQLite 存储/调度/人工校正（默认测试不访问实时 Steam）。
+
+## MVP 能力
+
+- 最近发售、即将发售/Demo、人气老游、经典老游四类推荐。
+- 按常用人数、合作/竞技偏好、平台、预算、单次时长和自建服意愿筛选。
+- 确定性推荐器生成基础分，AI 对小规模候选集二次分析并给出有证据的解释。
+- SQLite 保存权威目录、评价/在线快照、推荐特征和用户反馈；客户端使用独立 SQLite 做离线缓存。
+- 匿名可用，不要求用户在 MVP 阶段绑定 Steam 账号。
+
+## 技术基线
+
+- 服务端：Rust、Axum、Tokio、SQLite。
+- 桌面客户端：Tauri 2、React、TypeScript。
+- AI：服务端 Provider 抽象，兼容结构化输出、工具调用和 Embedding 的外部 API。
+- 部署目标：Windows/Linux `x86_64` 与 `aarch64` 服务端；Windows/Linux/macOS 桌面客户端。
+
+SQLite 数据文件只能由同机服务进程访问。远程客户端、采集节点和 AI Worker 必须通过 API 交互，不能打开共享数据库文件。
+
+## 文档
+
+- [产品需求文档](docs/PRD.md)
+- [本地开发指南](docs/DEVELOPMENT.md)
+- [系统架构](docs/ARCHITECTURE.md)
+- [推荐算法](docs/RECOMMENDATION.md)
+- [AI 检索与安全](docs/AI.md)
+- [数据与存储](docs/DATA_STORAGE.md)
+- [HTTP API 契约](docs/API.md)
+- [MVP 开发计划](docs/MVP_PLAN.md)
+- [M1 数据可行性报告](docs/M1_FEASIBILITY.md)
+- [外部资料与核验记录](docs/SOURCES.md)
+
+## 当前工程
+
+```text
+apps/server/              Axum 服务端（健康检查、管理覆盖、内部 jobs）
+apps/dbtool/              SQLite migrate / backup / restore CLI
+crates/domain/            跨组件领域类型
+crates/recommender/       确定性推荐核心
+crates/steam-source/      Steam 源适配器 Spike（夹具 + 黄金集）
+crates/storage/           SQLite Repository、迁移、ingest、jobs、备份
+migrations/               SQLite 迁移脚本
+scripts/                  备份/恢复辅助脚本
+docs/                     产品与开发规格
+```
+
+验证命令：
+
+```powershell
+cargo fmt --all -- --check
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+运行服务端（可选本地库）：
+
+```powershell
+New-Item -ItemType Directory -Force data | Out-Null
+$env:MPGS_DATABASE_PATH = '.\data\mpgs.db'
+$env:MPGS_ADMIN_TOKEN = 'dev-only-token'
+cargo run -p mpgs-server
+```
+
+默认监听 `127.0.0.1:8080`，可通过 `MPGS_BIND_ADDR` 覆盖。未设置 `MPGS_DATABASE_PATH` 时仍可启动，但 `/health/ready` 与存储相关路由不可用。

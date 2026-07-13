@@ -1,0 +1,26 @@
+{
+  "response": {
+    "apps": [
+      {
+        "appid": 10,
+        "name": "Counter-Strike",
+        "last_modified": 1700000100,
+        "price_change_number": 1
+      },
+      {
+        "appid": 440,
+        "name": "Team Fortress 2",
+        "last_modified": 1700000200,
+        "price_change_number": 2
+      },
+      {
+        "appid": 730,
+        "name": "Counter-Strike 2",
+        "last_modified": 1700000300,
+        "price_change_number": 3
+      }
+    ],
+    "have_more_results": true,
+    "last_appid": 730
+  }
+}

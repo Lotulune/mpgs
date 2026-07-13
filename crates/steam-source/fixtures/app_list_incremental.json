@@ -1,0 +1,20 @@
+{
+  "response": {
+    "apps": [
+      {
+        "appid": 1966720,
+        "name": "Lethal Company",
+        "last_modified": 1700000400,
+        "price_change_number": 9
+      },
+      {
+        "appid": 1623730,
+        "name": "Palworld",
+        "last_modified": 1700000420,
+        "price_change_number": 10
+      }
+    ],
+    "have_more_results": false,
+    "last_appid": 1966720
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "response": {
+    "apps": [
+      {
+        "appid": 570,
+        "name": "Dota 2",
+        "last_modified": 1700000400,
+        "price_change_number": 4
+      },
+      {
+        "appid": 892970,
+        "name": "Valheim",
+        "last_modified": 1700000500,
+        "price_change_number": 5
+      }
+    ],
+    "have_more_results": false,
+    "last_appid": 892970
+  }
+}

@@ -1,0 +1,11 @@
+[package]
+name = "mpgs-recommender"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+mpgs-domain = { path = "../domain" }
+serde.workspace = true
+

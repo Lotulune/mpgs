@@ -1,0 +1,25 @@
+{
+  "2500000": {
+    "success": true,
+    "data": {
+      "type": "game",
+      "name": "Example Upcoming Co-op",
+      "steam_appid": 2500000,
+      "is_free": false,
+      "short_description": "Upcoming co-op adventure.",
+      "developers": ["Example Studio"],
+      "publishers": ["Example Pub"],
+      "categories": [
+        { "description": "Online Co-op" },
+        { "description": "Multi-player" }
+      ],
+      "genres": [
+        { "description": "Adventure" }
+      ],
+      "release_date": {
+        "coming_soon": true,
+        "date": "Q4 2026"
+      }
+    }
+  }
+}

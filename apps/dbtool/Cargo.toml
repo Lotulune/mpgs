@@ -1,0 +1,13 @@
+[package]
+name = "mpgs-dbtool"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "mpgs-dbtool"
+path = "src/main.rs"
+
+[dependencies]
+mpgs-storage = { path = "../../crates/storage" }

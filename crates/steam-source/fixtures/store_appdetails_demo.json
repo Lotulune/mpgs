@@ -1,0 +1,29 @@
+{
+  "1888930": {
+    "success": true,
+    "data": {
+      "type": "demo",
+      "name": "Valheim Demo",
+      "steam_appid": 1888930,
+      "is_free": true,
+      "short_description": "Demo for Valheim",
+      "developers": ["Iron Gate AB"],
+      "publishers": ["Coffee Stain Publishing"],
+      "categories": [
+        { "description": "Single-player" },
+        { "description": "Multi-player" }
+      ],
+      "genres": [
+        { "description": "Action" }
+      ],
+      "release_date": {
+        "coming_soon": false,
+        "date": "1 Jan, 2023"
+      },
+      "fullgame": {
+        "appid": "892970",
+        "name": "Valheim"
+      }
+    }
+  }
+}
