@@ -461,6 +461,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "mpgs-domain",
+ "mpgs-recommender",
  "mpgs-storage",
  "serde",
  "serde_json",
@@ -490,6 +491,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror",
 ]

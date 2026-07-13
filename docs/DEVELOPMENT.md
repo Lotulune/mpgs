@@ -2,17 +2,27 @@
 
 ## 1. 当前基线
 
-仓库当前处于 M2（数据与存储完成）：
+仓库当前处于 M3（确定性推荐与公开 API 完成）：
 
-- `mpgs-domain` 提供稳定领域枚举和推荐信号。
-- `mpgs-recommender` 实现 `rules-0.1.0` 的核心评分与 AI 权重边界。
-- `mpgs-steam-source` 提供 Steam 源规范化 Spike 与黄金集。
-- `mpgs-storage` 提供 SQLite 迁移、Repository、ingest、jobs、人工覆盖与备份恢复。
-- `mpgs-server` 提供健康检查、`/v1/meta`、管理覆盖 API 与内部 jobs API（需配置数据库）。
-- `mpgs-dbtool` 提供 migrate / integrity / backup / restore CLI。
-- 尚未接入完整公开推荐 API、AI Provider 或 Tauri 客户端。
+- `mpgs-domain`：分区、偏好、反馈类型与推荐信号。
+- `mpgs-recommender`：评分、个性化、硬过滤、MMR、解释与 `rank_feed`。
+- `mpgs-steam-source`：Steam 源规范化 Spike 与黄金集。
+- `mpgs-storage`：SQLite 迁移（含用户/偏好/反馈）、Repository、种子目录、查询与备份。
+- `mpgs-server`：公开 API（会话/偏好/四分区/日历/搜索/详情/证据/反馈）、`x-request-id`、ETag；管理/内部 jobs。
+- `mpgs-dbtool`：migrate / integrity / backup / restore。
+- 尚未接入 AI Provider 或 Tauri 客户端。
 
-下一项开发工作是 [M3 确定性推荐与公开 API](MVP_PLAN.md#m3确定性推荐与公开-api)。
+下一项开发工作是 [M4 Tauri 桌面客户端](MVP_PLAN.md#m4tauri-桌面客户端)。
+
+### Git
+
+本机已使用 Git for Windows。新终端若找不到 `git`，将 `C:\Program Files\Git\cmd` 加入 PATH，或在当前会话执行：
+
+```powershell
+$env:Path = "C:\Program Files\Git\cmd;" + $env:Path
+```
+
+仓库本地配置（不写全局）：`user.name` / `user.email` 仅限本仓库；`core.autocrlf=true`。
 
 ## 2. 前置环境
 

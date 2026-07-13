@@ -14,6 +14,11 @@ pub const MIGRATIONS: &[(i64, &str, &str)] = &[
         "0002_data_quality_findings",
         include_str!("../../../migrations/0002_data_quality_findings.sql"),
     ),
+    (
+        3,
+        "0003_users_feedback_algorithm",
+        include_str!("../../../migrations/0003_users_feedback_algorithm.sql"),
+    ),
 ];
 
 pub fn current_version(conn: &Connection) -> StorageResult<i64> {

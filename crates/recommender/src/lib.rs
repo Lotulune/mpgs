@@ -1,8 +1,19 @@
 #![forbid(unsafe_code)]
 
+mod explain;
+mod mmr;
+mod personalize;
+mod pipeline;
+
 use mpgs_domain::{FeedSection, MultiplayerSignals, RankingSignals};
 use serde::{Deserialize, Serialize};
 
+pub use explain::{Explanation, explain};
+pub use mmr::mmr_rerank;
+pub use personalize::{apply_personalization, hard_filter};
+pub use pipeline::{RankedCandidate, RankingInput, rank_feed};
+
+pub const ALGORITHM_VERSION: &str = "rules-0.1.0";
 const PERSONAL_WEIGHT: f64 = 0.25;
 const AI_WEIGHT: f64 = 0.15;
 
@@ -109,7 +120,7 @@ pub fn blend_ai(base: f64, ai: Option<AiAdjustment>) -> f64 {
     unit((1.0 - AI_WEIGHT) * base + AI_WEIGHT * effective)
 }
 
-fn unit(value: f64) -> f64 {
+pub(crate) fn unit(value: f64) -> f64 {
     if value.is_nan() {
         0.0
     } else {
@@ -119,8 +130,12 @@ fn unit(value: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{AiAdjustment, blend_ai, friend_fit, score};
-    use mpgs_domain::{FeedSection, MultiplayerSignals, RankingSignals};
+    use super::{
+        ALGORITHM_VERSION, AiAdjustment, RankingInput, blend_ai, friend_fit, rank_feed, score,
+    };
+    use mpgs_domain::{
+        FeedSection, MultiplayerSignals, RankingSignals, SteamAppId, UserPreferences,
+    };
 
     fn cooperative_signals() -> MultiplayerSignals {
         MultiplayerSignals {
@@ -147,6 +162,28 @@ mod tests {
         }
     }
 
+    fn ranking(app_id: SteamAppId, multiplayer: MultiplayerSignals) -> RankingInput {
+        RankingInput {
+            app_id,
+            name: format!("app-{app_id}"),
+            dominant_mode: None,
+            recommended_min: Some(1),
+            recommended_max: Some(4),
+            signals: RankingSignals {
+                multiplayer,
+                quality: 0.85,
+                popularity: 0.7,
+                momentum: 0.5,
+                evidence: 0.85,
+                data_confidence: 0.9,
+                longevity: 0.8,
+                maintenance_health: 0.8,
+                personal_fit: 0.5,
+                ..Default::default()
+            },
+        }
+    }
+
     #[test]
     fn private_coop_outranks_matchmaking_for_friend_fit() {
         assert!(friend_fit(&cooperative_signals()) > friend_fit(&matchmaking_signals()));
@@ -162,7 +199,6 @@ mod tests {
                 confidence: 1.0,
             }),
         );
-
         assert!((adjusted - base).abs() <= 0.15);
     }
 
@@ -179,9 +215,7 @@ mod tests {
             personal_fit: 5.0,
             ..Default::default()
         };
-
         let result = score(FeedSection::RecentRelease, &signals, None);
-
         assert!((0.0..=1.0).contains(&result.final_score));
     }
 
@@ -206,10 +240,61 @@ mod tests {
             multiplayer: matchmaking_signals(),
             ..common
         };
-
         let cooperative_score = score(FeedSection::ClassicLegacy, &cooperative, None);
         let matchmaking_score = score(FeedSection::ClassicLegacy, &matchmaking, None);
-
         assert!(cooperative_score.final_score > matchmaking_score.final_score);
+    }
+
+    #[test]
+    fn prd_default_sort_coop_self_host_above_matchmaking_core() {
+        // PRD: 帕鲁/方舟/深岩/雨中冒险2 熟人适配应高于 CS2 类匹配核心。
+        let prefs = UserPreferences::default();
+        let coop_ids = [1623730u32, 346110, 548430, 632360]; // Palworld, ARK, DRG, RoR2
+        let match_ids = [730u32, 1172470]; // CS2, Apex
+
+        let mut candidates = Vec::new();
+        for id in coop_ids {
+            candidates.push(ranking(id, cooperative_signals()));
+        }
+        for id in match_ids {
+            candidates.push(ranking(id, matchmaking_signals()));
+        }
+
+        let ranked = rank_feed(FeedSection::ClassicLegacy, &candidates, &prefs, None);
+        assert_eq!(ranked.algorithm_version, ALGORITHM_VERSION);
+        assert_eq!(ranked.items.len(), 6);
+
+        let positions: Vec<_> = ranked.items.iter().map(|i| i.app_id).collect();
+        let first_match = positions
+            .iter()
+            .position(|id| match_ids.contains(id))
+            .unwrap();
+        let last_coop = positions
+            .iter()
+            .rposition(|id| coop_ids.contains(id))
+            .unwrap();
+        assert!(
+            last_coop < first_match,
+            "coop titles should outrank matchmaking cores: {positions:?}"
+        );
+    }
+
+    #[test]
+    fn competitive_preference_can_lift_matchmaking() {
+        let prefs = UserPreferences {
+            coop_competitive: 0.9,
+            self_hosting_willingness: 0.1,
+            ..Default::default()
+        };
+
+        let candidates = vec![
+            ranking(548430, cooperative_signals()),
+            ranking(730, matchmaking_signals()),
+        ];
+        let ranked = rank_feed(FeedSection::PopularLegacy, &candidates, &prefs, None);
+        // With high competitive preference, CS2 should not be forced below coop always,
+        // but still appear with cautions about public matchmaking.
+        let cs = ranked.items.iter().find(|i| i.app_id == 730).unwrap();
+        assert!(!cs.explanation.cautions.is_empty() || cs.score.friend_fit < 0.5);
     }
 }

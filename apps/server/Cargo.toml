@@ -8,6 +8,7 @@ publish = false
 [dependencies]
 axum = { workspace = true, features = ["macros"] }
 mpgs-domain = { path = "../../crates/domain" }
+mpgs-recommender = { path = "../../crates/recommender" }
 mpgs-storage = { path = "../../crates/storage" }
 serde = { workspace = true }
 serde_json = { workspace = true }

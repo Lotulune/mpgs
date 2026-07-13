@@ -11,12 +11,16 @@ pub mod clock;
 pub mod curation;
 pub mod db;
 pub mod error;
+pub mod feedback;
 pub mod ingest;
 pub mod jobs;
 pub mod migrate;
 pub mod models;
 pub mod quality;
+pub mod query;
 pub mod repo;
+pub mod seed;
+pub mod users;
 pub mod util;
 
 pub use clock::{Clock, FakeClock, SystemClock};

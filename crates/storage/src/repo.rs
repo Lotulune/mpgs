@@ -196,4 +196,125 @@ impl Repository {
         let db = restore_from_backup(backup_path, dest_path, now_ms)?;
         Ok(Self::new(db))
     }
+
+    pub fn seed_demo_if_empty(&self) -> StorageResult<usize> {
+        let now = self.db.now_ms();
+        self.db
+            .with_conn(|conn| crate::seed::seed_demo_catalog_if_empty(conn, now))
+    }
+
+    pub fn ensure_runtime_defaults(&self) -> StorageResult<()> {
+        let now = self.db.now_ms();
+        self.db.with_conn(|conn| {
+            crate::users::ensure_algorithm_config(conn, now)?;
+            crate::seed::seed_demo_catalog_if_empty(conn, now)?;
+            Ok(())
+        })
+    }
+
+    pub fn create_anonymous_session(&self) -> StorageResult<crate::users::SessionTokens> {
+        let now = self.db.now_ms();
+        self.db
+            .with_conn(|conn| crate::users::create_anonymous_session(conn, now))
+    }
+
+    pub fn resolve_access_token(&self, token: &str) -> StorageResult<String> {
+        let now = self.db.now_ms();
+        self.db
+            .with_conn(|conn| crate::users::resolve_user_id(conn, token, now))
+    }
+
+    pub fn get_preferences(&self, user_id: &str) -> StorageResult<mpgs_domain::UserPreferences> {
+        self.db
+            .with_conn(|conn| crate::users::get_preferences(conn, user_id))
+    }
+
+    pub fn put_preferences(
+        &self,
+        user_id: &str,
+        prefs: &mpgs_domain::UserPreferences,
+    ) -> StorageResult<mpgs_domain::UserPreferences> {
+        let now = self.db.now_ms();
+        self.db
+            .with_conn(|conn| crate::users::put_preferences(conn, user_id, prefs, now))
+    }
+
+    pub fn list_candidates(
+        &self,
+        limit: i64,
+    ) -> StorageResult<Vec<crate::query::GameCandidateRow>> {
+        self.db
+            .with_conn(|conn| crate::query::list_candidates(conn, limit))
+    }
+
+    pub fn search_games(
+        &self,
+        q: &str,
+        limit: i64,
+    ) -> StorageResult<Vec<crate::query::GameCandidateRow>> {
+        self.db
+            .with_conn(|conn| crate::query::search_by_name(conn, q, limit))
+    }
+
+    pub fn game_detail(
+        &self,
+        app_id: u32,
+    ) -> StorageResult<Option<crate::query::GameCandidateRow>> {
+        self.db
+            .with_conn(|conn| crate::query::get_game_detail(conn, app_id))
+    }
+
+    pub fn list_evidence(
+        &self,
+        app_id: u32,
+        feature: Option<&str>,
+    ) -> StorageResult<Vec<crate::query::EvidenceRow>> {
+        self.db
+            .with_conn(|conn| crate::query::list_evidence(conn, app_id, feature))
+    }
+
+    pub fn list_calendar(
+        &self,
+        from: &str,
+        to: &str,
+    ) -> StorageResult<(Vec<AppRecord>, Vec<AppRecord>)> {
+        self.db
+            .with_conn(|conn| crate::query::list_calendar(conn, from, to))
+    }
+
+    pub fn create_feedback(
+        &self,
+        user_id: &str,
+        app_id: u32,
+        feedback_type: mpgs_domain::FeedbackType,
+        recommendation_run_id: Option<&str>,
+        idempotency_key: &str,
+        client_created_at_ms: Option<i64>,
+    ) -> StorageResult<crate::feedback::FeedbackRecord> {
+        let now = self.db.now_ms();
+        let fingerprint = format!("{app_id}:{}", feedback_type.as_str());
+        self.db.with_conn(|conn| {
+            crate::feedback::create_feedback(
+                conn,
+                user_id,
+                app_id,
+                feedback_type,
+                recommendation_run_id,
+                idempotency_key,
+                client_created_at_ms,
+                &fingerprint,
+                now,
+            )
+        })
+    }
+
+    pub fn undo_feedback(
+        &self,
+        user_id: &str,
+        feedback_id: i64,
+    ) -> StorageResult<crate::feedback::FeedbackRecord> {
+        let now = self.db.now_ms();
+        self.db
+            .with_conn(|conn| crate::feedback::undo_feedback(conn, user_id, feedback_id, now))
+    }
 }

@@ -102,6 +102,14 @@ flowchart LR
 - 不登录可完成偏好、浏览、搜索、详情和反馈。
 - 普通缓存 API 达到 P95 目标。
 
+实现状态（2026-07-14）：
+
+- 推荐：`rank_feed` + 个性化 + MMR + 解释；PRD 默认排序单测通过。
+- 迁移：`0003_users_feedback_algorithm.sql`；空库自动 `seed_demo_catalog`。
+- API：`POST /v1/session/anonymous`、`GET|PUT /v1/preferences`、`GET /v1/feeds/{section}`、`GET /v1/calendar`、`GET /v1/search`、`GET /v1/games/{id}`、`GET /v1/games/{id}/evidence`、`POST /v1/feedback`、`POST /v1/feedback/{id}/undo`。
+- 横切：`x-request-id`、ETag / If-None-Match、反馈 `Idempotency-Key`。
+- OpenAPI 完整生成与 P95 压测仍属后续加固；契约以 `docs/API.md` + 集成测试为准。
+
 ### M4：Tauri 桌面客户端
 
 交付：

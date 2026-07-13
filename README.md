@@ -2,7 +2,7 @@
 
 MPGS（Multiplayer Game Scout）是一款面向熟人联机的 Steam 游戏发现工具。它优先推荐私人房间、合作模式、P2P 或可自建服务器的游戏，而不是简单复制 Steam 热门榜。
 
-当前状态：`MVP 0.1` — M0 骨架 + M1 数据可行性 + M2 SQLite 存储/调度/人工校正（默认测试不访问实时 Steam）。
+当前状态：`MVP 0.1` — M0–M3：工程骨架、数据可行性、SQLite 存储、确定性推荐与公开 API（默认测试不访问实时 Steam）。
 
 ## MVP 能力
 
@@ -56,13 +56,21 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-运行服务端（可选本地库）：
+运行服务端：
 
 ```powershell
+# 可选：持久化 SQLite；未设置时使用内存库并自动种子演示目录
 New-Item -ItemType Directory -Force data | Out-Null
 $env:MPGS_DATABASE_PATH = '.\data\mpgs.db'
 $env:MPGS_ADMIN_TOKEN = 'dev-only-token'
 cargo run -p mpgs-server
 ```
 
-默认监听 `127.0.0.1:8080`，可通过 `MPGS_BIND_ADDR` 覆盖。未设置 `MPGS_DATABASE_PATH` 时仍可启动，但 `/health/ready` 与存储相关路由不可用。
+默认监听 `127.0.0.1:8080`。公开端点示例：
+
+```powershell
+Invoke-RestMethod 'http://127.0.0.1:8080/v1/meta'
+Invoke-RestMethod 'http://127.0.0.1:8080/v1/feeds/classic_legacy?limit=5'
+Invoke-RestMethod 'http://127.0.0.1:8080/v1/search?q=Deep'
+$session = Invoke-RestMethod -Method Post 'http://127.0.0.1:8080/v1/session/anonymous'
+```

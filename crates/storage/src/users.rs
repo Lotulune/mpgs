@@ -1,0 +1,185 @@
+use mpgs_domain::UserPreferences;
+use rusqlite::{Connection, OptionalExtension, params};
+use sha2::{Digest, Sha256};
+
+use crate::error::{StorageError, StorageResult};
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionTokens {
+    pub user_id: String,
+    pub access_token: String,
+    pub refresh_token: String,
+    pub expires_at_ms: i64,
+}
+
+pub fn create_anonymous_session(conn: &Connection, now_ms: i64) -> StorageResult<SessionTokens> {
+    let user_id = format!("u_{now_ms}_{}", conn_total_users(conn)? + 1);
+    let access_token = format!("atk_{user_id}_{now_ms}");
+    let refresh_token = format!("rtk_{user_id}_{now_ms}");
+    let access_hash = token_hash(&access_token);
+    let refresh_hash = token_hash(&refresh_token);
+    let expires_at_ms = now_ms + 7 * 24 * 60 * 60 * 1000;
+
+    conn.execute(
+        "INSERT INTO anonymous_users (
+            user_id, created_at_ms, last_active_at_ms, access_token_hash, refresh_token_hash
+         ) VALUES (?1, ?2, ?2, ?3, ?4)",
+        params![user_id, now_ms, access_hash, refresh_hash],
+    )?;
+
+    let prefs = UserPreferences::default();
+    upsert_preferences(conn, &user_id, &prefs, now_ms)?;
+
+    Ok(SessionTokens {
+        user_id,
+        access_token,
+        refresh_token,
+        expires_at_ms,
+    })
+}
+
+pub fn resolve_user_id(
+    conn: &Connection,
+    access_token: &str,
+    now_ms: i64,
+) -> StorageResult<String> {
+    let hash = token_hash(access_token);
+    let user_id: String = conn
+        .query_row(
+            "SELECT user_id FROM anonymous_users WHERE access_token_hash = ?1",
+            params![hash],
+            |row| row.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| StorageError::not_found("session"))?;
+    conn.execute(
+        "UPDATE anonymous_users SET last_active_at_ms = ?1 WHERE user_id = ?2",
+        params![now_ms, user_id],
+    )?;
+    Ok(user_id)
+}
+
+pub fn get_preferences(conn: &Connection, user_id: &str) -> StorageResult<UserPreferences> {
+    conn.query_row(
+        "SELECT version, party_size, coop_competitive, session_minutes_min, session_minutes_max,
+                budget_currency, budget_max_each_minor, platforms_json, self_hosting_willingness,
+                languages_json, excluded_modes_json
+         FROM user_preferences WHERE user_id = ?1",
+        params![user_id],
+        |row| {
+            let platforms_json: String = row.get(7)?;
+            let languages_json: String = row.get(9)?;
+            let excluded_json: String = row.get(10)?;
+            Ok(UserPreferences {
+                version: row.get(0)?,
+                party_size: row.get::<_, i64>(1)? as u8,
+                coop_competitive: row.get(2)?,
+                session_minutes_min: row.get::<_, i64>(3)? as u32,
+                session_minutes_max: row.get::<_, i64>(4)? as u32,
+                budget_currency: row.get(5)?,
+                budget_max_each_minor: row.get(6)?,
+                platforms: serde_json::from_str(&platforms_json).unwrap_or_default(),
+                self_hosting_willingness: row.get(8)?,
+                languages: serde_json::from_str(&languages_json).unwrap_or_default(),
+                excluded_modes: serde_json::from_str(&excluded_json).unwrap_or_default(),
+            })
+        },
+    )
+    .map_err(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => StorageError::not_found("preferences"),
+        other => other.into(),
+    })
+}
+
+pub fn put_preferences(
+    conn: &Connection,
+    user_id: &str,
+    prefs: &UserPreferences,
+    now_ms: i64,
+) -> StorageResult<UserPreferences> {
+    prefs.validate().map_err(StorageError::validation)?;
+
+    let current = get_preferences(conn, user_id)?;
+    if prefs.version != current.version {
+        return Err(StorageError::conflict(format!(
+            "preference version conflict: client {}, server {}",
+            prefs.version, current.version
+        )));
+    }
+
+    let mut next = prefs.clone();
+    next.version = current.version + 1;
+    upsert_preferences(conn, user_id, &next, now_ms)?;
+    Ok(next)
+}
+
+fn upsert_preferences(
+    conn: &Connection,
+    user_id: &str,
+    prefs: &UserPreferences,
+    now_ms: i64,
+) -> StorageResult<()> {
+    conn.execute(
+        "INSERT INTO user_preferences (
+            user_id, version, party_size, coop_competitive, session_minutes_min, session_minutes_max,
+            budget_currency, budget_max_each_minor, platforms_json, self_hosting_willingness,
+            languages_json, excluded_modes_json, updated_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+         ON CONFLICT(user_id) DO UPDATE SET
+            version = excluded.version,
+            party_size = excluded.party_size,
+            coop_competitive = excluded.coop_competitive,
+            session_minutes_min = excluded.session_minutes_min,
+            session_minutes_max = excluded.session_minutes_max,
+            budget_currency = excluded.budget_currency,
+            budget_max_each_minor = excluded.budget_max_each_minor,
+            platforms_json = excluded.platforms_json,
+            self_hosting_willingness = excluded.self_hosting_willingness,
+            languages_json = excluded.languages_json,
+            excluded_modes_json = excluded.excluded_modes_json,
+            updated_at_ms = excluded.updated_at_ms",
+        params![
+            user_id,
+            prefs.version,
+            prefs.party_size,
+            prefs.coop_competitive,
+            prefs.session_minutes_min,
+            prefs.session_minutes_max,
+            prefs.budget_currency,
+            prefs.budget_max_each_minor,
+            serde_json::to_string(&prefs.platforms)?,
+            prefs.self_hosting_willingness,
+            serde_json::to_string(&prefs.languages)?,
+            serde_json::to_string(&prefs.excluded_modes)?,
+            now_ms
+        ],
+    )?;
+    Ok(())
+}
+
+fn conn_total_users(conn: &Connection) -> StorageResult<i64> {
+    let n: i64 = conn.query_row("SELECT COUNT(*) FROM anonymous_users", [], |row| row.get(0))?;
+    Ok(n)
+}
+
+pub fn token_hash(token: &str) -> String {
+    let digest = Sha256::digest(token.as_bytes());
+    digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+pub fn ensure_algorithm_config(conn: &Connection, now_ms: i64) -> StorageResult<()> {
+    let exists: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM algorithm_configs WHERE status = 'active'",
+        [],
+        |row| row.get(0),
+    )?;
+    if exists {
+        return Ok(());
+    }
+    conn.execute(
+        "INSERT INTO algorithm_configs (version, schema_version, config_json, status, created_by, created_at_ms)
+         VALUES ('rules-0.1.0', 1, '{}', 'active', 'system', ?1)",
+        params![now_ms],
+    )?;
+    Ok(())
+}
