@@ -50,7 +50,7 @@ pub use store_search::{
 
 /// Recommended default User-Agent for MPGS server-side fetches.
 pub const DEFAULT_USER_AGENT: &str =
-    "MPGS-Server/0.1 (+https://github.com/Lunelotus/MPGS; research)";
+    "MPGS-Server/0.1 (+https://github.com/Lotulune/mpgs; research)";
 
 /// Official Web API host (requires key for GetAppList).
 pub const STEAM_WEB_API_HOST: &str = "https://api.steampowered.com";

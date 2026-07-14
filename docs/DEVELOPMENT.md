@@ -12,7 +12,7 @@
 - `mpgs-dbtool`：migrate / Steam 候选采集 / integrity / m3-audit / backup / restore。
 - 尚未接入 AI Provider 或 Tauri 客户端。
 
-2026-07-14 已用 2,071 条真实 Steam 多人分类候选通过 `m3-audit`；同日 [GitHub Actions 构建](https://github.com/Lunelotus/MPGS/actions/runs/29317861340) 的 Windows/Linux x64/ARM64 四个目标与质量门禁全部通过，并生成四套制品。M4 可以进入 [Tauri 桌面客户端](MVP_PLAN.md#m4tauri-桌面客户端) 开发；真实候选的数据富化仍是发布门禁，应与客户端开发并行推进。
+2026-07-14 已用 2,071 条真实 Steam 多人分类候选通过 `m3-audit`；同日 [GitHub Actions 构建](https://github.com/Lotulune/mpgs/actions/workflows/ci.yml) 的 Windows/Linux x64/ARM64 四个目标与质量门禁全部通过，并生成四套制品。M4 可以进入 [Tauri 桌面客户端](MVP_PLAN.md#m4tauri-桌面客户端) 开发；真实候选的数据富化仍是发布门禁，应与客户端开发并行推进。
 
 ### Git
 
