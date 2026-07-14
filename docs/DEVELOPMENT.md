@@ -2,7 +2,7 @@
 
 ## 1. 当前基线
 
-仓库当前处于 M3（确定性推荐与公开 API 完成）：
+仓库当前已完成 M3 验收（确定性推荐与公开 API 完成），可以开始 M4：
 
 - `mpgs-domain`：分区、偏好、反馈类型与推荐信号。
 - `mpgs-recommender`：评分、个性化、硬过滤、MMR、解释与 `rank_feed`。
@@ -12,7 +12,7 @@
 - `mpgs-dbtool`：migrate / Steam 候选采集 / integrity / m3-audit / backup / restore。
 - 尚未接入 AI Provider 或 Tauri 客户端。
 
-2026-07-14 已用 2,071 条真实 Steam 多人分类候选通过 `m3-audit`。M4 仍暂停，等待 GitHub Actions 的 Windows/Linux x64/ARM64 原生构建结果，再决定是否进入 [M4 Tauri 桌面客户端](MVP_PLAN.md#m4tauri-桌面客户端)。
+2026-07-14 已用 2,071 条真实 Steam 多人分类候选通过 `m3-audit`；同日 [GitHub Actions 构建](https://github.com/Lunelotus/MPGS/actions/runs/29317861340) 的 Windows/Linux x64/ARM64 四个目标与质量门禁全部通过，并生成四套制品。M4 可以进入 [Tauri 桌面客户端](MVP_PLAN.md#m4tauri-桌面客户端) 开发；真实候选的数据富化仍是发布门禁，应与客户端开发并行推进。
 
 ### Git
 

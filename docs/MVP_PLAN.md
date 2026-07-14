@@ -114,7 +114,8 @@ flowchart LR
 - SQLite：文件库读请求使用独立只读连接，写请求保持单写锁；所有 API 数据库调用在 Tokio 阻塞线程池执行，并有运行时不阻塞及读写句柄并发测试。
 - 性能：2,000 游戏本地调试构建手工门槛测试，未缓存 P95 `36.04 ms`、ETag 命中 P95 `0.92 ms`，低于 NFR-001 的 `500 ms`；已覆盖数据库锁等待不阻塞 Tokio 和文件库并发只读回归，尚未完成生产硬件压测。
 - 数据门禁：2026-07-14 使用 `collect-steam-candidates` 得到 2,071 条真实多人分类候选，`mpgs-dbtool m3-audit` 通过；同时 `recommendation_ready_profiles=0`，后续数据富化不得省略。
-- **M4 暂不开始**：等待 GitHub Actions 在 Windows/Linux x64/ARM64 原生 runner 上完成构建；取得四平台证据后再决定是否进入 M4。
+- 跨平台构建：2026-07-14 的 [GitHub Actions 构建](https://github.com/Lunelotus/MPGS/actions/runs/29317861340) 已通过质量门禁及 Windows/Linux x64/ARM64 四个原生构建，并生成 `mpgs-windows-x64`、`mpgs-windows-arm64`、`mpgs-linux-x64`、`mpgs-linux-arm64` 制品。
+- **M4 可以开始**：M3 工程、目录和跨平台构建门禁均已满足。真实候选当前仍缺平台、评价、CCU 和深度多人能力画像；数据富化应与 M4 并行，且必须在发布前通过推荐数据质量门禁。
 
 ### M4：Tauri 桌面客户端
 
