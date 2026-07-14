@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+getrandom = { workspace = true }
 mpgs-domain = { path = "../domain" }
 mpgs-steam-source = { path = "../steam-source" }
 rusqlite = { workspace = true }

@@ -27,7 +27,7 @@ impl StoreDetailsRequest {
     }
 
     pub fn path_and_query(&self) -> String {
-        format!("/api/appdetails?appids={}", self.app_id)
+        format!("/api/appdetails?appids={}&l=english", self.app_id)
     }
 }
 
@@ -50,6 +50,10 @@ struct AppDetailsData {
     #[serde(default)]
     is_free: Option<bool>,
     #[serde(default)]
+    platforms: Option<PlatformsDto>,
+    #[serde(default)]
+    supported_languages: Option<String>,
+    #[serde(default)]
     short_description: Option<String>,
     #[serde(default)]
     developers: Option<Vec<String>>,
@@ -65,6 +69,30 @@ struct AppDetailsData {
     demos: Option<Vec<DemoDto>>,
     #[serde(default)]
     fullgame: Option<FullGameDto>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PlatformsDto {
+    #[serde(default)]
+    windows: bool,
+    #[serde(default)]
+    mac: bool,
+    #[serde(default)]
+    linux: bool,
+}
+
+impl PlatformsDto {
+    fn normalized(self) -> Vec<String> {
+        [
+            ("windows", self.windows),
+            ("macos", self.mac),
+            ("linux", self.linux),
+        ]
+        .into_iter()
+        .filter(|(_, supported)| *supported)
+        .map(|(name, _)| name.to_owned())
+        .collect()
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -126,7 +154,16 @@ pub fn parse_store_details(
         .data
         .ok_or_else(|| SourceError::invalid_structure("success=true but data object is missing"))?;
 
-    let app_id = data.steam_appid.unwrap_or(request.app_id);
+    if data
+        .steam_appid
+        .is_some_and(|response_id| response_id != request.app_id)
+    {
+        return Err(SourceError::invalid_structure(format!(
+            "steam_appid does not match requested app {}",
+            request.app_id
+        )));
+    }
+    let app_id = request.app_id;
     let categories: Vec<String> = data
         .categories
         .unwrap_or_default()
@@ -146,12 +183,15 @@ pub fn parse_store_details(
         .cloned()
         .collect();
 
+    let release_date_observed = data.release_date.is_some();
     let coming_soon = data.release_date.as_ref().and_then(|r| r.coming_soon);
     let release_date_raw = data
         .release_date
         .as_ref()
         .and_then(|r| r.date.clone())
         .filter(|d| !d.trim().is_empty());
+    let (release_date, release_date_precision) =
+        normalize_release_date(release_date_raw.as_deref());
 
     let release_state = match coming_soon {
         Some(true) => ReleaseStateProposal::ComingSoon,
@@ -178,6 +218,11 @@ pub fn parse_store_details(
         .as_deref()
         .map(AppTypeProposal::from_steam_type)
         .unwrap_or(AppTypeProposal::Unknown);
+    let platforms = data.platforms.map(PlatformsDto::normalized);
+    let supported_languages = data
+        .supported_languages
+        .as_deref()
+        .map(normalize_supported_languages);
 
     let details = StoreDetailsProposal {
         app_id,
@@ -185,7 +230,12 @@ pub fn parse_store_details(
         app_type,
         release_state,
         release_date_raw,
+        release_date,
+        release_date_precision,
+        release_date_observed,
         is_free: data.is_free,
+        platforms,
+        supported_languages,
         coming_soon,
         categories,
         genres,
@@ -228,6 +278,153 @@ pub fn parse_store_details(
     }
 
     Ok(StoreDetailsParseResult { details, relations })
+}
+
+fn normalize_supported_languages(raw: &str) -> Vec<String> {
+    const LANGUAGES: &[(&str, &str)] = &[
+        ("Simplified Chinese", "schinese"),
+        ("Traditional Chinese", "tchinese"),
+        ("Portuguese - Brazil", "brazilian"),
+        ("Brazilian Portuguese", "brazilian"),
+        ("Spanish - Latin America", "latam"),
+        ("Arabic", "arabic"),
+        ("Bulgarian", "bulgarian"),
+        ("Czech", "czech"),
+        ("Danish", "danish"),
+        ("Dutch", "dutch"),
+        ("English", "english"),
+        ("Finnish", "finnish"),
+        ("French", "french"),
+        ("German", "german"),
+        ("Greek", "greek"),
+        ("Hungarian", "hungarian"),
+        ("Indonesian", "indonesian"),
+        ("Italian", "italian"),
+        ("Japanese", "japanese"),
+        ("Korean", "koreana"),
+        ("Norwegian", "norwegian"),
+        ("Polish", "polish"),
+        ("Portuguese", "portuguese"),
+        ("Romanian", "romanian"),
+        ("Russian", "russian"),
+        ("Spanish - Spain", "spanish"),
+        ("Spanish", "spanish"),
+        ("Swedish", "swedish"),
+        ("Thai", "thai"),
+        ("Turkish", "turkish"),
+        ("Ukrainian", "ukrainian"),
+        ("Vietnamese", "vietnamese"),
+    ];
+    let lower = raw.to_ascii_lowercase();
+    let mut found = Vec::new();
+    for (label, code) in LANGUAGES {
+        if lower.contains(&label.to_ascii_lowercase()) && !found.iter().any(|item| item == code) {
+            found.push((*code).to_owned());
+        }
+    }
+    found
+}
+
+fn normalize_release_date(raw: Option<&str>) -> (Option<String>, Option<String>) {
+    let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+        return (None, None);
+    };
+
+    if let Some((year, month, day)) = parse_iso_day(raw) {
+        return (
+            Some(format!("{year:04}-{month:02}-{day:02}")),
+            Some("day".into()),
+        );
+    }
+
+    let cleaned = raw.replace(',', " ");
+    let parts: Vec<_> = cleaned.split_whitespace().collect();
+    if parts.len() == 3 {
+        let parsed = if let (Ok(day), Some(month), Ok(year)) = (
+            parts[0].parse::<u32>(),
+            month_number(parts[1]),
+            parts[2].parse::<i32>(),
+        ) {
+            Some((year, month, day))
+        } else if let (Some(month), Ok(day), Ok(year)) = (
+            month_number(parts[0]),
+            parts[1].parse::<u32>(),
+            parts[2].parse::<i32>(),
+        ) {
+            Some((year, month, day))
+        } else {
+            None
+        };
+        if let Some((year, month, day)) = parsed.filter(|&(y, m, d)| valid_day(y, m, d)) {
+            return (
+                Some(format!("{year:04}-{month:02}-{day:02}")),
+                Some("day".into()),
+            );
+        }
+    }
+
+    if parts.len() == 2 {
+        let quarter = parts[0]
+            .strip_prefix('Q')
+            .or_else(|| parts[0].strip_prefix('q'))
+            .and_then(|value| value.parse::<u8>().ok());
+        if quarter.is_some_and(|value| (1..=4).contains(&value)) && parts[1].parse::<i32>().is_ok()
+        {
+            return (None, Some("quarter".into()));
+        }
+        if month_number(parts[0]).is_some() && parts[1].parse::<i32>().is_ok() {
+            return (None, Some("month".into()));
+        }
+    }
+
+    if raw.parse::<i32>().is_ok() {
+        return (None, Some("year".into()));
+    }
+    (None, Some("tba".into()))
+}
+
+fn parse_iso_day(value: &str) -> Option<(i32, u32, u32)> {
+    if value.len() != 10
+        || !value.is_ascii()
+        || value.as_bytes().get(4) != Some(&b'-')
+        || value.as_bytes().get(7) != Some(&b'-')
+    {
+        return None;
+    }
+    let year = value[0..4].parse().ok()?;
+    let month = value[5..7].parse().ok()?;
+    let day = value[8..10].parse().ok()?;
+    valid_day(year, month, day).then_some((year, month, day))
+}
+
+fn month_number(value: &str) -> Option<u32> {
+    match value.to_ascii_lowercase().as_str() {
+        "jan" | "january" => Some(1),
+        "feb" | "february" => Some(2),
+        "mar" | "march" => Some(3),
+        "apr" | "april" => Some(4),
+        "may" => Some(5),
+        "jun" | "june" => Some(6),
+        "jul" | "july" => Some(7),
+        "aug" | "august" => Some(8),
+        "sep" | "sept" | "september" => Some(9),
+        "oct" | "october" => Some(10),
+        "nov" | "november" => Some(11),
+        "dec" | "december" => Some(12),
+        _ => None,
+    }
+}
+
+fn valid_day(year: i32, month: u32, day: u32) -> bool {
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return false,
+    };
+    (1..=days).contains(&day)
 }
 
 fn is_multiplayer_hint(label: &str) -> bool {
@@ -285,6 +482,11 @@ mod tests {
         let result = parse_store_details(&request, &fixture("game")).unwrap();
         assert_eq!(result.details.app_id, 892970);
         assert_eq!(result.details.release_state, ReleaseStateProposal::Released);
+        assert_eq!(result.details.release_date.as_deref(), Some("2021-02-02"));
+        assert_eq!(
+            result.details.release_date_precision.as_deref(),
+            Some("day")
+        );
         assert_eq!(result.details.stability, SourceStability::ApprovedVolatile);
         assert!(!result.details.multiplayer_category_hints.is_empty());
         assert!(result.relations.iter().any(|r| {
@@ -315,6 +517,11 @@ mod tests {
         );
         assert_eq!(result.details.coming_soon, Some(true));
         assert!(result.details.release_date_raw.is_some());
+        assert_eq!(result.details.release_date, None);
+        assert_eq!(
+            result.details.release_date_precision.as_deref(),
+            Some("quarter")
+        );
     }
 
     #[test]
@@ -334,5 +541,46 @@ mod tests {
             assert!(STORE_APPDETAILS_FEASIBILITY.supports_demo_relation);
             assert!(!STORE_APPDETAILS_FEASIBILITY.requires_web_api_key);
         }
+    }
+
+    #[test]
+    fn request_forces_stable_english_date_text() {
+        assert_eq!(
+            StoreDetailsRequest::new(42).path_and_query(),
+            "/api/appdetails?appids=42&l=english"
+        );
+    }
+
+    #[test]
+    fn response_app_id_must_match_request() {
+        let raw = RawResponse::validate(
+            200,
+            br#"{"42":{"success":true,"data":{"steam_appid":43,"type":"game"}}}"#.to_vec(),
+            Some("application/json".into()),
+            1024,
+        )
+        .unwrap();
+        let error = parse_store_details(&StoreDetailsRequest::new(42), &raw).unwrap_err();
+        assert!(matches!(error, SourceError::InvalidStructure { .. }));
+    }
+
+    #[test]
+    fn parses_structured_platforms_and_normalizes_languages() {
+        let raw = RawResponse::validate(
+            200,
+            br#"{"42":{"success":true,"data":{"steam_appid":42,"type":"game","platforms":{"windows":true,"mac":false,"linux":true},"supported_languages":"English, Simplified Chinese<strong>*</strong>, Japanese"}}}"#.to_vec(),
+            Some("application/json".into()),
+            4096,
+        )
+        .unwrap();
+        let result = parse_store_details(&StoreDetailsRequest::new(42), &raw).unwrap();
+        assert_eq!(
+            result.details.platforms,
+            Some(vec!["windows".into(), "linux".into()])
+        );
+        assert_eq!(
+            result.details.supported_languages,
+            Some(vec!["schinese".into(), "english".into(), "japanese".into()])
+        );
     }
 }

@@ -3,11 +3,14 @@ use rusqlite::params;
 
 use mpgs_steam_source::{
     AppCatalogProposal, AppRelationProposal, AppTypeProposal, CcuProposal, RelationTypeProposal,
-    ReleaseStateProposal, ReviewSummaryProposal, StoreDetailsProposal,
+    ReleaseStateProposal, ReviewSummaryProposal, STORE_SEARCH_ADAPTER_VERSION,
+    STORE_SEARCH_SOURCE_NAME, StoreDetailsProposal, StoreSearchPage,
 };
 
 use crate::catalog::{self, upsert_app, upsert_relation};
-use crate::curation::{has_active_override, insert_feature_evidence};
+use crate::curation::{
+    has_active_override, insert_feature_evidence, insert_feature_evidence_with_document,
+};
 use crate::error::StorageResult;
 use crate::util::{day_utc_from_ms, wilson_lower_bound};
 
@@ -111,7 +114,7 @@ pub fn ingest_store_details(
     now_ms: i64,
 ) -> StorageResult<()> {
     let app_type = app_type_str(details.app_type);
-    let release_state = release_state_str(details.release_state);
+    let proposed_release_state = release_state_str(details.release_state);
     let name = details
         .name
         .clone()
@@ -119,32 +122,63 @@ pub fn ingest_store_details(
 
     // Capture prior release state/date for event log.
     let prior = catalog::get_app(conn, details.app_id)?;
+    let release_state = if details.release_date_observed {
+        proposed_release_state
+    } else {
+        prior
+            .as_ref()
+            .map_or(proposed_release_state, |app| app.release_state.as_str())
+    }
+    .to_owned();
     upsert_app(
         conn,
         details.app_id,
         app_type,
         &name,
-        release_state,
-        details.release_date_raw.as_deref(),
-        None,
+        &release_state,
+        details.release_date.as_deref(),
+        details.release_date_precision.as_deref(),
         None,
         now_ms,
     )?;
+    // Store adapters distinguish an explicit unknown date from a temporarily absent field.
+    if details.release_date_observed {
+        conn.execute(
+            "UPDATE apps
+             SET release_date = ?1, release_date_raw = ?2, release_date_precision = ?3,
+                 updated_at_ms = ?4
+             WHERE app_id = ?5",
+            params![
+                details.release_date,
+                details.release_date_raw,
+                details.release_date_precision,
+                now_ms,
+                details.app_id
+            ],
+        )?;
+    }
 
-    if let Some(prev) = prior
+    if details.release_date_observed
+        && let Some(prev) = prior
         && (prev.release_state != release_state
-            || prev.release_date.as_deref() != details.release_date_raw.as_deref())
+            || prev.release_date != details.release_date
+            || prev.release_date_raw != details.release_date_raw
+            || prev.release_date_precision != details.release_date_precision)
     {
         conn.execute(
             "INSERT INTO release_events (
                 app_id, old_release_date, new_release_date, old_precision, new_precision,
                 old_release_state, new_release_state, source, observed_at_ms
-             ) VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7, ?8)",
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 details.app_id,
-                prev.release_date,
-                details.release_date_raw,
+                prev.release_date.or(prev.release_date_raw),
+                details
+                    .release_date
+                    .as_ref()
+                    .or(details.release_date_raw.as_ref()),
                 prev.release_date_precision,
+                details.release_date_precision,
                 prev.release_state,
                 release_state,
                 details.source,
@@ -152,6 +186,49 @@ pub fn ingest_store_details(
             ],
         )?;
     }
+
+    if let Some(platforms) = &details.platforms {
+        insert_feature_evidence(
+            conn,
+            details.app_id,
+            "platforms",
+            &serde_json::json!(platforms),
+            "steam_store",
+            details.source,
+            0.9,
+            now_ms,
+        )?;
+    }
+    if let Some(languages) = &details.supported_languages {
+        insert_feature_evidence(
+            conn,
+            details.app_id,
+            "languages",
+            &serde_json::json!(languages),
+            "steam_store",
+            details.source,
+            0.8,
+            now_ms,
+        )?;
+    }
+    let platforms = if has_active_override(conn, details.app_id, "platforms")? {
+        None
+    } else {
+        details.platforms.as_deref()
+    };
+    let languages = if has_active_override(conn, details.app_id, "languages")? {
+        None
+    } else {
+        details.supported_languages.as_deref()
+    };
+    catalog::upsert_app_availability(
+        conn,
+        details.app_id,
+        platforms,
+        languages,
+        details.is_free,
+        now_ms,
+    )?;
 
     for relation in relations {
         let rel = relation_type_str(&relation.relation_type);
@@ -180,6 +257,52 @@ pub fn ingest_store_details(
         )?;
     }
     Ok(())
+}
+
+pub fn ingest_store_search_page(
+    conn: &Connection,
+    page: &StoreSearchPage,
+    now_ms: i64,
+) -> StorageResult<usize> {
+    conn.execute(
+        "INSERT INTO source_documents (
+            source, entity_type, entity_key, content_type, content_hash,
+            content_text, fetched_at_ms, parse_version
+         ) VALUES (?1, 'search_page', ?2, 'application/json', ?3, NULL, ?4, ?5)",
+        params![
+            STORE_SEARCH_SOURCE_NAME,
+            format!("multiplayer:reviews_desc:{}", page.start),
+            page.content_hash,
+            now_ms,
+            STORE_SEARCH_ADAPTER_VERSION,
+        ],
+    )?;
+    let document_id = conn.last_insert_rowid();
+    let source_ref = format!(
+        "steam_store_search:category2=1;sort=Reviews_DESC;start={};sha256={}",
+        page.start, page.content_hash
+    );
+    let evidence_value = serde_json::json!({
+        "category": "Multi-player",
+        "filter": "category2=1",
+        "sort": "Reviews_DESC"
+    });
+
+    for candidate in &page.candidates {
+        ingest_app_catalog(conn, &candidate.catalog_proposal(), now_ms)?;
+        insert_feature_evidence_with_document(
+            conn,
+            candidate.app_id,
+            "category_hint",
+            &evidence_value,
+            "store_search_category",
+            &source_ref,
+            Some(document_id),
+            0.3,
+            now_ms,
+        )?;
+    }
+    Ok(page.candidates.len())
 }
 
 /// Apply a source-derived multiplayer boolean without clobbering human overrides.
@@ -261,29 +384,49 @@ fn upsert_player_daily(
                 "INSERT INTO player_daily (
                     app_id, day_utc, min_ccu, max_ccu, mean_ccu, median_approx_ccu,
                     sample_count, missing_rate, updated_at_ms
-                 ) VALUES (?1, ?2, NULL, NULL, NULL, NULL, 0, 1, ?3)",
+                 ) VALUES (?1, ?2, NULL, NULL, NULL, NULL, 1, 1, ?3)",
                 params![app_id, day, now_ms],
             )?;
         }
         (Some(agg), Some(count)) => {
             let c = i64::from(count);
-            let sample = agg.sample_count + 1;
+            let old_total = agg.sample_count.max(0);
+            let old_missing = (agg.missing_rate * old_total as f64)
+                .round()
+                .clamp(0.0, old_total as f64) as i64;
+            let old_valid = old_total - old_missing;
+            let sample = old_total + 1;
+            let valid_samples = old_valid + 1;
             let min_v = Some(agg.min_ccu.map_or(c, |m| m.min(c)));
             let max_v = Some(agg.max_ccu.map_or(c, |m| m.max(c)));
             let mean_v = agg.mean_ccu.map_or(c as f64, |m| {
-                (m * agg.sample_count as f64 + c as f64) / sample as f64
+                (m * old_valid as f64 + c as f64) / valid_samples as f64
             });
+            let missing_rate = old_missing as f64 / sample as f64;
             conn.execute(
                 "UPDATE player_daily SET
                     min_ccu = ?1, max_ccu = ?2, mean_ccu = ?3, median_approx_ccu = ?3,
-                    sample_count = ?4, missing_rate = 0, updated_at_ms = ?5
-                 WHERE app_id = ?6 AND day_utc = ?7",
-                params![min_v, max_v, mean_v, sample, now_ms, app_id, day],
+                    sample_count = ?4, missing_rate = ?5, updated_at_ms = ?6
+                 WHERE app_id = ?7 AND day_utc = ?8",
+                params![
+                    min_v,
+                    max_v,
+                    mean_v,
+                    sample,
+                    missing_rate,
+                    now_ms,
+                    app_id,
+                    day
+                ],
             )?;
         }
         (Some(agg), None) => {
-            let total_slots = agg.sample_count + 1;
-            let missing = ((agg.missing_rate * agg.sample_count as f64) + 1.0) / total_slots as f64;
+            let old_total = agg.sample_count.max(0);
+            let old_missing = (agg.missing_rate * old_total as f64)
+                .round()
+                .clamp(0.0, old_total as f64) as i64;
+            let total_slots = old_total + 1;
+            let missing = (old_missing + 1) as f64 / total_slots as f64;
             conn.execute(
                 "UPDATE player_daily SET
                     sample_count = ?1, missing_rate = ?2, updated_at_ms = ?3

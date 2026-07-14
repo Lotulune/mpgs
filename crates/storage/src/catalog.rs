@@ -46,8 +46,8 @@ pub fn upsert_app(
 pub fn get_app(conn: &Connection, app_id: u32) -> StorageResult<Option<AppRecord>> {
     conn.query_row(
         "SELECT app_id, app_type, canonical_name, release_state, release_date,
-                release_date_precision, is_early_access, current_data_confidence,
-                source_modified_at_ms, created_at_ms, updated_at_ms
+                release_date_raw, release_date_precision, is_early_access,
+                current_data_confidence, source_modified_at_ms, created_at_ms, updated_at_ms
          FROM apps WHERE app_id = ?1",
         params![app_id],
         |row| {
@@ -57,12 +57,13 @@ pub fn get_app(conn: &Connection, app_id: u32) -> StorageResult<Option<AppRecord
                 canonical_name: row.get(2)?,
                 release_state: row.get(3)?,
                 release_date: row.get(4)?,
-                release_date_precision: row.get(5)?,
-                is_early_access: sql_to_opt_bool(row.get(6)?),
-                current_data_confidence: row.get(7)?,
-                source_modified_at_ms: row.get(8)?,
-                created_at_ms: row.get(9)?,
-                updated_at_ms: row.get(10)?,
+                release_date_raw: row.get(5)?,
+                release_date_precision: row.get(6)?,
+                is_early_access: sql_to_opt_bool(row.get(7)?),
+                current_data_confidence: row.get(8)?,
+                source_modified_at_ms: row.get(9)?,
+                created_at_ms: row.get(10)?,
+                updated_at_ms: row.get(11)?,
             })
         },
     )
@@ -179,6 +180,101 @@ pub fn set_profile_text_field(
         "UPDATE multiplayer_profiles SET {column} = ?1, computed_at_ms = ?2 WHERE app_id = ?3"
     );
     conn.execute(&sql, params![value, now_ms, app_id])?;
+    Ok(())
+}
+
+pub fn upsert_app_availability(
+    conn: &Connection,
+    app_id: u32,
+    platforms: Option<&[String]>,
+    languages: Option<&[String]>,
+    is_free: Option<bool>,
+    now_ms: i64,
+) -> StorageResult<()> {
+    ensure_app_stub(conn, app_id, &format!("app-{app_id}"), now_ms)?;
+    let platforms_json = platforms.map(serde_json::to_string).transpose()?;
+    let languages_json = languages.map(serde_json::to_string).transpose()?;
+    conn.execute(
+        "INSERT INTO app_availability (
+            app_id, platforms_json, languages_json, is_free, updated_at_ms
+         ) VALUES (?1, COALESCE(?2, '[]'), COALESCE(?3, '[]'), ?4, ?5)
+         ON CONFLICT(app_id) DO UPDATE SET
+            platforms_json = COALESCE(?2, app_availability.platforms_json),
+            languages_json = COALESCE(?3, app_availability.languages_json),
+            is_free = COALESCE(?4, app_availability.is_free),
+            updated_at_ms = ?5",
+        params![
+            app_id,
+            platforms_json,
+            languages_json,
+            opt_bool_to_sql(is_free),
+            now_ms
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn set_availability_integer_field(
+    conn: &Connection,
+    app_id: u32,
+    field: &str,
+    value: Option<u32>,
+    now_ms: i64,
+) -> StorageResult<()> {
+    let column = match field {
+        "typical_session_minutes_min" => "typical_session_minutes_min",
+        "typical_session_minutes_max" => "typical_session_minutes_max",
+        other => {
+            return Err(StorageError::validation(format!(
+                "unsupported availability integer field: {other}"
+            )));
+        }
+    };
+    upsert_app_availability(conn, app_id, None, None, None, now_ms)?;
+    let (current_min, current_max): (Option<u32>, Option<u32>) = conn.query_row(
+        "SELECT typical_session_minutes_min, typical_session_minutes_max
+         FROM app_availability WHERE app_id = ?1",
+        params![app_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let (next_min, next_max) = match field {
+        "typical_session_minutes_min" => (value, current_max),
+        _ => (current_min, value),
+    };
+    if matches!((next_min, next_max), (Some(min), Some(max)) if min > max) {
+        return Err(StorageError::validation(
+            "typical session minimum must not exceed maximum",
+        ));
+    }
+    let sql =
+        format!("UPDATE app_availability SET {column} = ?1, updated_at_ms = ?2 WHERE app_id = ?3");
+    conn.execute(&sql, params![value, now_ms, app_id])?;
+    Ok(())
+}
+
+pub fn set_availability_string_list_field(
+    conn: &Connection,
+    app_id: u32,
+    field: &str,
+    values: &[String],
+    now_ms: i64,
+) -> StorageResult<()> {
+    let column = match field {
+        "platforms" => "platforms_json",
+        "languages" => "languages_json",
+        other => {
+            return Err(StorageError::validation(format!(
+                "unsupported availability list field: {other}"
+            )));
+        }
+    };
+    upsert_app_availability(conn, app_id, None, None, None, now_ms)?;
+    let sql =
+        format!("UPDATE app_availability SET {column} = ?1, updated_at_ms = ?2 WHERE app_id = ?3");
+    conn.execute(
+        &sql,
+        params![serde_json::to_string(values)?, now_ms, app_id],
+    )?;
     Ok(())
 }
 

@@ -4,6 +4,7 @@ use rusqlite::Connection;
 
 use crate::catalog::{set_profile_bool_field, set_profile_text_field, upsert_app};
 use crate::error::StorageResult;
+use crate::util::wilson_lower_bound;
 use rusqlite::params;
 
 struct SeedGame {
@@ -184,6 +185,22 @@ const SEED: &[SeedGame] = &[
         ccu: 30_000,
         section_hint: "recent_release",
     },
+    SeedGame {
+        app_id: 2500002,
+        name: "Recent Co-op Sample",
+        release_state: "released",
+        release_date: None,
+        dominant_mode: "private_coop",
+        private_session: true,
+        online_coop: true,
+        self_host: false,
+        rec_min: 2,
+        rec_max: 4,
+        reviews: 5_000,
+        positive: 4_500,
+        ccu: 500,
+        section_hint: "rolling_recent_sample",
+    },
 ];
 
 /// Seed a minimal multiplayer catalog if apps table is empty.
@@ -197,14 +214,18 @@ pub fn seed_demo_catalog_if_empty(conn: &Connection, now_ms: i64) -> StorageResu
 
 pub fn seed_demo_catalog(conn: &Connection, now_ms: i64) -> StorageResult<usize> {
     for game in SEED {
+        let rolling_release_date = (game.section_hint == "rolling_recent_sample").then(|| {
+            crate::util::day_utc_from_ms(now_ms.saturating_sub(30_i64 * 24 * 60 * 60 * 1000))
+        });
+        let release_date = rolling_release_date.as_deref().or(game.release_date);
         upsert_app(
             conn,
             game.app_id,
             "game",
             game.name,
             game.release_state,
-            game.release_date,
-            game.release_date.map(|_| "day"),
+            release_date,
+            release_date.map(|_| "day"),
             None,
             now_ms,
         )?;
@@ -244,18 +265,20 @@ pub fn seed_demo_catalog(conn: &Connection, now_ms: i64) -> StorageResult<usize>
             params![game.rec_min, game.rec_max, now_ms, game.app_id],
         )?;
         if game.reviews > 0 {
+            let wilson = wilson_lower_bound(game.positive, game.reviews);
             conn.execute(
                 "INSERT OR REPLACE INTO review_snapshots (
                     app_id, region_scope, language_scope, captured_at_ms,
                     total_positive, total_negative, total_reviews, review_score, review_score_desc,
                     wilson_lower, filter_offtopic_activity, parameter_hash, content_hash, source
-                 ) VALUES (?1, 'all', 'all', ?2, ?3, ?4, ?5, 8, 'Very Positive', 0.8, 1, 'seed', 'seed', 'seed')",
+                 ) VALUES (?1, 'all', 'all', ?2, ?3, ?4, ?5, 8, 'Very Positive', ?6, 1, 'seed', 'seed', 'seed')",
                 params![
                     game.app_id,
                     now_ms,
                     game.positive,
                     game.reviews.saturating_sub(game.positive),
-                    game.reviews
+                    game.reviews,
+                    wilson
                 ],
             )?;
         }

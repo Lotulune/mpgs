@@ -15,7 +15,10 @@ pub fn backup_to_path(db: &Database, dest_path: impl AsRef<Path>) -> StorageResu
         std::fs::create_dir_all(parent)?;
     }
     if dest_path.exists() {
-        std::fs::remove_file(dest_path)?;
+        return Err(StorageError::conflict(format!(
+            "backup destination already exists: {}",
+            dest_path.display()
+        )));
     }
 
     db.with_conn(|src| {
@@ -45,13 +48,17 @@ pub fn restore_from_backup(
             backup_path.display()
         )));
     }
+    verify_backup_source(backup_path)?;
     if let Some(parent) = dest_path.parent()
         && !parent.as_os_str().is_empty()
     {
         std::fs::create_dir_all(parent)?;
     }
     if dest_path.exists() {
-        std::fs::remove_file(dest_path)?;
+        return Err(StorageError::conflict(format!(
+            "restore destination already exists: {}",
+            dest_path.display()
+        )));
     }
     std::fs::copy(backup_path, dest_path)?;
 
@@ -73,4 +80,17 @@ pub fn open_readonly(path: impl AsRef<Path>) -> StorageResult<Connection> {
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
     Ok(conn)
+}
+
+fn verify_backup_source(path: &Path) -> StorageResult<()> {
+    let conn = open_readonly(path)?;
+    let mut stmt = conn.prepare("PRAGMA integrity_check")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    let checks = rows.collect::<Result<Vec<_>, _>>()?;
+    if checks != ["ok".to_owned()] {
+        return Err(StorageError::migration(format!(
+            "backup integrity_check failed: {checks:?}"
+        )));
+    }
+    Ok(())
 }

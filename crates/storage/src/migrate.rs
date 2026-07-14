@@ -19,6 +19,16 @@ pub const MIGRATIONS: &[(i64, &str, &str)] = &[
         "0003_users_feedback_algorithm",
         include_str!("../../../migrations/0003_users_feedback_algorithm.sql"),
     ),
+    (
+        4,
+        "0004_m3_integrity_fixes",
+        include_str!("../../../migrations/0004_m3_integrity_fixes.sql"),
+    ),
+    (
+        5,
+        "0005_m3_recommendation_inputs",
+        include_str!("../../../migrations/0005_m3_recommendation_inputs.sql"),
+    ),
 ];
 
 pub fn current_version(conn: &Connection) -> StorageResult<i64> {

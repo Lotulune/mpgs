@@ -1,5 +1,5 @@
-use mpgs_domain::UserPreferences;
-use rusqlite::{Connection, OptionalExtension, params};
+use mpgs_domain::{RecommendationConfig, UserPreferences};
+use rusqlite::{Connection, OptionalExtension, params, types::Type};
 use sha2::{Digest, Sha256};
 
 use crate::error::{StorageError, StorageResult};
@@ -10,31 +10,111 @@ pub struct SessionTokens {
     pub access_token: String,
     pub refresh_token: String,
     pub expires_at_ms: i64,
+    pub refresh_expires_at_ms: i64,
 }
 
-pub fn create_anonymous_session(conn: &Connection, now_ms: i64) -> StorageResult<SessionTokens> {
-    let user_id = format!("u_{now_ms}_{}", conn_total_users(conn)? + 1);
-    let access_token = format!("atk_{user_id}_{now_ms}");
-    let refresh_token = format!("rtk_{user_id}_{now_ms}");
+pub const ACCESS_TOKEN_TTL_MS: i64 = 60 * 60 * 1000;
+pub const REFRESH_TOKEN_TTL_MS: i64 = 30 * 24 * 60 * 60 * 1000;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActiveAlgorithmConfig {
+    pub version: String,
+    pub config: RecommendationConfig,
+}
+
+pub fn create_anonymous_session(
+    conn: &mut Connection,
+    now_ms: i64,
+) -> StorageResult<SessionTokens> {
+    let user_id = format!("u_{}", random_hex::<16>()?);
+    let access_token = format!("mpgs_at_{}", random_hex::<32>()?);
+    let refresh_token = format!("mpgs_rt_{}", random_hex::<32>()?);
     let access_hash = token_hash(&access_token);
     let refresh_hash = token_hash(&refresh_token);
-    let expires_at_ms = now_ms + 7 * 24 * 60 * 60 * 1000;
+    let expires_at_ms = now_ms.saturating_add(ACCESS_TOKEN_TTL_MS);
+    let refresh_expires_at_ms = now_ms.saturating_add(REFRESH_TOKEN_TTL_MS);
 
-    conn.execute(
+    let tx = conn.transaction()?;
+    tx.execute(
         "INSERT INTO anonymous_users (
-            user_id, created_at_ms, last_active_at_ms, access_token_hash, refresh_token_hash
-         ) VALUES (?1, ?2, ?2, ?3, ?4)",
-        params![user_id, now_ms, access_hash, refresh_hash],
+            user_id, created_at_ms, last_active_at_ms, access_token_hash, refresh_token_hash,
+            access_expires_at_ms, refresh_expires_at_ms
+         ) VALUES (?1, ?2, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            user_id,
+            now_ms,
+            access_hash,
+            refresh_hash,
+            expires_at_ms,
+            refresh_expires_at_ms
+        ],
     )?;
 
     let prefs = UserPreferences::default();
-    upsert_preferences(conn, &user_id, &prefs, now_ms)?;
+    upsert_preferences(&tx, &user_id, &prefs, now_ms)?;
+    tx.commit()?;
 
     Ok(SessionTokens {
         user_id,
         access_token,
         refresh_token,
         expires_at_ms,
+        refresh_expires_at_ms,
+    })
+}
+
+pub fn refresh_anonymous_session(
+    conn: &mut Connection,
+    refresh_token: &str,
+    now_ms: i64,
+) -> StorageResult<SessionTokens> {
+    if refresh_token.trim().is_empty() {
+        return Err(StorageError::validation("refresh_token is required"));
+    }
+
+    let old_hash = token_hash(refresh_token);
+    let user_id: String = conn
+        .query_row(
+            "SELECT user_id FROM anonymous_users
+             WHERE refresh_token_hash = ?1 AND refresh_expires_at_ms > ?2",
+            params![old_hash, now_ms],
+            |row| row.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| StorageError::not_found("session"))?;
+
+    let access_token = format!("mpgs_at_{}", random_hex::<32>()?);
+    let new_refresh_token = format!("mpgs_rt_{}", random_hex::<32>()?);
+    let expires_at_ms = now_ms.saturating_add(ACCESS_TOKEN_TTL_MS);
+    let refresh_expires_at_ms = now_ms.saturating_add(REFRESH_TOKEN_TTL_MS);
+    let tx = conn.transaction()?;
+    let changed = tx.execute(
+        "UPDATE anonymous_users
+         SET access_token_hash = ?1, refresh_token_hash = ?2,
+             access_expires_at_ms = ?3, refresh_expires_at_ms = ?4,
+             last_active_at_ms = ?5
+         WHERE user_id = ?6 AND refresh_token_hash = ?7 AND refresh_expires_at_ms > ?5",
+        params![
+            token_hash(&access_token),
+            token_hash(&new_refresh_token),
+            expires_at_ms,
+            refresh_expires_at_ms,
+            now_ms,
+            user_id,
+            old_hash
+        ],
+    )?;
+    if changed != 1 {
+        return Err(StorageError::not_found("session"));
+    }
+    tx.commit()?;
+
+    Ok(SessionTokens {
+        user_id,
+        access_token,
+        refresh_token: new_refresh_token,
+        expires_at_ms,
+        refresh_expires_at_ms,
     })
 }
 
@@ -46,15 +126,17 @@ pub fn resolve_user_id(
     let hash = token_hash(access_token);
     let user_id: String = conn
         .query_row(
-            "SELECT user_id FROM anonymous_users WHERE access_token_hash = ?1",
-            params![hash],
+            "SELECT user_id FROM anonymous_users
+             WHERE access_token_hash = ?1 AND access_expires_at_ms > ?2",
+            params![hash, now_ms],
             |row| row.get(0),
         )
         .optional()?
         .ok_or_else(|| StorageError::not_found("session"))?;
     conn.execute(
-        "UPDATE anonymous_users SET last_active_at_ms = ?1 WHERE user_id = ?2",
-        params![now_ms, user_id],
+        "UPDATE anonymous_users SET last_active_at_ms = ?1
+         WHERE user_id = ?2 AND last_active_at_ms <= ?3",
+        params![now_ms, user_id, now_ms.saturating_sub(5 * 60 * 1000)],
     )?;
     Ok(user_id)
 }
@@ -78,10 +160,16 @@ pub fn get_preferences(conn: &Connection, user_id: &str) -> StorageResult<UserPr
                 session_minutes_max: row.get::<_, i64>(4)? as u32,
                 budget_currency: row.get(5)?,
                 budget_max_each_minor: row.get(6)?,
-                platforms: serde_json::from_str(&platforms_json).unwrap_or_default(),
+                platforms: serde_json::from_str(&platforms_json).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(7, Type::Text, Box::new(error))
+                })?,
                 self_hosting_willingness: row.get(8)?,
-                languages: serde_json::from_str(&languages_json).unwrap_or_default(),
-                excluded_modes: serde_json::from_str(&excluded_json).unwrap_or_default(),
+                languages: serde_json::from_str(&languages_json).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(9, Type::Text, Box::new(error))
+                })?,
+                excluded_modes: serde_json::from_str(&excluded_json).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(10, Type::Text, Box::new(error))
+                })?,
             })
         },
     )
@@ -157,9 +245,12 @@ fn upsert_preferences(
     Ok(())
 }
 
-fn conn_total_users(conn: &Connection) -> StorageResult<i64> {
-    let n: i64 = conn.query_row("SELECT COUNT(*) FROM anonymous_users", [], |row| row.get(0))?;
-    Ok(n)
+fn random_hex<const N: usize>() -> StorageResult<String> {
+    let mut bytes = [0_u8; N];
+    getrandom::fill(&mut bytes).map_err(|error| {
+        std::io::Error::other(format!("secure random generation failed: {error}"))
+    })?;
+    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 pub fn token_hash(token: &str) -> String {
@@ -176,10 +267,39 @@ pub fn ensure_algorithm_config(conn: &Connection, now_ms: i64) -> StorageResult<
     if exists {
         return Ok(());
     }
+    let config_json = serde_json::to_string(&RecommendationConfig::default())?;
     conn.execute(
         "INSERT INTO algorithm_configs (version, schema_version, config_json, status, created_by, created_at_ms)
-         VALUES ('rules-0.1.0', 1, '{}', 'active', 'system', ?1)",
-        params![now_ms],
+         VALUES ('rules-0.1.0', 1, ?1, 'active', 'system', ?2)",
+        params![config_json, now_ms],
     )?;
     Ok(())
+}
+
+pub fn active_algorithm_config(conn: &Connection) -> StorageResult<ActiveAlgorithmConfig> {
+    let (version, schema_version, config_json): (String, i64, String) = conn
+        .query_row(
+            "SELECT version, schema_version, config_json
+             FROM algorithm_configs WHERE status = 'active'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(|error| match error {
+            rusqlite::Error::QueryReturnedNoRows => {
+                StorageError::migration("active algorithm config is missing")
+            }
+            other => other.into(),
+        })?;
+    if schema_version != 1 {
+        return Err(StorageError::migration(format!(
+            "unsupported algorithm config schema version {schema_version}"
+        )));
+    }
+    let config: RecommendationConfig = serde_json::from_str(&config_json).map_err(|error| {
+        StorageError::migration(format!("invalid active algorithm config JSON: {error}"))
+    })?;
+    config.validate().map_err(|error| {
+        StorageError::migration(format!("invalid active algorithm config: {error}"))
+    })?;
+    Ok(ActiveAlgorithmConfig { version, config })
 }

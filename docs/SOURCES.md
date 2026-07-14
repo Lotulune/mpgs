@@ -1,6 +1,6 @@
 # 外部资料与核验记录
 
-最后核验日期：2026-07-13。
+最后核验日期：2026-07-14。
 
 本文件只记录影响设计的外部事实。算法权重、MVP 范围和架构取舍属于项目决策，不声称来自这些来源。
 
@@ -16,6 +16,8 @@
 
 M1 核验结果（2026-07-14，夹具 Spike）：见 [M1_FEASIBILITY.md](M1_FEASIBILITY.md)。`store.steampowered.com/api/appdetails` 可用作经批准的易变适配器，解析 `coming_soon`、原始发售日与 Demo/`fullgame` 关系；解析失败不得清空权威字段。熟人联机质量以黄金集与人工校正为准。
 
+M3 实时核验结果（2026-07-14）：[Steam 商店搜索](https://store.steampowered.com/search/) 的 JSON 响应可返回 HTML 结果片段；`category2=1` 多人分类、`Reviews_DESC` 排序的低频采集在 21 个成功页面中建立 2,071 个去重 AppID 候选。此路径没有稳定公开契约，只批准用于低置信候选发现；不得据此推断合作、自建服、私人房间或主导体验。
+
 ## SQLite
 
 - [SQLite Over a Network](https://sqlite.org/useovernet.html)：SQLite 文件不应由多台机器通过网络文件系统并发访问；推荐将 SQLite 与应用服务放在同机，由应用 API 代理远程请求。
@@ -30,6 +32,8 @@ M1 核验结果（2026-07-14，夹具 Spike）：见 [M1_FEASIBILITY.md](M1_FEAS
 - [Tauri GitHub Pipeline](https://v2.tauri.app/distribute/pipelines/github/)：官方示例包含 Windows x64、Linux x64/ARM64、macOS x64/ARM64；Linux ARM AppImage 另有工具链注意事项。
 - [Flutter Supported Platforms](https://docs.flutter.dev/reference/supported-platforms)：核验时文档标注 Flutter 3.44.0、2026-05-20 更新，列出 Windows/macOS/Debian/Ubuntu 的 x64/ARM64 部署支持。
 - [Rust Platform Support](https://doc.rust-lang.org/rustc/platform-support.html)：核验时 `aarch64/x86_64` 的 Windows MSVC、Linux GNU 与 macOS 目标属于 Tier 1 host tools 范围。
+- [GitHub-hosted runners](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)：标准 runner 提供 `ubuntu-latest`、`ubuntu-24.04-arm`、`windows-latest` 与 `windows-11-arm`；Windows ARM64 在核验时为 public preview。
+- [actions/checkout v7.0.0](https://github.com/actions/checkout/releases/tag/v7.0.0) 与 [actions/upload-artifact v7.0.1](https://github.com/actions/upload-artifact/releases/tag/v7.0.1)：CI 固定到对应完整提交 SHA，避免可变 tag。
 
 设计结论：Rust 服务端目标矩阵可行；桌面先选 Tauri 2 以保持 Rust 为主。Windows ARM 客户端打包不作为 MVP 阻塞项，需单独冒烟验证。
 
@@ -47,4 +51,3 @@ smart-search fetch "https://v2.tauri.app/start/prerequisites/" --format markdown
 smart-search fetch "https://docs.flutter.dev/reference/supported-platforms" --format markdown
 smart-search fetch "https://doc.rust-lang.org/rustc/platform-support.html" --format markdown
 ```
-

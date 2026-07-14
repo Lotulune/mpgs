@@ -7,8 +7,41 @@ pub fn enqueue_job(conn: &Connection, job: &EnqueueJob, now_ms: i64) -> StorageR
     if job.idempotency_key.trim().is_empty() {
         return Err(StorageError::validation("idempotency_key is required"));
     }
+    if job.idempotency_key.len() > 128 {
+        return Err(StorageError::validation(
+            "idempotency_key must be at most 128 bytes",
+        ));
+    }
+    if job.source.trim().is_empty()
+        || job.task_type.trim().is_empty()
+        || job.entity_key.trim().is_empty()
+    {
+        return Err(StorageError::validation(
+            "source, task_type, and entity_key are required",
+        ));
+    }
+    if !(1..=100).contains(&job.max_attempts) {
+        return Err(StorageError::validation(
+            "max_attempts must be between 1 and 100",
+        ));
+    }
+    if let Some(payload) = &job.payload_json {
+        serde_json::from_str::<serde_json::Value>(payload)
+            .map_err(|_| StorageError::validation("payload_json must be valid JSON"))?;
+    }
     // Idempotent enqueue: return existing job id when key already present.
     if let Some(existing) = get_job_by_idempotency(conn, &job.idempotency_key)? {
+        if existing.source != job.source
+            || existing.task_type != job.task_type
+            || existing.entity_key != job.entity_key
+            || existing.priority != job.priority
+            || existing.max_attempts != job.max_attempts
+            || existing.payload_json != job.payload_json
+        {
+            return Err(StorageError::conflict(
+                "idempotency key reused with different job payload",
+            ));
+        }
         return Ok(existing.job_id);
     }
 
@@ -43,15 +76,22 @@ pub fn lease_jobs(
     if owner.trim().is_empty() {
         return Err(StorageError::validation("lease owner is required"));
     }
-    if limit <= 0 {
-        return Ok(Vec::new());
+    if !(1..=100).contains(&limit) {
+        return Err(StorageError::validation(
+            "lease limit must be between 1 and 100",
+        ));
+    }
+    if !(1_000..=24 * 60 * 60 * 1000).contains(&lease_ms) {
+        return Err(StorageError::validation(
+            "lease_ms must be between 1000 and 86400000",
+        ));
     }
 
     // Recover expired leases first.
     conn.execute(
         "UPDATE jobs
          SET status = 'pending', lease_owner = NULL, lease_expires_at_ms = NULL, updated_at_ms = ?1
-         WHERE status = 'leased' AND lease_expires_at_ms IS NOT NULL AND lease_expires_at_ms < ?1",
+         WHERE status = 'leased' AND lease_expires_at_ms IS NOT NULL AND lease_expires_at_ms <= ?1",
         params![now_ms],
     )?;
 
@@ -103,10 +143,15 @@ pub fn complete_job(
     idempotency_key: &str,
     now_ms: i64,
 ) -> StorageResult<JobRecord> {
+    if idempotency_key.trim().is_empty() || idempotency_key.len() > 128 {
+        return Err(StorageError::validation(
+            "completion idempotency_key must be between 1 and 128 bytes",
+        ));
+    }
     let job =
         get_job(conn, job_id)?.ok_or_else(|| StorageError::not_found(format!("job {job_id}")))?;
     if job.status == "completed" {
-        if job.idempotency_key == idempotency_key {
+        if job.completion_idempotency_key.as_deref() == Some(idempotency_key) {
             return Ok(job);
         }
         return Err(StorageError::conflict(
@@ -124,15 +169,16 @@ pub fn complete_job(
             "job {job_id} is leased by another owner"
         )));
     }
-    if job.lease_expires_at_ms.is_some_and(|exp| exp < now_ms) {
+    if job.lease_expires_at_ms.is_some_and(|exp| exp <= now_ms) {
         return Err(StorageError::lease(format!("job {job_id} lease expired")));
     }
 
     conn.execute(
         "UPDATE jobs
-         SET status = 'completed', lease_owner = NULL, lease_expires_at_ms = NULL, updated_at_ms = ?1
-         WHERE job_id = ?2",
-        params![now_ms, job_id],
+         SET status = 'completed', lease_owner = NULL, lease_expires_at_ms = NULL,
+             completion_idempotency_key = ?1, updated_at_ms = ?2
+         WHERE job_id = ?3",
+        params![idempotency_key, now_ms, job_id],
     )?;
     get_job(conn, job_id)?.ok_or_else(|| StorageError::not_found(format!("job {job_id}")))
 }
@@ -151,6 +197,20 @@ pub fn fail_job(
         return Err(StorageError::lease(format!(
             "job {job_id} cannot be failed by {owner}"
         )));
+    }
+    if job.lease_expires_at_ms.is_some_and(|exp| exp <= now_ms) {
+        return Err(StorageError::lease(format!("job {job_id} lease expired")));
+    }
+    if !matches!(
+        error_category,
+        "network" | "rate_limited" | "auth" | "not_found" | "parse_changed" | "invalid_payload"
+    ) {
+        return Err(StorageError::validation("unknown stable error_category"));
+    }
+    if !(1..=7 * 24 * 60 * 60 * 1000).contains(&retry_delay_ms) {
+        return Err(StorageError::validation(
+            "retry_delay_ms must be between 1 and 604800000",
+        ));
     }
 
     let permanent = matches!(
@@ -183,7 +243,7 @@ pub fn get_job(conn: &Connection, job_id: i64) -> StorageResult<Option<JobRecord
     conn.query_row(
         "SELECT job_id, source, task_type, entity_key, priority, attempts, max_attempts,
                 due_at_ms, status, lease_owner, lease_expires_at_ms, idempotency_key,
-                payload_json, last_error_category
+                completion_idempotency_key, payload_json, last_error_category
          FROM jobs WHERE job_id = ?1",
         params![job_id],
         map_job,
@@ -196,7 +256,7 @@ pub fn get_job_by_idempotency(conn: &Connection, key: &str) -> StorageResult<Opt
     conn.query_row(
         "SELECT job_id, source, task_type, entity_key, priority, attempts, max_attempts,
                 due_at_ms, status, lease_owner, lease_expires_at_ms, idempotency_key,
-                payload_json, last_error_category
+                completion_idempotency_key, payload_json, last_error_category
          FROM jobs WHERE idempotency_key = ?1",
         params![key],
         map_job,
@@ -228,7 +288,8 @@ fn map_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRecord> {
         lease_owner: row.get(9)?,
         lease_expires_at_ms: row.get(10)?,
         idempotency_key: row.get(11)?,
-        payload_json: row.get(12)?,
-        last_error_category: row.get(13)?,
+        completion_idempotency_key: row.get(12)?,
+        payload_json: row.get(13)?,
+        last_error_category: row.get(14)?,
     })
 }

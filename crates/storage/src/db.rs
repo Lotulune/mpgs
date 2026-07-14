@@ -67,7 +67,6 @@ impl Database {
             .write
             .lock()
             .map_err(|_| StorageError::migration("write lock poisoned"))?;
-        apply_pragmas(&guard)?;
         migrate::migrate_to_latest(&mut guard, self.now_ms())
     }
 
@@ -83,11 +82,15 @@ impl Database {
         &self,
         f: impl FnOnce(&Connection) -> StorageResult<T>,
     ) -> StorageResult<T> {
+        if self.path != Path::new(":memory:") {
+            let conn = open_read_connection(&self.path)?;
+            apply_read_pragmas(&conn)?;
+            return f(&conn);
+        }
         let guard = self
             .write
             .lock()
             .map_err(|_| StorageError::migration("write lock poisoned"))?;
-        apply_pragmas(&guard)?;
         f(&guard)
     }
 
@@ -99,7 +102,6 @@ impl Database {
             .write
             .lock()
             .map_err(|_| StorageError::migration("write lock poisoned"))?;
-        apply_pragmas(&guard)?;
         f(&mut guard)
     }
 
@@ -116,6 +118,18 @@ impl Database {
     }
 
     pub fn assert_ready(&self) -> StorageResult<()> {
+        self.readiness_check()?;
+        let check = self.integrity_check()?;
+        if check != ["ok".to_owned()] {
+            return Err(StorageError::migration(format!(
+                "integrity_check failed: {check:?}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Lightweight probe for frequent health checks. Full integrity checks stay on startup/ops paths.
+    pub fn readiness_check(&self) -> StorageResult<()> {
         let version = self.schema_version()?;
         if version != latest_version() {
             return Err(StorageError::migration(format!(
@@ -123,12 +137,16 @@ impl Database {
                 latest_version()
             )));
         }
-        let check = self.integrity_check()?;
-        if check != ["ok".to_owned()] {
-            return Err(StorageError::migration(format!(
-                "integrity_check failed: {check:?}"
-            )));
-        }
+        self.with_conn(|conn| {
+            let value: i64 = conn.query_row("SELECT 1", [], |row| row.get(0))?;
+            let foreign_keys: i64 = conn.query_row("PRAGMA foreign_keys", [], |row| row.get(0))?;
+            if value != 1 || foreign_keys != 1 {
+                return Err(StorageError::migration(
+                    "database connection pragmas are not ready",
+                ));
+            }
+            Ok(())
+        })?;
         Ok(())
     }
 }
@@ -141,6 +159,27 @@ fn open_connection(path: &Path) -> StorageResult<Connection> {
             | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
     Ok(conn)
+}
+
+fn open_read_connection(path: &Path) -> StorageResult<Connection> {
+    Ok(Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?)
+}
+
+fn apply_read_pragmas(conn: &Connection) -> StorageResult<()> {
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    conn.pragma_update(None, "busy_timeout", 5000i32)?;
+    conn.pragma_update(None, "trusted_schema", "OFF")?;
+    conn.pragma_update(None, "synchronous", "FULL")?;
+    let mode: String = conn.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
+    if !mode.eq_ignore_ascii_case("wal") {
+        return Err(StorageError::migration(format!(
+            "expected read connection journal_mode WAL, got {mode}"
+        )));
+    }
+    Ok(())
 }
 
 pub fn apply_pragmas(conn: &Connection) -> StorageResult<()> {

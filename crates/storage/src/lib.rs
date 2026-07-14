@@ -20,6 +20,7 @@ pub mod quality;
 pub mod query;
 pub mod repo;
 pub mod seed;
+pub mod source_state;
 pub mod users;
 pub mod util;
 

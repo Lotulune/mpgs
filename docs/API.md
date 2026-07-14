@@ -4,10 +4,10 @@
 
 - Base path：`/v1`
 - 传输：HTTPS；本地开发可使用 HTTP。
-- 编码：UTF-8 JSON，时间使用 UTC RFC 3339 字符串；数据库内部时间格式不暴露。
+- 编码：UTF-8 JSON；时刻使用 Unix 毫秒并以 `_at_ms` / `_expires_at_ms` 结尾，日历日期使用 `YYYY-MM-DD`。
 - 字段命名：`snake_case`。
 - 未知响应字段客户端必须忽略；删除或改变字段语义需要新 API 版本。
-- OpenAPI 是外部契约来源，Rust DTO 与 OpenAPI 从同一类型生成。
+- OpenAPI 3.1 由处理器注解和 Rust Schema 生成，运行时地址为 `GET /openapi.json`；本文解释语义，生成文档与契约测试约束机器可读结构。
 - 所有响应返回 `x-request-id`。
 
 ## 2. 鉴权
@@ -19,13 +19,18 @@
 ```json
 {
   "access_token": "opaque",
-  "expires_at": "2026-07-14T10:00:00Z",
+  "expires_at_ms": 1784023200000,
   "refresh_token": "opaque",
-  "user_id": "019..."
+  "refresh_expires_at_ms": 1786615200000,
+  "user_id": "u_opaque"
 }
 ```
 
 访问令牌通过 `Authorization: Bearer <token>` 发送。公开目录端点可允许无令牌读取，但偏好、反馈和 AI 配额必须关联匿名会话。
+
+### `POST /v1/session/refresh`
+
+请求体为 `{"refresh_token":"opaque"}`。成功后同时轮换访问令牌和刷新令牌，旧的两种令牌立即失效。
 
 ### 2.2 管理用户
 
@@ -76,11 +81,11 @@ AI 失败通常不返回 5xx，而是以成功响应中的 `ai_status=fallback` 
 {
   "items": [],
   "next_cursor": "opaque-or-null",
-  "snapshot_at": "2026-07-13T12:00:00Z"
+  "snapshot_at_ms": 1783944000000
 }
 ```
 
-游标包含签名后的排序键、快照和查询哈希。客户端不得解析。`limit` 默认 20，最大 100。
+游标绑定分区、数据快照、完整偏好/反馈上下文和偏移；不匹配或过期返回 `400/409`。客户端必须将其视为不透明值。`limit` 默认 20，最大 100。
 
 ## 5. 缓存与一致性
 
@@ -88,7 +93,7 @@ AI 失败通常不返回 5xx，而是以成功响应中的 `ai_status=fallback` 
 - 客户端可发送 `If-None-Match`，服务端返回 `304`。
 - 偏好更新使用 `version` 乐观并发控制。
 - 反馈写入支持 `Idempotency-Key`，相同键与相同请求返回原结果；相同键与不同请求返回 `409`。
-- 响应明确 `data_updated_at` 和 `algorithm_version`，避免把缓存时间当作数据时间。
+- 响应明确 `data_updated_at_ms` 和 `algorithm_version`，避免把缓存时间当作数据时间。
 
 ## 6. 健康与元数据
 
@@ -113,7 +118,8 @@ AI 失败通常不返回 5xx，而是以成功响应中的 `ai_status=fallback` 
     "popular_legacy",
     "classic_legacy"
   ],
-  "ai_available": true
+  "ai_available": false,
+  "storage_enabled": true
 }
 ```
 
@@ -130,10 +136,8 @@ AI 失败通常不返回 5xx，而是以成功响应中的 `ai_status=fallback` 
   "coop_competitive": 0.15,
   "session_minutes_min": 30,
   "session_minutes_max": 180,
-  "budget": {
-    "currency": "CNY",
-    "max_each_minor": 15000
-  },
+  "budget_currency": "CNY",
+  "budget_max_each_minor": 15000,
   "platforms": ["windows"],
   "self_hosting_willingness": 0.7,
   "languages": ["schinese", "english"],
@@ -157,8 +161,11 @@ AI 失败通常不返回 5xx，而是以成功响应中的 `ai_status=fallback` 
 查询参数：
 
 ```text
-limit, cursor, party_size, platforms, demo_only, max_price_minor, currency
+limit, cursor, party_size, platforms, languages, session_minutes_min,
+session_minutes_max, max_price_minor, currency, demo_only
 ```
+
+`platforms` 与 `languages` 使用逗号分隔。查询参数覆盖当前请求的持久化偏好但不写回；已知平台、语言、时长或同币种价格不满足时硬过滤，候选数据未知时不等同于不支持。`demo_only=true` 仅保留 Demo/Playtest 或存在已知 Demo/Playtest 关系的游戏。
 
 响应条目：
 
@@ -169,41 +176,34 @@ limit, cursor, party_size, platforms, demo_only, max_price_minor, currency
   "section": "classic_legacy",
   "score": 0.91,
   "confidence": 0.92,
-  "cover_url": "https://...",
-  "release_date": "2020-05-13",
-  "price": {
-    "country": "CN",
-    "currency": "CNY",
-    "current_minor": 9000,
-    "original_minor": 9000,
-    "discount_percent": 0,
-    "captured_at": "2026-07-13T10:00:00Z"
-  },
   "party": {
-    "recommended_min": 2,
-    "recommended_max": 4,
-    "hard_max": 4
+    "recommended_min": 1,
+    "recommended_max": 4
   },
   "multiplayer": {
-    "dominant_mode": "private_coop",
-    "private_session": true,
-    "self_hosted_server": false,
-    "public_population_dependency": "low"
+    "dominant_mode": "private_coop"
   },
   "reasons": ["支持私人四人合作", "累计口碑稳定"],
   "cautions": ["高难度任务需要配合"],
   "evidence_ids": ["feature:online_coop:548430"],
-  "algorithm_version": "rules-0.1.0",
-  "data_updated_at": "2026-07-13T10:00:00Z"
+  "components": {
+    "friend_fit": 0.92,
+    "section_score": 0.90,
+    "personalized_score": 0.91,
+    "final_score": 0.91
+  },
+  "algorithm_version": "rules-0.1.0"
 }
 ```
+
+外层响应同时包含 `next_cursor`、`snapshot_at_ms`、`data_updated_at_ms` 和 `algorithm_version`。
 
 ## 9. 发售日历
 
 ### `GET /v1/calendar`
 
 ```text
-?from=2026-07-01&to=2026-12-31&demo=true&party_size=4
+?from=2026-07-01&to=2026-12-31
 ```
 
 `from/to` 最大跨度一年。日期不精确的条目进入 `undated_items`，不能伪造具体日期。
@@ -212,7 +212,7 @@ limit, cursor, party_size, platforms, demo_only, max_price_minor, currency
 {
   "dated_items": [],
   "undated_items": [],
-  "data_updated_at": "2026-07-13T10:00:00Z"
+  "data_updated_at_ms": 1783936800000
 }
 ```
 
@@ -285,6 +285,8 @@ Embedding 或 AI 意图解析不可用时回退到 FTS 和当前偏好。
 - 生命周期/近期评价、7/28 日 CCU 聚合和价格。
 - 推荐分项、用户适配项、风险与更新时间。
 
+当前响应的 `availability` 包含 `platforms`、`languages`、典型局时长范围、免费状态、最新价格/币种和 `has_demo`。缺失值返回空数组或 `null`，客户端不得解释为明确不支持。
+
 ### `GET /v1/games/{app_id}/evidence`
 
 默认返回对最终推荐产生影响的公开证据摘要，不返回内部敏感备注。支持 `?feature=private_session`。
@@ -299,7 +301,7 @@ Embedding 或 AI 意图解析不可用时回退到 FTS 和当前偏好。
       "source_type": "official_store",
       "source_label": "Steam store feature",
       "confidence": 0.9,
-      "observed_at": "2026-07-13T10:00:00Z"
+      "observed_at_ms": 1783936800000
     }
   ]
 }
@@ -316,7 +318,7 @@ Embedding 或 AI 意图解析不可用时回退到 FTS 和当前偏好。
   "app_id": 548430,
   "type": "like",
   "recommendation_run_id": "019...",
-  "client_created_at": "2026-07-13T11:30:00Z"
+  "client_created_at_ms": 1783942200000
 }
 ```
 
@@ -331,7 +333,7 @@ Embedding 或 AI 意图解析不可用时回退到 FTS 和当前偏好。
 
 ### `POST /v1/feedback/{feedback_id}/undo`
 
-追加撤销事件，不物理删除原记录。
+追加撤销事件，不物理删除原记录；重复撤销返回同一撤销事件。有效反馈会参与后续推荐，撤销后立即退出推荐上下文。
 
 ## 14. 同步
 
@@ -385,18 +387,21 @@ POST   /admin/v1/golden-tests/run
 
 ## 17. 限流与大小限制
 
-建议初始值：
+M3 默认值：
 
 | 路由 | 限制 |
 | --- | --- |
 | 普通读取 | 每设备 120/min，叠加 IP 防滥用 |
 | 普通搜索 | 每设备 30/min |
+| 匿名会话创建/刷新 | 每设备/IP 20/min |
 | AI 推荐 | 每设备 5/min、50/day，并受全局预算限制 |
 | 反馈 | 每设备 60/min |
 | 请求 JSON | 默认最大 64 KiB |
 | AI 自然语言 query | 最大 2,000 Unicode 字符 |
 
-具体值通过部署配置调整。429 响应返回 `Retry-After`。
+普通读取、搜索、会话和反馈同时按 `x-device-id`（缺失时使用会话令牌）与客户端 IP 计数，并叠加默认 `10,000/min` 全局上限。只有 `MPGS_TRUST_PROXY_HEADERS=true` 时才信任 `X-Forwarded-For`/`X-Real-IP`；否则使用 TCP 对端地址。具体值由 `MPGS_RATE_LIMIT_*_PER_MINUTE` 调整。429 响应返回 `Retry-After`、`x-ratelimit-limit` 和 `x-ratelimit-remaining`。
+
+M3 已实现默认 `64 KiB` 请求体上限和上述公开限流；AI 路由的日预算在 M5 Provider 接入时实现。
 
 ## 18. 契约测试
 
@@ -407,4 +412,3 @@ POST   /admin/v1/golden-tests/run
 - 幂等键重复/冲突测试。
 - AI `used/cached/disabled/fallback` 四种响应测试。
 - 所有 AppID、价格、比例、人数和字符串长度边界测试。
-

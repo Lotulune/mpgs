@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 pub use explain::{Explanation, explain};
 pub use mmr::mmr_rerank;
 pub use personalize::{apply_personalization, hard_filter};
-pub use pipeline::{RankedCandidate, RankingInput, rank_feed};
+pub use pipeline::{RankedCandidate, RankingInput, rank_feed, rank_feed_configured};
 
 pub const ALGORITHM_VERSION: &str = "rules-0.1.0";
 const PERSONAL_WEIGHT: f64 = 0.25;
@@ -134,7 +134,8 @@ mod tests {
         ALGORITHM_VERSION, AiAdjustment, RankingInput, blend_ai, friend_fit, rank_feed, score,
     };
     use mpgs_domain::{
-        FeedSection, MultiplayerSignals, RankingSignals, SteamAppId, UserPreferences,
+        CandidateAvailability, FeedSection, MultiplayerSignals, RankingSignals, SteamAppId,
+        UserPreferences,
     };
 
     fn cooperative_signals() -> MultiplayerSignals {
@@ -169,6 +170,8 @@ mod tests {
             dominant_mode: None,
             recommended_min: Some(1),
             recommended_max: Some(4),
+            availability: Default::default(),
+            personal_adjustment: 0.0,
             signals: RankingSignals {
                 multiplayer,
                 quality: 0.85,
@@ -296,5 +299,44 @@ mod tests {
         // but still appear with cautions about public matchmaking.
         let cs = ranked.items.iter().find(|i| i.app_id == 730).unwrap();
         assert!(!cs.explanation.cautions.is_empty() || cs.score.friend_fit < 0.5);
+    }
+
+    #[test]
+    fn known_platform_language_session_and_budget_mismatches_are_hard_filters() {
+        let prefs = UserPreferences::default();
+        let base = ranking(548430, cooperative_signals());
+        let mismatches = [
+            CandidateAvailability {
+                platforms: vec!["linux".into()],
+                ..Default::default()
+            },
+            CandidateAvailability {
+                platforms: vec!["windows".into()],
+                languages: vec!["japanese".into()],
+                ..Default::default()
+            },
+            CandidateAvailability {
+                typical_session_minutes_min: Some(240),
+                typical_session_minutes_max: Some(360),
+                ..Default::default()
+            },
+            CandidateAvailability {
+                price_currency: Some("CNY".into()),
+                final_price_minor: Some(20_000),
+                is_free: Some(false),
+                ..Default::default()
+            },
+        ];
+        for availability in mismatches {
+            let candidate = RankingInput {
+                availability,
+                ..base.clone()
+            };
+            let ranked = rank_feed(FeedSection::ClassicLegacy, &[candidate], &prefs, None);
+            assert!(ranked.items.is_empty());
+        }
+
+        let unknown = rank_feed(FeedSection::ClassicLegacy, &[base], &prefs, None);
+        assert_eq!(unknown.items.len(), 1, "unknown facts must remain eligible");
     }
 }

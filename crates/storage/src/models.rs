@@ -7,6 +7,7 @@ pub struct AppRecord {
     pub canonical_name: String,
     pub release_state: String,
     pub release_date: Option<String>,
+    pub release_date_raw: Option<String>,
     pub release_date_precision: Option<String>,
     pub is_early_access: Option<bool>,
     pub current_data_confidence: Option<f64>,
@@ -67,6 +68,7 @@ pub struct JobRecord {
     pub lease_owner: Option<String>,
     pub lease_expires_at_ms: Option<i64>,
     pub idempotency_key: String,
+    pub completion_idempotency_key: Option<String>,
     pub payload_json: Option<String>,
     pub last_error_category: Option<String>,
 }
@@ -98,4 +100,18 @@ pub enum FeatureOrigin {
     HumanOverride,
     SourceEvidence,
     Missing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct M3CatalogCoverage {
+    pub normalized_multiplayer_candidates: i64,
+    pub category_evidence_candidates: i64,
+    pub recommendation_ready_profiles: i64,
+    pub trusted_familiar_profiles: i64,
+    pub with_platforms: i64,
+    pub with_languages: i64,
+    pub with_typical_session: i64,
+    pub with_price: i64,
+    pub with_reviews: i64,
+    pub with_ccu: i64,
 }

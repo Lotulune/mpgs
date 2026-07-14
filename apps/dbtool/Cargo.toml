@@ -10,4 +10,8 @@ name = "mpgs-dbtool"
 path = "src/main.rs"
 
 [dependencies]
+mpgs-steam-source = { path = "../../crates/steam-source" }
 mpgs-storage = { path = "../../crates/storage" }
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls"] }
+serde = { workspace = true }
+serde_json = { workspace = true }

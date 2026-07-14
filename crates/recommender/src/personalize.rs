@@ -1,4 +1,4 @@
-use mpgs_domain::{RankingSignals, UserPreferences};
+use mpgs_domain::{CandidateAvailability, RankingSignals, UserPreferences};
 
 use crate::unit;
 
@@ -9,6 +9,7 @@ pub fn hard_filter(
     recommended_max: Option<u8>,
     dominant_mode: Option<&str>,
     signals: &RankingSignals,
+    availability: &CandidateAvailability,
 ) -> bool {
     if let Some(mode) = dominant_mode {
         let mode_l = mode.to_ascii_lowercase();
@@ -42,7 +43,43 @@ pub fn hard_filter(
         return false;
     }
 
+    if known_list_mismatch(&prefs.platforms, &availability.platforms)
+        || known_list_mismatch(&prefs.languages, &availability.languages)
+    {
+        return false;
+    }
+
+    if let (Some(candidate_min), Some(candidate_max)) = (
+        availability.typical_session_minutes_min,
+        availability.typical_session_minutes_max,
+    ) && (candidate_max < prefs.session_minutes_min || candidate_min > prefs.session_minutes_max)
+    {
+        return false;
+    }
+
+    if availability.is_free != Some(true)
+        && let (Some(max_price), Some(price), Some(currency)) = (
+            prefs.budget_max_each_minor,
+            availability.final_price_minor,
+            availability.price_currency.as_deref(),
+        )
+        && currency.eq_ignore_ascii_case(&prefs.budget_currency)
+        && price > max_price
+    {
+        return false;
+    }
+
     true
+}
+
+fn known_list_mismatch(required: &[String], available: &[String]) -> bool {
+    !required.is_empty()
+        && !available.is_empty()
+        && !required.iter().any(|required| {
+            available
+                .iter()
+                .any(|available| required.eq_ignore_ascii_case(available))
+        })
 }
 
 /// Mutate ranking signals with preference-derived personal_fit and group_size adjustments.
@@ -51,6 +88,7 @@ pub fn apply_personalization(
     signals: &mut RankingSignals,
     recommended_min: Option<u8>,
     recommended_max: Option<u8>,
+    availability: &CandidateAvailability,
 ) {
     let party = prefs.party_size;
     let (size_fit, size_mismatch) = match (recommended_min, recommended_max) {
@@ -86,7 +124,69 @@ pub fn apply_personalization(
     let penalty = unit(signals.multiplayer.public_world_dependency) * coop_pref * 0.5
         + unit(signals.multiplayer.service_shutdown_risk) * 0.3;
 
-    signals.personal_fit = unit(
+    let gameplay_fit = unit(
         0.55 * coop_alignment + 0.35 * competitive_alignment + 0.25 - penalty + 0.15 * size_fit,
     );
+    let availability_fit = availability_fit(prefs, availability);
+    signals.personal_fit = unit(0.8 * gameplay_fit + 0.2 * availability_fit);
+
+    if !prefs.platforms.is_empty() && !availability.platforms.is_empty() {
+        let supported = prefs
+            .platforms
+            .iter()
+            .filter(|required| {
+                availability
+                    .platforms
+                    .iter()
+                    .any(|available| required.eq_ignore_ascii_case(available))
+            })
+            .count();
+        signals.multiplayer.cross_platform_fit =
+            unit(supported as f64 / prefs.platforms.len() as f64);
+    }
+}
+
+fn availability_fit(prefs: &UserPreferences, availability: &CandidateAvailability) -> f64 {
+    let mut total = 0.0;
+    let mut known = 0_u8;
+    for (required, available) in [
+        (&prefs.platforms, &availability.platforms),
+        (&prefs.languages, &availability.languages),
+    ] {
+        if !required.is_empty() && !available.is_empty() {
+            known += 1;
+            if !known_list_mismatch(required, available) {
+                total += 1.0;
+            }
+        }
+    }
+    if let (Some(candidate_min), Some(candidate_max)) = (
+        availability.typical_session_minutes_min,
+        availability.typical_session_minutes_max,
+    ) {
+        known += 1;
+        if candidate_max >= prefs.session_minutes_min && candidate_min <= prefs.session_minutes_max
+        {
+            total += 1.0;
+        }
+    }
+    if availability.is_free == Some(true) {
+        known += 1;
+        total += 1.0;
+    } else if let (Some(max_price), Some(price), Some(currency)) = (
+        prefs.budget_max_each_minor,
+        availability.final_price_minor,
+        availability.price_currency.as_deref(),
+    ) && currency.eq_ignore_ascii_case(&prefs.budget_currency)
+    {
+        known += 1;
+        if price <= max_price {
+            total += 1.0;
+        }
+    }
+    if known == 0 {
+        0.5
+    } else {
+        total / f64::from(known)
+    }
 }

@@ -6,13 +6,13 @@
 
 - `mpgs-domain`：分区、偏好、反馈类型与推荐信号。
 - `mpgs-recommender`：评分、个性化、硬过滤、MMR、解释与 `rank_feed`。
-- `mpgs-steam-source`：Steam 源规范化 Spike 与黄金集。
-- `mpgs-storage`：SQLite 迁移（含用户/偏好/反馈）、Repository、种子目录、查询与备份。
-- `mpgs-server`：公开 API（会话/偏好/四分区/日历/搜索/详情/证据/反馈）、`x-request-id`、ETag；管理/内部 jobs。
-- `mpgs-dbtool`：migrate / integrity / backup / restore。
+- `mpgs-steam-source`：Steam 源规范化适配器、多人搜索页 HTML 解析器与黄金集。
+- `mpgs-storage`：SQLite 迁移（含用户/偏好/反馈/可用性）、单写与并发只读连接、Repository、种子目录、查询与备份。
+- `mpgs-server`：公开 API（会话/偏好/四分区/日历/搜索/详情/证据/反馈）、生成式 OpenAPI、限流、`x-request-id`、ETag；管理/内部 jobs。
+- `mpgs-dbtool`：migrate / Steam 候选采集 / integrity / m3-audit / backup / restore。
 - 尚未接入 AI Provider 或 Tauri 客户端。
 
-下一项开发工作是 [M4 Tauri 桌面客户端](MVP_PLAN.md#m4tauri-桌面客户端)。
+2026-07-14 已用 2,071 条真实 Steam 多人分类候选通过 `m3-audit`。M4 仍暂停，等待 GitHub Actions 的 Windows/Linux x64/ARM64 原生构建结果，再决定是否进入 [M4 Tauri 桌面客户端](MVP_PLAN.md#m4tauri-桌面客户端)。
 
 ### Git
 
@@ -51,6 +51,7 @@ cargo run -p mpgs-server
 New-Item -ItemType Directory -Force data | Out-Null
 $env:MPGS_DATABASE_PATH = '.\data\mpgs.db'
 $env:MPGS_ADMIN_TOKEN = 'dev-only-token'
+$env:MPGS_SEED_DEMO = 'true' # 仅本地演示；省略时持久化空库保持为空
 cargo run -p mpgs-server
 ```
 
@@ -60,6 +61,7 @@ cargo run -p mpgs-server
 Invoke-RestMethod 'http://127.0.0.1:8080/health/live'
 Invoke-RestMethod 'http://127.0.0.1:8080/health/ready'
 Invoke-RestMethod 'http://127.0.0.1:8080/v1/meta'
+Invoke-RestMethod 'http://127.0.0.1:8080/openapi.json'
 ```
 
 数据库工具：
@@ -67,12 +69,18 @@ Invoke-RestMethod 'http://127.0.0.1:8080/v1/meta'
 ```powershell
 cargo run -p mpgs-dbtool -- migrate .\data\mpgs.db
 cargo run -p mpgs-dbtool -- integrity .\data\mpgs.db
+cargo run -p mpgs-dbtool --locked -- collect-steam-candidates .\data\m3-real.db 2000
+cargo run -p mpgs-dbtool -- m3-audit .\data\m3-real.db
 cargo run -p mpgs-dbtool -- backup .\data\mpgs.db .\backups\mpgs.db
 cargo run -p mpgs-dbtool -- restore .\backups\mpgs.db .\data-restored\mpgs.db
 # 或
 .\scripts\backup_db.ps1 -DbPath .\data\mpgs.db -OutPath .\backups\mpgs.db
 .\scripts\restore_db.ps1 -From .\backups\mpgs.db -To .\data-restored\mpgs.db
 ```
+
+`collect-steam-candidates` 使用 Steam 商店搜索的 `category2=1` 多人分类和 `Reviews_DESC` 排序。该接口没有稳定公开契约，因此实现位于独立易变适配器中：响应限制为 4 MiB，HTML 通过 DOM 解析器读取，失败最多退避重试 3 次，成功页间隔至少 1.1 秒；每页写入 `source_documents`、`feature_evidence`、`source_runs` 和 `source_cursors`。命令可安全续传，但它只建立低置信候选证据，不会推断合作、自建服或私人房间能力。
+
+2026-07-14 的本地门禁结果：`normalized_multiplayer_candidates=2071`、`category_evidence_candidates=2071`、`recommendation_ready_profiles=0`。后两个指标必须分开阅读，不能把分类覆盖当成推荐质量。
 
 服务默认绑定 `127.0.0.1:8080`。仅在本地端口冲突时临时设置进程变量：
 
@@ -89,7 +97,7 @@ cargo run -p mpgs-server
 
 ```text
 server -> storage/steam-source/recommender/domain
-dbtool -> storage
+dbtool -> storage/steam-source（仅运维采集命令）
 recommender -> domain
 storage -> domain + steam-source（仅 proposal 类型）
 steam-source -> domain
@@ -150,6 +158,7 @@ request -> raw response validation -> source DTO -> normalized proposal
 - 每次获取连接后验证必要 PRAGMA，不假设连接池自动继承。
 - 生产文件只能由同机服务访问；测试也不要使用网络共享目录。
 - 写事务保持短小，批量写使用有界批次。
+- 文件数据库的查询使用独立只读连接；写入使用单写句柄。API handler 必须通过阻塞任务执行同步 SQLite 调用，不能占用 Tokio 工作线程。
 - FTS、Embedding 和推荐快照必须能从权威表重建。
 
 新增迁移的最低测试：
@@ -198,7 +207,9 @@ MPGS_AI_MODEL
 MPGS_EMBEDDING_MODEL
 ```
 
-这些变量当前尚未被代码读取。实现 Provider 时提供 `.env.example` 但不自动加载生产 `.env`，并确保日志只显示“已配置/未配置”。供应商 URL 是否允许自定义需要单独安全评审。
+这些 AI/Steam 变量当前尚未被代码读取。实现 Provider 时提供 `.env.example` 但不自动加载生产 `.env`，并确保日志只显示“已配置/未配置”。供应商 URL 是否允许自定义需要单独安全评审。
+
+M3 已读取的非敏感限流变量：`MPGS_RATE_LIMIT_ENABLED`、`MPGS_RATE_LIMIT_READ_PER_MINUTE`、`MPGS_RATE_LIMIT_SEARCH_PER_MINUTE`、`MPGS_RATE_LIMIT_SESSION_PER_MINUTE`、`MPGS_RATE_LIMIT_FEEDBACK_PER_MINUTE`、`MPGS_RATE_LIMIT_GLOBAL_PER_MINUTE`、`MPGS_TRUST_PROXY_HEADERS`。代理部署只有在入口覆盖并清洗转发头时才能开启最后一项。
 
 ## 13. 提交前检查
 
@@ -215,5 +226,4 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 - 没有绕过证据、候选白名单或 SQLite 单主边界。
 - 新外部事实附官方来源与核验日期。
 
-CI/CD 尚未创建；建立自动化工作流需要项目负责人明确确认。
-
+GitHub Actions 构建 CI 已获负责人确认并创建于 `.github/workflows/ci.yml`：质量门禁运行在 Linux x64，发布构建使用 Windows/Linux 的 x64/ARM64 原生 runner，构建产物保留 14 天。发布、签名和部署仍需单独确认。

@@ -7,7 +7,8 @@ publish = false
 
 [dependencies]
 axum = { workspace = true, features = ["macros"] }
-mpgs-domain = { path = "../../crates/domain" }
+getrandom = { workspace = true }
+mpgs-domain = { path = "../../crates/domain", features = ["openapi"] }
 mpgs-recommender = { path = "../../crates/recommender" }
 mpgs-storage = { path = "../../crates/storage" }
 serde = { workspace = true }
@@ -16,3 +17,4 @@ tokio = { workspace = true }
 tower = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+utoipa = { workspace = true }

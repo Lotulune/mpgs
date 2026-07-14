@@ -58,7 +58,7 @@ flowchart LR
 - 代码：`crates/steam-source`（`mpgs-steam-source`），夹具测试覆盖 DAT-001～004。
 - 报告：[M1_FEASIBILITY.md](M1_FEASIBILITY.md)。
 - 黄金集：`crates/steam-source/fixtures/golden_set_v0.json`（50 条，`golden-0.1.0`）。
-- 2,000 候选：分页/增量/续传与 Proposal 模型已就绪；真实全量拉取需 Web API Key，在 M2 调度中落地，不作为本阶段 CI 依赖。
+- 2,000 候选：M1 完成官方目录分页/增量/续传与 Proposal；M3 后续增加易变商店搜索适配器，并于 2026-07-14 低频采集 2,071 条真实多人分类候选。分类证据不替代深度画像。
 - 产品范围：**不缩减**四分区；日历/Demo 走易变适配器 + 人工回退。
 
 ### M2：数据与存储
@@ -102,13 +102,19 @@ flowchart LR
 - 不登录可完成偏好、浏览、搜索、详情和反馈。
 - 普通缓存 API 达到 P95 目标。
 
-实现状态（2026-07-14）：
+评审状态（2026-07-14）：
 
 - 推荐：`rank_feed` + 个性化 + MMR + 解释；PRD 默认排序单测通过。
-- 迁移：`0003_users_feedback_algorithm.sql`；空库自动 `seed_demo_catalog`。
-- API：`POST /v1/session/anonymous`、`GET|PUT /v1/preferences`、`GET /v1/feeds/{section}`、`GET /v1/calendar`、`GET /v1/search`、`GET /v1/games/{id}`、`GET /v1/games/{id}/evidence`、`POST /v1/feedback`、`POST /v1/feedback/{id}/undo`。
-- 横切：`x-request-id`、ETag / If-None-Match、反馈 `Idempotency-Key`。
-- OpenAPI 完整生成与 P95 压测仍属后续加固；契约以 `docs/API.md` + 集成测试为准。
+- 迁移：`0003_users_feedback_algorithm.sql`、`0004_m3_integrity_fixes.sql`、`0005_m3_recommendation_inputs.sql`；持久化空库不再自动写入演示数据，只有内存模式或 `MPGS_SEED_DEMO=true` 才启用演示目录。
+- API：原 M3 公开接口加 `POST /v1/session/refresh`；访问/刷新令牌随机生成、持久化过期并轮换。
+- 推荐：滚动 180 天分区、Wilson/活跃度门槛、反馈闭环、有界 MMR 窗口；四分区演示契约测试均通过。
+- 横切：请求 ID 同时进入响应头和错误体；ETag 可在查询/评分前短路；游标绑定数据快照与完整偏好/反馈上下文；反馈完整载荷幂等。
+- 契约与安全：`/openapi.json` 从处理器和 Rust Schema 生成并有路径/字段契约测试；普通读取、搜索、会话和反馈按设备/会话与 IP 双键限流，叠加全局上限。
+- 配置与偏好：活动 `algorithm_configs.config_json` 驱动分区天数、质量/活跃/熟人门槛、候选上限和 MMR；平台、语言、预算、时长和 Demo 条件进入确定性硬过滤，未知数据保持可候选。
+- SQLite：文件库读请求使用独立只读连接，写请求保持单写锁；所有 API 数据库调用在 Tokio 阻塞线程池执行，并有运行时不阻塞及读写句柄并发测试。
+- 性能：2,000 游戏本地调试构建手工门槛测试，未缓存 P95 `36.04 ms`、ETag 命中 P95 `0.92 ms`，低于 NFR-001 的 `500 ms`；已覆盖数据库锁等待不阻塞 Tokio 和文件库并发只读回归，尚未完成生产硬件压测。
+- 数据门禁：2026-07-14 使用 `collect-steam-candidates` 得到 2,071 条真实多人分类候选，`mpgs-dbtool m3-audit` 通过；同时 `recommendation_ready_profiles=0`，后续数据富化不得省略。
+- **M4 暂不开始**：等待 GitHub Actions 在 Windows/Linux x64/ARM64 原生 runner 上完成构建；取得四平台证据后再决定是否进入 M4。
 
 ### M4：Tauri 桌面客户端
 
@@ -279,11 +285,10 @@ flowchart LR
 
 以下不在当前准备工作中执行：
 
-- 创建或修改 CI/CD。
+- 发布、签名或部署 CI/CD（仅构建/测试的 GitHub Actions 已于 2026-07-14 获确认）。
 - 购买域名、云资源、证书、Apple/Windows 签名服务。
 - 注册 Steam Web API Key 或 AI Provider Key。
 - 部署公网服务或上传发布物。
 - 建立生产数据库或导入真实用户数据。
 
 在对应里程碑开始前，需要由项目负责人确认供应商、成本和发布主体。
-

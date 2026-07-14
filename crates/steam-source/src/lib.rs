@@ -19,6 +19,7 @@ pub mod rate_limit;
 pub mod raw;
 pub mod reviews;
 pub mod store;
+pub mod store_search;
 
 pub use app_list::{
     ADAPTER_VERSION as APP_LIST_ADAPTER_VERSION, AppListPage, AppListRequest, apply_page_to_cursor,
@@ -42,9 +43,14 @@ pub use store::{
     ADAPTER_VERSION as STORE_ADAPTER_VERSION, STORE_APPDETAILS_FEASIBILITY,
     StoreDetailsParseResult, StoreDetailsRequest, parse_store_details,
 };
+pub use store_search::{
+    ADAPTER_VERSION as STORE_SEARCH_ADAPTER_VERSION, SOURCE_NAME as STORE_SEARCH_SOURCE_NAME,
+    StoreSearchCandidate, StoreSearchPage, StoreSearchRequest, parse_store_search_page,
+};
 
 /// Recommended default User-Agent for MPGS server-side fetches.
-pub const DEFAULT_USER_AGENT: &str = "MPGS-Server/0.1 (+https://github.com/local/mpgs; research)";
+pub const DEFAULT_USER_AGENT: &str =
+    "MPGS-Server/0.1 (+https://github.com/Lunelotus/MPGS; research)";
 
 /// Official Web API host (requires key for GetAppList).
 pub const STEAM_WEB_API_HOST: &str = "https://api.steampowered.com";

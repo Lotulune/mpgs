@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  quality:
+    name: Format, test, and lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Install Rust 1.97.0
+        run: rustup toolchain install 1.97.0 --profile minimal --component rustfmt,clippy
+
+      - name: Check formatting
+        run: cargo +1.97.0 fmt --all -- --check
+
+      - name: Run tests
+        run: cargo +1.97.0 test --workspace --locked
+
+      - name: Run Clippy
+        run: cargo +1.97.0 clippy --workspace --all-targets --locked -- -D warnings
+
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x64
+            runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            executable_suffix: ""
+            artifact: mpgs-linux-x64
+          - name: Linux ARM64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            executable_suffix: ""
+            artifact: mpgs-linux-arm64
+          - name: Windows x64
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            executable_suffix: .exe
+            artifact: mpgs-windows-x64
+          - name: Windows ARM64
+            runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            executable_suffix: .exe
+            artifact: mpgs-windows-arm64
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Install Rust 1.97.0 target
+        run: rustup toolchain install 1.97.0 --profile minimal --target ${{ matrix.target }}
+
+      - name: Build release binaries
+        run: cargo +1.97.0 build --workspace --release --locked --target ${{ matrix.target }}
+
+      - name: Upload release binaries
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            target/${{ matrix.target }}/release/mpgs-server${{ matrix.executable_suffix }}
+            target/${{ matrix.target }}/release/mpgs-dbtool${{ matrix.executable_suffix }}
+          if-no-files-found: error
+          retention-days: 14
