@@ -1,0 +1,37 @@
+import { describe, expect, it } from "vitest";
+import {
+  dominantModeLabel,
+  formatPrice,
+  isStale,
+  languageLabels,
+  partyLabel,
+  platformLabels,
+  positiveRate,
+  STALE_AFTER_MS,
+} from "../src/app/format";
+
+describe("format helpers", () => {
+  it("renders unknown data as 未知, never a guess", () => {
+    expect(dominantModeLabel(null)).toBe("未知");
+    expect(partyLabel(null, null)).toBe("人数未知");
+    expect(formatPrice(null, null, null)).toBe("价格未知");
+    expect(platformLabels([])).toBe("未知");
+    expect(languageLabels([])).toBe("未知");
+    expect(positiveRate(null, null)).toBe("未知");
+  });
+
+  it("formats known values", () => {
+    expect(partyLabel(1, 4)).toBe("1–4 人");
+    expect(partyLabel(4, 4)).toBe("4 人");
+    expect(formatPrice(0, "CNY", true)).toBe("免费");
+    expect(formatPrice(14900, "CNY", false)).toBe("¥149");
+    expect(platformLabels(["windows", "linux"])).toBe("Windows / Linux");
+    expect(positiveRate(100, 90)).toBe("90% 好评");
+  });
+
+  it("flags data older than the staleness window", () => {
+    const now = 1_000_000_000_000;
+    expect(isStale(now, now)).toBe(false);
+    expect(isStale(now - STALE_AFTER_MS - 1, now)).toBe(true);
+  });
+});

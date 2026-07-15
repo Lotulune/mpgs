@@ -1,0 +1,11 @@
+{
+  "name": "mpgs-monorepo",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "web:dev": "pnpm --filter mpgs-web dev",
+    "web:build": "pnpm --filter mpgs-web build",
+    "web:test": "pnpm --filter mpgs-web test",
+    "web:typecheck": "pnpm --filter mpgs-web typecheck"
+  }
+}

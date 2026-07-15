@@ -1,0 +1,492 @@
+/* Theme skins. Each [data-theme] block overrides the token contract in base.css
+   and may add decorative layers scoped to that theme. Theme-specific selectors
+   live ONLY in this file. */
+
+/* =====================================================================
+   复古电子 retro — CRT terminal: phosphor cyan/magenta on near-black,
+   scanlines, glow, monospace display type.
+   ===================================================================== */
+
+[data-theme="retro"] {
+  --bg: #08060f;
+  --bg-layer: radial-gradient(ellipse at 50% -20%, rgba(122, 43, 214, 0.28), transparent 55%);
+  --surface: rgba(16, 12, 32, 0.92);
+  --surface-2: rgba(26, 18, 48, 0.94);
+  --surface-hover: rgba(36, 26, 64, 0.95);
+  --border: #2c2350;
+  --border-strong: #45358a;
+  --ink: #d7fbff;
+  --ink-muted: #8fa8c8;
+  --ink-faint: #5c6b8a;
+  --accent: #19e3e3;
+  --accent-ink: #041014;
+  --accent-2: #ff3ec8;
+  --ok: #38ef7d;
+  --warn: #ffc857;
+  --danger: #ff5470;
+
+  --font-display: "Cascadia Mono", "Consolas", "Courier New", monospace;
+  --font-mono: "Cascadia Mono", "Consolas", monospace;
+  --text-shadow: 0 0 6px rgba(25, 227, 227, 0.35);
+  --heading-transform: uppercase;
+  --heading-spacing: 0.1em;
+
+  --radius-sm: 2px;
+  --radius: 4px;
+  --radius-lg: 6px;
+
+  --shadow-card: 0 0 0 1px rgba(25, 227, 227, 0.06), 0 4px 18px rgba(0, 0, 0, 0.6);
+  --shadow-pop: 0 0 24px rgba(25, 227, 227, 0.18), 0 10px 40px rgba(0, 0, 0, 0.7);
+  --glow: 0 0 12px rgba(25, 227, 227, 0.35);
+
+  --tab-active-ink: var(--accent);
+  --card-border-hover: var(--accent);
+  --press-scale: 0.97;
+}
+
+/* CRT scanlines + vignette above everything visual, ignoring input. */
+[data-theme="retro"] body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 998;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(
+      to bottom,
+      rgba(0, 0, 0, 0) 0,
+      rgba(0, 0, 0, 0) 2px,
+      rgba(0, 0, 0, 0.16) 3px,
+      rgba(0, 0, 0, 0) 4px
+    ),
+    radial-gradient(ellipse at center, transparent 58%, rgba(2, 0, 10, 0.55) 100%);
+}
+
+[data-theme="retro"] .card:hover {
+  animation: retro-jitter 0.18s steps(2) 1;
+}
+
+@keyframes retro-jitter {
+  0% {
+    transform: translate(0, -2px);
+  }
+  50% {
+    transform: translate(1px, -2px);
+  }
+  100% {
+    transform: translate(0, -2px);
+  }
+}
+
+[data-theme="retro"] .btn:active,
+[data-theme="retro"] .card:active {
+  animation: retro-glitch 0.16s steps(3) 1;
+}
+
+@keyframes retro-glitch {
+  0% {
+    transform: translate(-2px, 0) scale(0.98);
+    filter: hue-rotate(30deg);
+  }
+  60% {
+    transform: translate(2px, 0) scale(0.98);
+    filter: hue-rotate(-40deg) saturate(2);
+  }
+  100% {
+    transform: translate(0, 0) scale(0.97);
+    filter: none;
+  }
+}
+
+[data-theme="retro"] .score-badge {
+  text-shadow: 0 0 8px currentColor;
+}
+
+/* =====================================================================
+   极简白线 minimal — white field, hairline ink borders, single blue accent,
+   generous whitespace, square geometry.
+   ===================================================================== */
+
+[data-theme="minimal"] {
+  --bg: #fcfcfd;
+  --bg-layer: none;
+  --surface: #ffffff;
+  --surface-2: #f5f5f7;
+  --surface-hover: #f0f1f4;
+  --border: #e3e4e9;
+  --border-strong: #c9cbd4;
+  --ink: #17181c;
+  --ink-muted: #6e7077;
+  --ink-faint: #a5a7ae;
+  --accent: #2456ff;
+  --accent-ink: #ffffff;
+  --accent-2: #17181c;
+  --ok: #1e9e5a;
+  --warn: #b57f1f;
+  --danger: #d43737;
+
+  --font-display: "Segoe UI", "Microsoft YaHei", sans-serif;
+  --text-shadow: none;
+  --heading-transform: none;
+  --heading-spacing: 0.01em;
+
+  --radius-sm: 2px;
+  --radius: 3px;
+  --radius-lg: 4px;
+  --bw: 1px;
+
+  --shadow-card: none;
+  --shadow-pop: 0 12px 32px rgba(23, 24, 28, 0.08);
+  --glow: none;
+
+  --tab-active-ink: var(--ink);
+  --card-border-hover: var(--ink);
+  --press-scale: 0.99;
+}
+
+[data-theme="minimal"] .topbar {
+  background: rgba(252, 252, 253, 0.92);
+}
+
+[data-theme="minimal"] .card {
+  box-shadow: none;
+}
+
+[data-theme="minimal"] .card:hover {
+  transform: none;
+  border-color: var(--ink);
+}
+
+/* Hairline underline sweep on the active tab instead of a filled pill. */
+[data-theme="minimal"] .tab[aria-selected="true"] {
+  background: transparent;
+  border-color: transparent;
+  position: relative;
+}
+
+[data-theme="minimal"] .tab[aria-selected="true"]::after {
+  content: "";
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 2px;
+  height: 1.5px;
+  background: var(--ink);
+  animation: minimal-sweep var(--dur-med) var(--ease);
+  transform-origin: left center;
+}
+
+@keyframes minimal-sweep {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+[data-theme="minimal"] .score-badge {
+  border-radius: 0;
+}
+
+/* =====================================================================
+   MC 方块 mc — procedural tile textures (set by the theme module as
+   --mc-* variables), chunky 3D bevel buttons, pixel display type feel.
+   ===================================================================== */
+
+[data-theme="mc"] {
+  --bg: #2e2e2e;
+  --bg-layer: var(--mc-dirt, none);
+  --surface: rgba(20, 20, 20, 0.82);
+  --surface-2: #6f6f6f;
+  --surface-hover: rgba(40, 40, 40, 0.85);
+  --border: #1a1a1a;
+  --border-strong: #000000;
+  --ink: #ffffff;
+  --ink-muted: #c6c6c6;
+  --ink-faint: #8f8f8f;
+  --accent: #7dfc4a;
+  --accent-ink: #123307;
+  --accent-2: #f43b3b;
+  --ok: #7dfc4a;
+  --warn: #ffd83d;
+  --danger: #f43b3b;
+
+  --font-display: "Courier New", "Cascadia Mono", monospace;
+  --text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.75);
+  --heading-transform: none;
+  --heading-spacing: 0.02em;
+
+  --radius-sm: 0px;
+  --radius: 0px;
+  --radius-lg: 0px;
+  --bw: 2px;
+
+  --shadow-card: 0 4px 0 rgba(0, 0, 0, 0.45);
+  --shadow-pop: 0 6px 0 rgba(0, 0, 0, 0.5);
+  --glow: none;
+
+  --tab-active-ink: #ffd83d;
+  --card-border-hover: #ffffff;
+  --press-scale: 1;
+}
+
+/* Dirt background dimmed like the pause menu. */
+[data-theme="mc"] body::before {
+  background: var(--mc-dirt, none);
+  background-size: 96px 96px;
+  image-rendering: pixelated;
+  filter: brightness(0.42);
+}
+
+[data-theme="mc"] .topbar {
+  background: rgba(12, 12, 12, 0.8);
+  border-bottom-color: #000;
+}
+
+/* Classic bevel: light top/left, dark bottom/right. */
+[data-theme="mc"] .btn,
+[data-theme="mc"] .tab {
+  background: #6f6f6f;
+  border: 2px solid;
+  border-color: #a8a8a8 #3a3a3a #3a3a3a #a8a8a8;
+  color: #ffffff;
+  box-shadow: 0 3px 0 rgba(0, 0, 0, 0.5);
+}
+
+[data-theme="mc"] .btn:hover,
+[data-theme="mc"] .tab:hover {
+  background: #7d7d95;
+  border-color: #c0c0dd #45455a #45455a #c0c0dd;
+  color: #ffffff;
+}
+
+[data-theme="mc"] .btn:active,
+[data-theme="mc"] .tab:active {
+  transform: translateY(3px);
+  box-shadow: 0 0 0 rgba(0, 0, 0, 0.5);
+  border-color: #3a3a3a #a8a8a8 #a8a8a8 #3a3a3a;
+}
+
+[data-theme="mc"] .tab[aria-selected="true"] {
+  background: #8a8a5e;
+  border-color: #d8d8a8 #4a4a2e #4a4a2e #d8d8a8;
+  color: #ffd83d;
+}
+
+[data-theme="mc"] .btn.primary {
+  background: #4c9a2f;
+  border-color: #83d95f #2a5a18 #2a5a18 #83d95f;
+  color: #ffffff;
+}
+
+[data-theme="mc"] .btn.primary:hover {
+  background: #56ad36;
+  filter: none;
+}
+
+[data-theme="mc"] .card {
+  background: rgba(16, 16, 16, 0.78);
+  border: 2px solid #000;
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.08), 0 4px 0 rgba(0, 0, 0, 0.45);
+}
+
+[data-theme="mc"] .card:hover {
+  border-color: #fff;
+  transform: none;
+}
+
+[data-theme="mc"] .panel {
+  background: rgba(16, 16, 16, 0.78);
+  border: 2px solid #000;
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="mc"] .score-badge {
+  color: #ffd83d;
+  border-color: rgba(255, 216, 61, 0.5);
+  text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.75);
+}
+
+/* =====================================================================
+   Steam 商店 steam — deep navy, soft sky-blue accents, capsule cards with
+   gradient sheen, rounded sans type.
+   ===================================================================== */
+
+[data-theme="steam"] {
+  --bg: #1b2838;
+  --bg-layer: linear-gradient(180deg, rgba(42, 71, 94, 0.55) 0%, rgba(27, 40, 56, 0) 40%);
+  --surface: #16202d;
+  --surface-2: #2a3f5a;
+  --surface-hover: #223247;
+  --border: #2a3f5a;
+  --border-strong: #3d5a80;
+  --ink: #c7d5e0;
+  --ink-muted: #8f98a0;
+  --ink-faint: #66707a;
+  --accent: #66c0f4;
+  --accent-ink: #0d1a26;
+  --accent-2: #a4d007;
+  --ok: #a4d007;
+  --warn: #d9a13b;
+  --danger: #c15755;
+
+  --font-display: "Segoe UI", "Motiva Sans", "Microsoft YaHei", sans-serif;
+  --text-shadow: none;
+  --heading-transform: none;
+  --heading-spacing: 0;
+
+  --radius-sm: 3px;
+  --radius: 5px;
+  --radius-lg: 8px;
+
+  --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.45);
+  --shadow-pop: 0 10px 32px rgba(0, 0, 0, 0.55);
+  --glow: 0 0 14px rgba(102, 192, 244, 0.22);
+
+  --tab-active-ink: #ffffff;
+  --card-border-hover: var(--accent);
+  --press-scale: 0.985;
+}
+
+[data-theme="steam"] .card {
+  background: linear-gradient(135deg, #1e2f44 0%, #16202d 55%);
+}
+
+[data-theme="steam"] .card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(120deg, transparent 30%, rgba(102, 192, 244, 0.1) 50%, transparent 70%);
+  transform: translateX(-120%);
+  transition: transform 500ms var(--ease);
+  pointer-events: none;
+}
+
+[data-theme="steam"] .card:hover::after {
+  transform: translateX(120%);
+}
+
+[data-theme="steam"] .tab[aria-selected="true"] {
+  background: linear-gradient(90deg, #66c0f4 0%, #4a9fd8 100%);
+  color: #0d1a26;
+  border-color: transparent;
+}
+
+[data-theme="steam"] .btn.primary {
+  background: linear-gradient(90deg, #75b022 0%, #588a1b 100%);
+  border-color: transparent;
+  color: #d2efa9;
+}
+
+[data-theme="steam"] .btn.primary:hover {
+  background: linear-gradient(90deg, #8ed629 0%, #6aa621 100%);
+}
+
+[data-theme="steam"] .score-badge {
+  background: rgba(102, 192, 244, 0.12);
+}
+
+/* =====================================================================
+   樱枫和风 wafu — washi paper (procedural --wafu-washi), sumi ink text,
+   vermilion accents, serif display type, paper-cut softness.
+   ===================================================================== */
+
+[data-theme="wafu"] {
+  --bg: #f2ead8;
+  --bg-layer: var(--wafu-washi, none);
+  --surface: rgba(255, 252, 244, 0.9);
+  --surface-2: #ede3cd;
+  --surface-hover: #f5eee0;
+  --border: #d8cbae;
+  --border-strong: #b8a888;
+  --ink: #3d3a37;
+  --ink-muted: #7a7266;
+  --ink-faint: #a89e8d;
+  --accent: #c73e3a;
+  --accent-ink: #fbf6ea;
+  --accent-2: #ef93ab;
+  --ok: #5a7d4f;
+  --warn: #b07d2a;
+  --danger: #a63a1e;
+
+  --font-display: "Noto Serif SC", "SimSun", "Yu Mincho", serif;
+  --text-shadow: none;
+  --heading-transform: none;
+  --heading-spacing: 0.12em;
+
+  --radius-sm: 4px;
+  --radius: 8px;
+  --radius-lg: 14px;
+
+  --shadow-card: 0 2px 8px rgba(90, 70, 40, 0.12);
+  --shadow-pop: 0 12px 32px rgba(90, 70, 40, 0.18);
+  --glow: none;
+
+  --tab-active-ink: var(--accent);
+  --card-border-hover: var(--accent);
+  --press-scale: 0.985;
+}
+
+[data-theme="wafu"] body::before {
+  background-size: 160px 160px;
+}
+
+[data-theme="wafu"] .topbar {
+  background: rgba(247, 242, 231, 0.9);
+}
+
+/* Ink-brush underline for the active tab. */
+[data-theme="wafu"] .tab[aria-selected="true"] {
+  background: transparent;
+  border-color: transparent;
+  position: relative;
+}
+
+[data-theme="wafu"] .tab[aria-selected="true"]::after {
+  content: "";
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 1px;
+  height: 3px;
+  border-radius: 2px 6px 3px 5px;
+  background: linear-gradient(90deg, transparent, var(--ink) 12%, var(--ink) 88%, transparent);
+  opacity: 0.85;
+}
+
+/* Cards feel like layered paper with a vermilion corner seal on hover. */
+[data-theme="wafu"] .card::after {
+  content: "推";
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-size: 13px;
+  color: #fbf6ea;
+  background: var(--accent);
+  border-radius: 4px;
+  opacity: 0;
+  transform: scale(1.5) rotate(-8deg);
+  transition: opacity var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+  pointer-events: none;
+}
+
+[data-theme="wafu"] .card:hover::after {
+  opacity: 0.92;
+  transform: scale(1) rotate(-4deg);
+}
+
+[data-theme="wafu"] .btn.primary {
+  background: var(--accent);
+  border-color: #9c2f2c;
+}
+
+[data-theme="wafu"] .score-badge {
+  font-family: var(--font-display);
+}

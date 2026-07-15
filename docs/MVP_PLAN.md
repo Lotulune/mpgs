@@ -134,6 +134,25 @@ flowchart LR
 - 界面在目标桌面尺寸下无溢出和关键控件遮挡。
 - Tauri 权限最小化，客户端包中没有服务端 Key。
 
+实现状态（2026-07-15）：
+
+- 首个垂直切片（主题优先）：`web/`（Vite + React + TS，pnpm workspace）+ `apps/desktop/src-tauri/`（Tauri 2 壳，独立 Cargo workspace，不入根 workspace）。
+- 界面：首次主题选择 + 偏好引导、四分区推荐流（原因/风险/分数/人数、游标加载更多）、游戏详情（联机画像/可用性/评价/证据/Steam 跳转）、反馈闭环（乐观 UI + 离线队列 + 撤销）。加载/空/错误/过期/离线态按主题定制。
+- 五主题：复古电子、极简白线、MC 方块、Steam 商店、樱枫和风；各带独立设计 token 皮肤与特效模块（环境动画 + 点击反馈 + `like/dismiss/confirm/error` 语义动作）。单 rAF 有界粒子池，隐藏暂停，尊重 `prefers-reduced-motion`，可切全/低/关；贴图运行时程序化生成，无第三方素材。
+- 客户端缓存：类型化 API 客户端含匿名会话自举与 401 刷新、`x-device-id`、ETag `If-None-Match` + localStorage 快照缓存（离线浏览）、与缓存分离的离线反馈队列（幂等键 + 撤销 + 重放）。
+- 搜索/日历/设置（第二批切片，2026-07-15）：防抖名称搜索（`GET /v1/search`）；发售日历（`GET /v1/calendar`，按月分组 + 日期未定分区 + Demo 过滤）；设置（偏好编辑含乐观版本处理与 `version_conflict` 重试、主题/特效强度、清缓存保留未同步反馈、同步状态）。外壳导航扩展为四分区 + 搜索/日历/设置 + 详情返回来源列表。
+- 服务端：新增 CORS 白名单层（零新依赖手写中间件，默认覆盖 Tauri webview 源，预检短路），含 preflight/echo/拒绝三项测试。
+- 前端测试（vitest）：粒子池边界、五主题特效完整性、API 会话刷新/ETag/离线回退/清缓存、反馈队列离线重放与撤销、格式化未知值、日历分组、偏好变更检测、防抖。
+- 待办（M4 尚未完成）：Tauri 打包冒烟（本机 WebView 工具链）、PRD 三流程端到端与断网演练的实测记录、真实候选数据富化（发布门禁）。
+
+后续阶段功能——游玩意愿投票（2026-07-15 已实现）：
+
+- 目标：社区级「想玩」投票，越多人投该游戏排序越靠前（区别于个人反馈的 `like`，这是跨用户的全局人气信号）。
+- 服务端：迁移 `0006_play_intent_votes`（每 `(app, user)` 一票可切换）；`POST /v1/games/{app_id}/play-intent`（Bearer + 反馈桶限流）；票数与 `voted` 进入 feed 条目与详情；投票纪元进入 feed/详情 `ETag`。
+- 排序：`play_intent_count` 进入 `RankingInput`，按 `count/(count+saturation)` 饱和归一、`play_intent_weight` 有界加成（0 票零影响，不覆盖硬过滤）；参数入 `RecommendationConfig`（`rules-0.2.0` 种子启用；旧 `rules-0.1.0` 配置缺字段自动降级为禁用，行为不变）。
+- 客户端：`PlayIntentStore`（乐观切换 + 离线待同步 + 重连重放 + 永久失败回退），卡片与详情的「▲ 想玩 N」按钮（含主题化 like/dismiss 特效）；详情请求携带令牌以取回 `voted`。
+- 测试：storage 切换/聚合/404 单测；recommender 票数提升排序且 0 票惰性；server 401/切换+feed 反映/404 集成测试；前端 store 乐观/离线重放/永久失败回退（vitest）。
+
 ### M5：AI 与语义检索
 
 交付：

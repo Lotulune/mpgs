@@ -1,0 +1,107 @@
+import { describe, expect, it, vi } from "vitest";
+import {
+  applyPendingPreferencePatch,
+  defaultPreferences,
+  editablePreferencePatch,
+  flushPendingPreferencePatch,
+  hasPendingPreferencePatch,
+  preferencesChanged,
+  queuePreferencePatch,
+  toggleMember,
+} from "../src/app/preferences";
+
+function memoryStorage() {
+  const data = new Map<string, string>();
+  return {
+    getItem: (key: string) => data.get(key) ?? null,
+    setItem: (key: string, value: string) => void data.set(key, value),
+    removeItem: (key: string) => void data.delete(key),
+  };
+}
+
+describe("preference helpers", () => {
+  it("reports no change for an identical copy", () => {
+    const base = defaultPreferences();
+    expect(preferencesChanged(base, { ...base })).toBe(false);
+  });
+
+  it("ignores version when comparing", () => {
+    const base = defaultPreferences();
+    expect(preferencesChanged(base, { ...base, version: base.version + 5 })).toBe(false);
+  });
+
+  it("detects scalar and set changes", () => {
+    const base = defaultPreferences();
+    expect(preferencesChanged(base, { ...base, party_size: 6 })).toBe(true);
+    expect(preferencesChanged(base, { ...base, budget_max_each_minor: null })).toBe(true);
+    expect(preferencesChanged(base, { ...base, platforms: ["windows", "linux"] })).toBe(true);
+  });
+
+  it("treats set order as insignificant", () => {
+    const base = { ...defaultPreferences(), languages: ["english", "schinese"] };
+    expect(preferencesChanged(base, { ...base, languages: ["schinese", "english"] })).toBe(false);
+  });
+
+  it("creates a complete editable patch without the server version", () => {
+    const preferences = { ...defaultPreferences(), version: 9 };
+    const patch = editablePreferencePatch(preferences);
+
+    expect(patch).toEqual(
+      Object.fromEntries(Object.entries(preferences).filter(([key]) => key !== "version")),
+    );
+    expect("version" in patch).toBe(false);
+  });
+
+  it("toggles membership immutably", () => {
+    const list = ["windows"];
+    const added = toggleMember(list, "linux");
+    expect(added).toEqual(["windows", "linux"]);
+    expect(toggleMember(added, "windows")).toEqual(["linux"]);
+    expect(list).toEqual(["windows"]); // original untouched
+  });
+
+  it("persists a pending patch and merges it onto the latest server version", async () => {
+    const storage = memoryStorage();
+    const current = { ...defaultPreferences(), version: 7, languages: ["english"] };
+    const putPreferences = vi.fn(async (preferences) => ({ ...preferences, version: 8 }));
+    const api = { getPreferences: vi.fn(async () => current), putPreferences };
+
+    expect(queuePreferencePatch({ party_size: 6, budget_max_each_minor: null }, storage)).toBe(true);
+    expect(hasPendingPreferencePatch(storage)).toBe(true);
+
+    const saved = await flushPendingPreferencePatch(api, storage);
+    expect(putPreferences).toHaveBeenCalledWith({
+      ...current,
+      party_size: 6,
+      budget_max_each_minor: null,
+      version: 7,
+    });
+    expect(saved?.version).toBe(8);
+    expect(hasPendingPreferencePatch(storage)).toBe(false);
+  });
+
+  it("applies a pending patch to the local settings draft", () => {
+    const storage = memoryStorage();
+    queuePreferencePatch({ party_size: 8, coop_competitive: 0.9 }, storage);
+
+    expect(applyPendingPreferencePatch(defaultPreferences(), storage)).toMatchObject({
+      version: 1,
+      party_size: 8,
+      coop_competitive: 0.9,
+    });
+  });
+
+  it("keeps a pending patch when synchronization fails", async () => {
+    const storage = memoryStorage();
+    queuePreferencePatch({ party_size: 8 }, storage);
+    const api = {
+      getPreferences: vi.fn(async () => defaultPreferences()),
+      putPreferences: vi.fn(async () => {
+        throw new Error("offline");
+      }),
+    };
+
+    await expect(flushPendingPreferencePatch(api, storage)).rejects.toThrow("offline");
+    expect(hasPendingPreferencePatch(storage)).toBe(true);
+  });
+});

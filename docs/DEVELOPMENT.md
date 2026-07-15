@@ -7,10 +7,10 @@
 - `mpgs-domain`：分区、偏好、反馈类型与推荐信号。
 - `mpgs-recommender`：评分、个性化、硬过滤、MMR、解释与 `rank_feed`。
 - `mpgs-steam-source`：Steam 源规范化适配器、多人搜索页 HTML 解析器与黄金集。
-- `mpgs-storage`：SQLite 迁移（含用户/偏好/反馈/可用性）、单写与并发只读连接、Repository、种子目录、查询与备份。
-- `mpgs-server`：公开 API（会话/偏好/四分区/日历/搜索/详情/证据/反馈）、生成式 OpenAPI、限流、`x-request-id`、ETag；管理/内部 jobs。
+- `mpgs-storage`：SQLite 迁移（含用户/偏好/反馈/可用性/游玩意愿票）、单写与并发只读连接、Repository、种子目录、查询与备份。
+- `mpgs-server`：公开 API（会话/偏好/四分区/日历/搜索/详情/证据/反馈/游玩意愿投票）、生成式 OpenAPI、限流、`x-request-id`、ETag、CORS 白名单；管理/内部 jobs。
 - `mpgs-dbtool`：migrate / Steam 候选采集 / integrity / m3-audit / backup / restore。
-- 尚未接入 AI Provider 或 Tauri 客户端。
+- 尚未接入 AI Provider。M4 桌面客户端已建立首个垂直切片：`web/` 前端（五主题 + 动态特效 + 四分区/详情/反馈）与 `apps/desktop/src-tauri/` Tauri 壳，详见 [web/README.md](../web/README.md)。
 
 2026-07-14 已用 2,071 条真实 Steam 多人分类候选通过 `m3-audit`；同日 [GitHub Actions 构建](https://github.com/Lotulune/mpgs/actions/workflows/ci.yml) 的 Windows/Linux x64/ARM64 四个目标与质量门禁全部通过，并生成四套制品。M4 可以进入 [Tauri 桌面客户端](MVP_PLAN.md#m4tauri-桌面客户端) 开发；真实候选的数据富化仍是发布门禁，应与客户端开发并行推进。
 
@@ -90,6 +90,24 @@ cargo run -p mpgs-server
 ```
 
 不要把本地地址、Key 或个人路径提交为默认配置。
+
+## 3.1 桌面客户端（M4）
+
+前端在 `web/`，Tauri 壳在 `apps/desktop/src-tauri/`，详见 [web/README.md](../web/README.md)。
+
+```powershell
+pnpm install
+# 另开终端启动带演示数据的服务端：
+$env:MPGS_SEED_DEMO = 'true'; cargo run -p mpgs-server
+# 浏览器开发（Vite 代理 /v1 到 127.0.0.1:8080）：
+pnpm --filter mpgs-web dev            # http://localhost:5173
+# 校验：
+pnpm --filter mpgs-web typecheck
+pnpm --filter mpgs-web test
+pnpm --filter mpgs-web build
+```
+
+Tauri 壳是独立 Cargo workspace，不进入根 workspace，因此 `cargo test --workspace` 与 CI 不需要 WebView 工具链。打包需另装 Tauri CLI 与平台依赖（Windows: MSVC + WebView2；Linux: WebKitGTK 4.1）。
 
 ## 4. Workspace 依赖方向
 
@@ -210,6 +228,8 @@ MPGS_EMBEDDING_MODEL
 这些 AI/Steam 变量当前尚未被代码读取。实现 Provider 时提供 `.env.example` 但不自动加载生产 `.env`，并确保日志只显示“已配置/未配置”。供应商 URL 是否允许自定义需要单独安全评审。
 
 M3 已读取的非敏感限流变量：`MPGS_RATE_LIMIT_ENABLED`、`MPGS_RATE_LIMIT_READ_PER_MINUTE`、`MPGS_RATE_LIMIT_SEARCH_PER_MINUTE`、`MPGS_RATE_LIMIT_SESSION_PER_MINUTE`、`MPGS_RATE_LIMIT_FEEDBACK_PER_MINUTE`、`MPGS_RATE_LIMIT_GLOBAL_PER_MINUTE`、`MPGS_TRUST_PROXY_HEADERS`。代理部署只有在入口覆盖并清洗转发头时才能开启最后一项。
+
+M4 新增的非敏感变量：服务端 `MPGS_CORS_ENABLED`、`MPGS_CORS_ALLOWED_ORIGINS`（逗号分隔精确源，默认覆盖 Tauri webview 源，见 [API 契约](API.md#171-corsm4)）；前端 `VITE_MPGS_API_BASE`（打包构建仅接受桌面 CSP 已允许的 `http://127.0.0.1:8080` 或 `http://localhost:8080`，开发留空走 Vite 代理，见 [web/.env.example](../web/.env.example)）。这些均非敏感，不含任何 Key。
 
 ## 13. 提交前检查
 
