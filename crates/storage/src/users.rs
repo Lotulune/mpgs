@@ -270,7 +270,7 @@ pub fn ensure_algorithm_config(conn: &Connection, now_ms: i64) -> StorageResult<
     let config_json = serde_json::to_string(&RecommendationConfig::default())?;
     conn.execute(
         "INSERT INTO algorithm_configs (version, schema_version, config_json, status, created_by, created_at_ms)
-         VALUES ('rules-0.1.0', 1, ?1, 'active', 'system', ?2)",
+         VALUES ('rules-0.2.0', 1, ?1, 'active', 'system', ?2)",
         params![config_json, now_ms],
     )?;
     Ok(())
@@ -295,11 +295,52 @@ pub fn active_algorithm_config(conn: &Connection) -> StorageResult<ActiveAlgorit
             "unsupported algorithm config schema version {schema_version}"
         )));
     }
-    let config: RecommendationConfig = serde_json::from_str(&config_json).map_err(|error| {
+    let config_value: serde_json::Value = serde_json::from_str(&config_json).map_err(|error| {
         StorageError::migration(format!("invalid active algorithm config JSON: {error}"))
     })?;
+    let has_play_intent_weight = config_value.get("play_intent_weight").is_some();
+    let has_play_intent_saturation = config_value.get("play_intent_saturation").is_some();
+    let mut config: RecommendationConfig =
+        serde_json::from_value(config_value).map_err(|error| {
+            StorageError::migration(format!("invalid active algorithm config JSON: {error}"))
+        })?;
+    if version == "rules-0.1.0" && (!has_play_intent_weight || !has_play_intent_saturation) {
+        config.play_intent_weight = 0.0;
+        config.play_intent_saturation = 0;
+    }
     config.validate().map_err(|error| {
         StorageError::migration(format!("invalid active algorithm config: {error}"))
     })?;
     Ok(ActiveAlgorithmConfig { version, config })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::Database;
+
+    #[test]
+    fn legacy_algorithm_config_without_vote_fields_stays_inert() {
+        let db = Database::open_in_memory().unwrap();
+        db.with_conn_mut(|conn| {
+            crate::migrate::migrate_to_latest(conn, 0)?;
+            let mut value = serde_json::to_value(RecommendationConfig::default())?;
+            let object = value.as_object_mut().expect("config object");
+            object.remove("play_intent_weight");
+            object.remove("play_intent_saturation");
+            conn.execute(
+                "INSERT INTO algorithm_configs (
+                    version, schema_version, config_json, status, created_by, created_at_ms
+                 ) VALUES ('rules-0.1.0', 1, ?1, 'active', 'test', 0)",
+                params![serde_json::to_string(&value)?],
+            )?;
+
+            let active = active_algorithm_config(conn)?;
+            assert_eq!(active.version, "rules-0.1.0");
+            assert_eq!(active.config.play_intent_weight, 0.0);
+            assert_eq!(active.config.play_intent_saturation, 0);
+            Ok(())
+        })
+        .unwrap();
+    }
 }

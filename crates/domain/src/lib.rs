@@ -114,6 +114,10 @@ pub struct RecommendationConfig {
     pub classic_public_min_ccu: u32,
     pub mmr_lambda: f64,
     pub candidate_limit: u32,
+    /// Max score boost from community play-intent votes (0 disables the signal).
+    pub play_intent_weight: f64,
+    /// Vote count at which the play-intent signal reaches half of its weight.
+    pub play_intent_saturation: u32,
 }
 
 impl Default for RecommendationConfig {
@@ -132,6 +136,8 @@ impl Default for RecommendationConfig {
             classic_public_min_ccu: 1_000,
             mmr_lambda: 0.75,
             candidate_limit: 10_000,
+            play_intent_weight: 0.15,
+            play_intent_saturation: 8,
         }
     }
 }
@@ -165,6 +171,11 @@ impl RecommendationConfig {
         }
         if !(1..=50_000).contains(&self.candidate_limit) {
             return Err("candidate_limit must be between 1 and 50000".into());
+        }
+        // A weight or saturation of 0 disables the play-intent signal; this keeps
+        // pre-0.2.0 configs (whose JSON lacks these fields) valid and inert.
+        if !self.play_intent_weight.is_finite() || !(0.0..=1.0).contains(&self.play_intent_weight) {
+            return Err("play_intent_weight must be between 0 and 1".into());
         }
         Ok(())
     }

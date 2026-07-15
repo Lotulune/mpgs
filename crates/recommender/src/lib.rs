@@ -13,7 +13,7 @@ pub use mmr::mmr_rerank;
 pub use personalize::{apply_personalization, hard_filter};
 pub use pipeline::{RankedCandidate, RankingInput, rank_feed, rank_feed_configured};
 
-pub const ALGORITHM_VERSION: &str = "rules-0.1.0";
+pub const ALGORITHM_VERSION: &str = "rules-0.2.0";
 const PERSONAL_WEIGHT: f64 = 0.25;
 const AI_WEIGHT: f64 = 0.15;
 
@@ -172,6 +172,7 @@ mod tests {
             recommended_max: Some(4),
             availability: Default::default(),
             personal_adjustment: 0.0,
+            play_intent_count: 0,
             signals: RankingSignals {
                 multiplayer,
                 quality: 0.85,
@@ -280,6 +281,33 @@ mod tests {
             last_coop < first_match,
             "coop titles should outrank matchmaking cores: {positions:?}"
         );
+    }
+
+    #[test]
+    fn play_intent_votes_lift_ranking() {
+        let prefs = UserPreferences::default();
+        // Two identical cooperative candidates; only the vote count differs.
+        let mut low = ranking(1, cooperative_signals());
+        low.play_intent_count = 0;
+        let mut high = ranking(2, cooperative_signals());
+        high.play_intent_count = 500;
+
+        let ranked = rank_feed(
+            FeedSection::ClassicLegacy,
+            &[low.clone(), high.clone()],
+            &prefs,
+            None,
+        );
+        let positions: Vec<_> = ranked.items.iter().map(|i| i.app_id).collect();
+        assert_eq!(
+            positions.first(),
+            Some(&2u32),
+            "heavily-voted game should rank first: {positions:?}"
+        );
+        let high_score = ranked.items.iter().find(|i| i.app_id == 2).unwrap();
+        let low_score = ranked.items.iter().find(|i| i.app_id == 1).unwrap();
+        assert!(high_score.score.final_score > low_score.score.final_score);
+        assert!((0.0..=1.0).contains(&high_score.score.final_score));
     }
 
     #[test]

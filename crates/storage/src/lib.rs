@@ -16,6 +16,7 @@ pub mod ingest;
 pub mod jobs;
 pub mod migrate;
 pub mod models;
+pub mod play_intent;
 pub mod quality;
 pub mod query;
 pub mod repo;

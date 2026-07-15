@@ -85,7 +85,7 @@ AI 失败通常不返回 5xx，而是以成功响应中的 `ai_status=fallback` 
 }
 ```
 
-游标绑定分区、数据快照、完整偏好/反馈上下文和偏移；不匹配或过期返回 `400/409`。客户端必须将其视为不透明值。`limit` 默认 20，最大 100。
+游标绑定分区、数据快照、完整偏好/反馈上下文、游玩意愿投票 revision 和偏移；目录、规则、偏好或投票变化后旧游标返回 `409 cursor_stale`。格式错误返回 `400`。客户端必须将游标视为不透明值。`limit` 默认 20，最大 100。
 
 ## 5. 缓存与一致性
 
@@ -111,7 +111,7 @@ AI 失败通常不返回 5xx，而是以成功响应中的 `ai_status=fallback` 
 {
   "api_version": "v1",
   "service_version": "0.1.0",
-  "algorithm_version": "rules-0.1.0",
+  "algorithm_version": "rules-0.2.0",
   "supported_sections": [
     "recent_release",
     "upcoming",
@@ -183,6 +183,10 @@ session_minutes_max, max_price_minor, currency, demo_only
   "multiplayer": {
     "dominant_mode": "private_coop"
   },
+  "play_intent": {
+    "count": 12,
+    "voted": false
+  },
   "reasons": ["支持私人四人合作", "累计口碑稳定"],
   "cautions": ["高难度任务需要配合"],
   "evidence_ids": ["feature:online_coop:548430"],
@@ -192,7 +196,7 @@ session_minutes_max, max_price_minor, currency, demo_only
     "personalized_score": 0.91,
     "final_score": 0.91
   },
-  "algorithm_version": "rules-0.1.0"
+  "algorithm_version": "rules-0.2.0"
 }
 ```
 
@@ -267,7 +271,7 @@ Embedding 或 AI 意图解析不可用时回退到 FTS 和当前偏好。
   },
   "ai_status": "used",
   "ai_notice": null,
-  "algorithm_version": "rules-0.1.0",
+  "algorithm_version": "rules-0.2.0",
   "data_updated_at": "2026-07-13T10:00:00Z"
 }
 ```
@@ -284,6 +288,7 @@ Embedding 或 AI 意图解析不可用时回退到 FTS 和当前偏好。
 - 联机画像、人数、连接方式、服务依赖和可信度。
 - 生命周期/近期评价、7/28 日 CCU 聚合和价格。
 - 推荐分项、用户适配项、风险与更新时间。
+- `play_intent`：社区「想玩」票数 `count` 与当前用户是否已投 `voted`（`voted` 需携带令牌，匿名请求恒为 `false`）。
 
 当前响应的 `availability` 包含 `platforms`、`languages`、典型局时长范围、免费状态、最新价格/币种和 `has_demo`。缺失值返回空数组或 `null`，客户端不得解释为明确不支持。
 
@@ -334,6 +339,18 @@ Embedding 或 AI 意图解析不可用时回退到 FTS 和当前偏好。
 ### `POST /v1/feedback/{feedback_id}/undo`
 
 追加撤销事件，不物理删除原记录；重复撤销返回同一撤销事件。有效反馈会参与后续推荐，撤销后立即退出推荐上下文。
+
+## 13.1 游玩意愿（社区投票）
+
+### `POST /v1/games/{app_id}/play-intent`
+
+需携带令牌。请求体为 `{"intent": true}` 投票、`{"intent": false}` 撤票；同一 `(用户, AppID)` 至多一票，重复提交同一 `intent` 幂等。响应：
+
+```json
+{ "app_id": 548430, "count": 13, "voted": true }
+```
+
+票数是**跨用户的社区人气信号**，区别于个人 `feedback`。它作为版本化排序信号进入确定性推荐器（`algorithm_configs` 的 `play_intent_weight` / `play_intent_saturation`，`rules-0.2.0` 起启用）：票数越多，最终排序分越高，但有界且不覆盖硬过滤。0 票时信号为零、不改变既有排序。推荐流与游戏详情的响应含 `play_intent`；每次实际投票变更递增持久化 revision，使对应缓存 `ETag` 变化，并使基于旧排序的推荐流游标失效。限流并入反馈桶（每设备 60/min）。未知 AppID 返回 `404`。
 
 ## 14. 同步
 
@@ -402,6 +419,17 @@ M3 默认值：
 普通读取、搜索、会话和反馈同时按 `x-device-id`（缺失时使用会话令牌）与客户端 IP 计数，并叠加默认 `10,000/min` 全局上限。只有 `MPGS_TRUST_PROXY_HEADERS=true` 时才信任 `X-Forwarded-For`/`X-Real-IP`；否则使用 TCP 对端地址。具体值由 `MPGS_RATE_LIMIT_*_PER_MINUTE` 调整。429 响应返回 `Retry-After`、`x-ratelimit-limit` 和 `x-ratelimit-remaining`。
 
 M3 已实现默认 `64 KiB` 请求体上限和上述公开限流；AI 路由的日预算在 M5 Provider 接入时实现。
+
+## 17.1 CORS（M4）
+
+桌面客户端从 webview 源（Windows `http://tauri.localhost`，其他平台 `tauri://localhost`）跨源调用服务端，因此服务端维护一个精确源白名单：
+
+- 默认允许 `http://tauri.localhost`、`tauri://localhost`、`http://localhost:5173`（浏览器/Tauri 开发）。
+- `MPGS_CORS_ALLOWED_ORIGINS` 用逗号分隔的精确源覆盖默认值；每个源必须是 `scheme://host[:port]`（scheme 限 `http`/`https`/`tauri`，不含路径），非法值导致启动失败。
+- `MPGS_CORS_ENABLED=false` 关闭 CORS（此时不返回任何 `Access-Control-Allow-Origin`）。
+- 从不使用通配符 `*`，从不允许凭据（Bearer 走 `Authorization` 头，不用 Cookie）。
+- 预检 `OPTIONS` 在鉴权与限流之前短路返回 `204`；未在白名单中的源不会收到 `Access-Control-Allow-Origin`，浏览器据此拦截，而非浏览器客户端不受影响。
+- 允许方法 `GET, POST, PUT, OPTIONS`；允许请求头 `authorization, content-type, idempotency-key, if-none-match, x-device-id, x-request-id`；暴露响应头 `etag, x-request-id, retry-after, x-ratelimit-limit, x-ratelimit-remaining`。
 
 ## 18. 契约测试
 

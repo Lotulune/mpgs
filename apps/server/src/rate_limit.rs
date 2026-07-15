@@ -237,6 +237,12 @@ impl RateLimiter {
         if method == Method::POST && path.starts_with("/v1/feedback") {
             return Some((Bucket::Feedback, self.config.feedback_per_minute));
         }
+        if method == Method::POST
+            && path.starts_with("/v1/games/")
+            && path.ends_with("/play-intent")
+        {
+            return Some((Bucket::Feedback, self.config.feedback_per_minute));
+        }
         if path.starts_with("/v1/") || path == "/openapi.json" {
             return Some((Bucket::Read, self.config.read_per_minute));
         }

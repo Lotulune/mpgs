@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 mod api;
+mod cors;
 mod rate_limit;
 
 use std::{env, error::Error, io, net::SocketAddr};
@@ -11,6 +12,7 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 use crate::api::{AppState, build_router};
+use crate::cors::CorsConfig;
 use crate::rate_limit::RateLimitConfig;
 
 const DEFAULT_BIND_ADDR: &str = "127.0.0.1:8080";
@@ -64,6 +66,7 @@ fn build_state() -> Result<AppState, Box<dyn Error>> {
         repo,
         admin_token,
         rate_limits: RateLimitConfig::from_env()?,
+        cors: CorsConfig::from_env()?,
     })
 }
 
@@ -111,12 +114,327 @@ mod tests {
             repo: Some(repo.clone()),
             admin_token: Some("secret".into()),
             rate_limits,
+            cors: CorsConfig::default(),
         });
         (repo, app)
     }
 
     fn test_app() -> axum::Router {
         test_repo_and_app(RateLimitConfig::default()).1
+    }
+
+    #[tokio::test]
+    async fn cors_preflight_allowed_origin() {
+        let app = test_app();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("OPTIONS")
+                    .uri("/v1/feeds/recent_release")
+                    .header(header::ORIGIN, "http://tauri.localhost")
+                    .header(header::ACCESS_CONTROL_REQUEST_METHOD, "GET")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .and_then(|v| v.to_str().ok()),
+            Some("http://tauri.localhost")
+        );
+        assert!(
+            response
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_METHODS)
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn cors_get_echoes_allowed_origin() {
+        let app = test_app();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/meta")
+                    .header(header::ORIGIN, "tauri://localhost")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .and_then(|v| v.to_str().ok()),
+            Some("tauri://localhost")
+        );
+        assert!(
+            response
+                .headers()
+                .get("access-control-expose-headers")
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn cors_disallowed_origin_gets_no_acao() {
+        let app = test_app();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/meta")
+                    .header(header::ORIGIN, "https://evil.example")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            response
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .is_none()
+        );
+    }
+
+    async fn anon_token(app: &axum::Router) -> String {
+        let session = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/session/anonymous")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = axum::body::to_bytes(session.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        json["access_token"].as_str().unwrap().to_owned()
+    }
+
+    #[tokio::test]
+    async fn play_intent_vote_requires_auth() {
+        let app = test_app();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/games/548430/play-intent")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"intent":true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn play_intent_toggles_and_surfaces_in_feed() {
+        let app = test_app();
+        let token = anon_token(&app).await;
+
+        // Cast a vote.
+        let vote = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/games/548430/play-intent")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"intent":true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(vote.status(), StatusCode::OK);
+        let vote_json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(vote.into_body(), 1 << 20)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(vote_json["count"], 1);
+        assert_eq!(vote_json["voted"], true);
+
+        // Feed reflects the count and this user's voted flag.
+        let feed = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/feeds/classic_legacy?limit=100")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let feed_json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(feed.into_body(), 1 << 20)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let drg = feed_json["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["app_id"] == 548430)
+            .expect("DRG present");
+        assert_eq!(drg["play_intent"]["count"], 1);
+        assert_eq!(drg["play_intent"]["voted"], true);
+
+        // Withdraw the vote.
+        let unvote = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/games/548430/play-intent")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"intent":false}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let unvote_json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(unvote.into_body(), 1 << 20)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(unvote_json["count"], 0);
+        assert_eq!(unvote_json["voted"], false);
+    }
+
+    #[tokio::test]
+    async fn play_intent_unknown_game_is_not_found() {
+        let app = test_app();
+        let token = anon_token(&app).await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/games/40404040/play-intent")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"intent":true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn play_intent_change_invalidates_feed_cursor() {
+        let (repo, app) = test_repo_and_app(RateLimitConfig::default());
+        let first = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/feeds/classic_legacy?limit=1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let first_json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(first.into_body(), 1 << 20)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let cursor = first_json["next_cursor"]
+            .as_str()
+            .expect("feed has another page");
+
+        let session = repo.create_anonymous_session().unwrap();
+        repo.set_play_intent(&session.user_id, 548430, true)
+            .unwrap();
+
+        let stale = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/v1/feeds/classic_legacy?limit=1&cursor={cursor}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(stale.status(), StatusCode::CONFLICT);
+        let stale_json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(stale.into_body(), 1 << 20)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(stale_json["error"]["code"], "cursor_stale");
+    }
+
+    #[tokio::test]
+    async fn detail_etag_is_scoped_to_user_vote_state() {
+        let (repo, app) = test_repo_and_app(RateLimitConfig::default());
+        let first_user = repo.create_anonymous_session().unwrap();
+        let second_user = repo.create_anonymous_session().unwrap();
+        repo.set_play_intent(&first_user.user_id, 548430, true)
+            .unwrap();
+
+        let first = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/games/548430")
+                    .header(
+                        header::AUTHORIZATION,
+                        format!("Bearer {}", first_user.access_token),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let first_etag = first.headers().get(header::ETAG).unwrap().clone();
+
+        let second = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/games/548430")
+                    .header(
+                        header::AUTHORIZATION,
+                        format!("Bearer {}", second_user.access_token),
+                    )
+                    .header(header::IF_NONE_MATCH, first_etag)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(second.status(), StatusCode::OK);
+        let second_json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(second.into_body(), 1 << 20)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(second_json["play_intent"]["count"], 1);
+        assert_eq!(second_json["play_intent"]["voted"], false);
     }
 
     #[tokio::test]
@@ -578,6 +896,7 @@ mod tests {
             "/v1/search",
             "/v1/games/{app_id}",
             "/v1/games/{app_id}/evidence",
+            "/v1/games/{app_id}/play-intent",
             "/v1/feedback",
             "/v1/feedback/{feedback_id}/undo",
         ] {
@@ -749,6 +1068,46 @@ mod tests {
         assert_eq!(ids, vec![548430]);
     }
 
+    #[tokio::test]
+    async fn active_algorithm_version_is_consistent_across_public_responses() {
+        let (repo, app) = test_repo_and_app(RateLimitConfig::default());
+        repo.database()
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE algorithm_configs
+                     SET version = 'rules-0.1.0',
+                         config_json = json_remove(
+                             config_json, '$.play_intent_weight', '$.play_intent_saturation'
+                         )
+                     WHERE status = 'active'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+
+        for uri in [
+            "/v1/meta",
+            "/v1/search?q=Deep",
+            "/v1/feeds/classic_legacy?limit=1",
+            "/v1/games/548430",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{uri}");
+            let json: serde_json::Value = serde_json::from_slice(
+                &axum::body::to_bytes(response.into_body(), 1 << 20)
+                    .await
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(json["algorithm_version"], "rules-0.1.0", "{uri}");
+        }
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn sqlite_lock_wait_does_not_block_the_async_runtime() {
         use std::sync::{Arc, Barrier};
@@ -850,6 +1209,7 @@ mod tests {
                 enabled: false,
                 ..RateLimitConfig::default()
             },
+            cors: CorsConfig::default(),
         });
 
         let first = app

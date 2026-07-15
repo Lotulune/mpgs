@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use utoipa::{OpenApi, ToSchema};
 
+use crate::cors::CorsConfig;
 use crate::rate_limit::{RateLimitConfig, RateLimiter};
 
 tokio::task_local! {
@@ -32,6 +33,7 @@ pub struct AppState {
     pub repo: Option<Repository>,
     pub admin_token: Option<String>,
     pub rate_limits: RateLimitConfig,
+    pub cors: CorsConfig,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -95,6 +97,13 @@ struct MultiplayerSummarySchema {
 
 #[allow(dead_code)]
 #[derive(ToSchema)]
+struct PlayIntentSummarySchema {
+    count: u32,
+    voted: bool,
+}
+
+#[allow(dead_code)]
+#[derive(ToSchema)]
 struct ScoreComponentsSchema {
     friend_fit: f64,
     section_score: f64,
@@ -112,6 +121,7 @@ struct FeedItemSchema {
     confidence: f64,
     party: PartySchema,
     multiplayer: MultiplayerSummarySchema,
+    play_intent: PlayIntentSummarySchema,
     reasons: Vec<String>,
     cautions: Vec<String>,
     evidence_ids: Vec<String>,
@@ -212,6 +222,7 @@ struct GameResponseSchema {
     release_date: Option<String>,
     steam_url: String,
     multiplayer: MultiplayerDetailSchema,
+    play_intent: PlayIntentSummarySchema,
     reviews: ReviewSummarySchema,
     latest_ccu: Option<u32>,
     availability: GameAvailabilitySchema,
@@ -285,7 +296,8 @@ impl utoipa::Modify for SecurityAddon {
         get_game,
         get_evidence,
         post_feedback,
-        undo_feedback
+        undo_feedback,
+        set_play_intent
     ),
     components(schemas(
         HealthResponse,
@@ -301,6 +313,7 @@ impl utoipa::Modify for SecurityAddon {
         FeedResponseSchema,
         PartySchema,
         MultiplayerSummarySchema,
+        PlayIntentSummarySchema,
         ScoreComponentsSchema,
         CalendarItemSchema,
         CalendarResponseSchema,
@@ -313,7 +326,9 @@ impl utoipa::Modify for SecurityAddon {
         EvidenceItemSchema,
         EvidenceResponseSchema,
         FeedbackBody,
-        FeedbackResponseSchema
+        FeedbackResponseSchema,
+        PlayIntentBody,
+        PlayIntentResponseSchema
     )),
     modifiers(&SecurityAddon),
     tags(
@@ -334,6 +349,7 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
 
 pub fn build_router(state: AppState) -> Router {
     let rate_limiter = Arc::new(RateLimiter::new(state.rate_limits.clone()));
+    let cors_config = Arc::new(state.cors.clone());
     let state = Arc::new(state);
     Router::new()
         .route("/health/live", get(health_live))
@@ -348,6 +364,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/search", get(search_games))
         .route("/v1/games/{app_id}", get(get_game))
         .route("/v1/games/{app_id}/evidence", get(get_evidence))
+        .route("/v1/games/{app_id}/play-intent", post(set_play_intent))
         .route("/v1/feedback", post(post_feedback))
         .route("/v1/feedback/{feedback_id}/undo", post(undo_feedback))
         .route("/admin/v1/games/{app_id}/overrides", post(create_override))
@@ -363,6 +380,10 @@ pub fn build_router(state: AppState) -> Router {
             crate::rate_limit::middleware,
         ))
         .layer(middleware::from_fn(request_id_middleware))
+        .layer(middleware::from_fn_with_state(
+            cors_config,
+            crate::cors::middleware,
+        ))
         .with_state(state)
 }
 
@@ -735,11 +756,21 @@ async fn get_feed(
         Ok(value) => value,
         Err(error) => return map_storage_error(error, None),
     };
+    let snapshot_user_id = user_id.clone();
+    let play_intent = match storage_result(repo, move |repo| {
+        repo.play_intent_feed_snapshot(snapshot_user_id.as_deref())
+    })
+    .await
+    {
+        Ok(value) => value,
+        Err(error) => return map_storage_error(error, None),
+    };
     let offset = match decode_cursor(
         query.cursor.as_deref(),
         section,
         snapshot_ms,
         &preference_context,
+        play_intent.epoch.revision,
     ) {
         Ok(value) => value,
         Err(CursorError::Invalid) => {
@@ -759,10 +790,12 @@ async fn get_feed(
             );
         }
     };
+    let cache_identity = user_id.as_deref().unwrap_or("public");
     let etag = weak_etag(&format!(
-        "feed:v1:{}:{snapshot_ms}:{preference_context}:{offset}:{limit}:{}",
+        "feed:v2:{}:{snapshot_ms}:{preference_context}:{offset}:{limit}:{}:pi{}:user{cache_identity}",
         section.as_str(),
-        active_config.version
+        active_config.version,
+        play_intent.epoch.revision,
     ));
     if let Some(response) = if_none_match_ok(&headers, &etag) {
         return response;
@@ -830,6 +863,7 @@ async fn get_feed(
                 availability,
                 signals,
                 personal_adjustment,
+                play_intent_count: play_intent.counts.get(&row.app_id).copied().unwrap_or(0),
             })
         })
         .collect();
@@ -861,6 +895,10 @@ async fn get_feed(
                 "multiplayer": {
                     "dominant_mode": item.dominant_mode,
                 },
+                "play_intent": {
+                    "count": play_intent.counts.get(&item.app_id).copied().unwrap_or(0),
+                    "voted": play_intent.user_votes.contains(&item.app_id),
+                },
                 "reasons": item.explanation.reasons,
                 "cautions": item.explanation.cautions,
                 "evidence_ids": item.explanation.evidence_ids,
@@ -881,6 +919,7 @@ async fn get_feed(
             section,
             snapshot_ms,
             &preference_context,
+            play_intent.epoch.revision,
             next_offset,
         ))
     } else {
@@ -1016,6 +1055,10 @@ async fn search_games(
             None,
         );
     }
+    let active_config = match storage_result(repo, |repo| repo.active_algorithm_config()).await {
+        Ok(value) => value,
+        Err(error) => return map_storage_error(error, None),
+    };
     match storage_result(repo, move |repo| repo.search_games(&q, limit)).await {
         Ok(items) => {
             let body = json!({
@@ -1025,7 +1068,7 @@ async fn search_games(
                     "release_state": g.release_state,
                     "release_date": g.release_date,
                 })).collect::<Vec<_>>(),
-                "algorithm_version": ALGORITHM_VERSION,
+                "algorithm_version": active_config.version,
             });
             (StatusCode::OK, Json(body)).into_response()
         }
@@ -1056,8 +1099,25 @@ async fn get_game(
         Ok(value) => value,
         Err(error) => return map_storage_error(error, None),
     };
+    let active_config = match storage_result(repo, |repo| repo.active_algorithm_config()).await {
+        Ok(value) => value,
+        Err(error) => return map_storage_error(error, None),
+    };
+    // Optional identity: a valid bearer reveals this user's vote; anonymous omits it.
+    let user_id = optional_user_id(repo, &headers).await;
+    let snapshot_user_id = user_id.clone();
+    let play_intent = match storage_result(repo, move |repo| {
+        repo.play_intent_game_snapshot(snapshot_user_id.as_deref(), app_id)
+    })
+    .await
+    {
+        Ok(value) => value,
+        Err(error) => return map_storage_error(error, None),
+    };
+    let cache_identity = user_id.as_deref().unwrap_or("public");
     let etag = weak_etag(&format!(
-        "game:v1:{app_id}:{data_updated_at_ms}:{ALGORITHM_VERSION}"
+        "game:v2:{app_id}:{data_updated_at_ms}:{}:pi{}:{}:{}:user{cache_identity}",
+        active_config.version, play_intent.epoch.revision, play_intent.count, play_intent.voted,
     ));
     if let Some(response) = if_none_match_ok(&headers, &etag) {
         return response;
@@ -1080,6 +1140,10 @@ async fn get_game(
                     "recommended_max": game.recommended_max,
                     "profile_confidence": game.profile_confidence,
                 },
+                "play_intent": {
+                    "count": play_intent.count,
+                    "voted": play_intent.voted,
+                },
                 "reviews": {
                     "total": game.total_reviews,
                     "positive": game.total_positive,
@@ -1095,7 +1159,7 @@ async fn get_game(
                     "price_currency": game.price_currency,
                     "has_demo": game.has_demo,
                 },
-                "algorithm_version": ALGORITHM_VERSION,
+                "algorithm_version": active_config.version,
                 "data_updated_at_ms": data_updated_at_ms,
             });
             (StatusCode::OK, [(header::ETAG, etag)], Json(body)).into_response()
@@ -1345,6 +1409,65 @@ fn record_json(record: &mpgs_storage::feedback::FeedbackRecord) -> serde_json::V
         "recommendation_run_id": record.recommendation_run_id,
         "created_at_ms": record.created_at_ms,
     })
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+struct PlayIntentBody {
+    /// True to cast a "want to play" vote, false to withdraw it.
+    intent: bool,
+}
+
+#[allow(dead_code)]
+#[derive(ToSchema)]
+struct PlayIntentResponseSchema {
+    app_id: u32,
+    count: u32,
+    voted: bool,
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/games/{app_id}/play-intent",
+    params(("app_id" = u32, Path, description = "Steam AppID")),
+    request_body = PlayIntentBody,
+    responses(
+        (status = 200, body = PlayIntentResponseSchema),
+        (status = 401, body = ErrorBody),
+        (status = 404, body = ErrorBody)
+    ),
+    security(("bearer_auth" = [])),
+    tag = "feedback"
+)]
+async fn set_play_intent(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(app_id): Path<u32>,
+    Json(body): Json<PlayIntentBody>,
+) -> impl IntoResponse {
+    let Some(repo) = require_repo(&state) else {
+        return storage_disabled();
+    };
+    let user_id = match require_user(repo, &headers).await {
+        Ok(id) => id,
+        Err(resp) => return *resp,
+    };
+    let intent = body.intent;
+    match storage_result(repo, move |repo| {
+        repo.set_play_intent(&user_id, app_id, intent)
+    })
+    .await
+    {
+        Ok(vote) => (
+            StatusCode::OK,
+            Json(json!({
+                "app_id": vote.app_id,
+                "count": vote.count,
+                "voted": vote.voted,
+            })),
+        )
+            .into_response(),
+        Err(error) => map_storage_error(error, None),
+    }
 }
 
 // --- admin / internal (M2) ---
@@ -1626,6 +1749,15 @@ async fn user_context(
     Ok((preferences, Some(user_id)))
 }
 
+/// Resolve a user id when a valid bearer token is present; `None` for anonymous
+/// requests or stale tokens (public endpoints must not 401 on an old token).
+async fn optional_user_id(repo: &Repository, headers: &HeaderMap) -> Option<String> {
+    if !headers.contains_key(header::AUTHORIZATION) {
+        return None;
+    }
+    require_user(repo, headers).await.ok()
+}
+
 async fn storage_result<T, F>(repo: &Repository, operation: F) -> Result<T, StorageError>
 where
     T: Send + 'static,
@@ -1698,10 +1830,11 @@ fn encode_cursor(
     section: FeedSection,
     snapshot_ms: i64,
     preference_context: &str,
+    play_intent_revision: u64,
     offset: usize,
 ) -> String {
     format!(
-        "v1:{}:{snapshot_ms}:{preference_context}:{offset}",
+        "v2:{}:{snapshot_ms}:{preference_context}:{play_intent_revision}:{offset}",
         section.as_str()
     )
 }
@@ -1717,20 +1850,27 @@ fn decode_cursor(
     expected_section: FeedSection,
     expected_snapshot_ms: i64,
     expected_preference_context: &str,
+    expected_play_intent_revision: u64,
 ) -> Result<usize, CursorError> {
     let Some(cursor) = cursor else {
         return Ok(0);
     };
     let mut parts = cursor.split(':');
-    let valid_version = parts.next() == Some("v1");
+    let version = parts.next();
+    if version == Some("v1") {
+        return Err(CursorError::Stale);
+    }
+    let valid_version = version == Some("v2");
     let section = parts.next();
     let snapshot = parts.next().and_then(|value| value.parse::<i64>().ok());
     let preference_context = parts.next();
+    let play_intent_revision = parts.next().and_then(|value| value.parse::<u64>().ok());
     let offset = parts.next().and_then(|value| value.parse::<usize>().ok());
     if !valid_version
         || section != Some(expected_section.as_str())
         || snapshot.is_none()
         || preference_context.is_none()
+        || play_intent_revision.is_none()
         || offset.is_none()
         || parts.next().is_some()
     {
@@ -1738,6 +1878,7 @@ fn decode_cursor(
     }
     if snapshot != Some(expected_snapshot_ms)
         || preference_context != Some(expected_preference_context)
+        || play_intent_revision != Some(expected_play_intent_revision)
     {
         return Err(CursorError::Stale);
     }

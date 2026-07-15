@@ -21,6 +21,8 @@ pub struct RankingInput {
     pub availability: CandidateAvailability,
     pub signals: RankingSignals,
     pub personal_adjustment: f64,
+    /// Community play-intent votes; boosts the final score (0 = no effect).
+    pub play_intent_count: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -48,11 +50,14 @@ pub fn rank_feed(
     prefs: &UserPreferences,
     mmr_lambda: Option<f64>,
 ) -> RankedFeed {
+    let defaults = RecommendationConfig::default();
     rank_feed_inner(
         section,
         candidates,
         prefs,
-        mmr_lambda.unwrap_or(RecommendationConfig::default().mmr_lambda),
+        mmr_lambda.unwrap_or(defaults.mmr_lambda),
+        defaults.play_intent_weight,
+        defaults.play_intent_saturation,
         ALGORITHM_VERSION,
     )
 }
@@ -69,15 +74,31 @@ pub fn rank_feed_configured(
         candidates,
         prefs,
         config.mmr_lambda,
+        config.play_intent_weight,
+        config.play_intent_saturation,
         algorithm_version,
     )
 }
 
+/// Bounded, monotonic play-intent boost. Returns 0 when there are no votes or the
+/// signal is disabled (weight or saturation 0), so pre-0.2.0 configs are inert.
+fn play_intent_boost(count: u32, weight: f64, saturation: u32) -> f64 {
+    if count == 0 || saturation == 0 || weight <= 0.0 {
+        return 0.0;
+    }
+    let c = f64::from(count);
+    let norm = c / (c + f64::from(saturation)); // 0 -> 0, saturation -> 0.5, ∞ -> 1
+    crate::unit(weight) * norm
+}
+
+#[allow(clippy::too_many_arguments)]
 fn rank_feed_inner(
     section: FeedSection,
     candidates: &[RankingInput],
     prefs: &UserPreferences,
     mmr_lambda: f64,
+    play_intent_weight: f64,
+    play_intent_saturation: u32,
     algorithm_version: &str,
 ) -> RankedFeed {
     let mut scored = Vec::new();
@@ -102,7 +123,17 @@ fn rank_feed_inner(
         );
         signals.personal_fit =
             crate::unit(signals.personal_fit + candidate.personal_adjustment.clamp(-0.5, 0.5));
-        let breakdown = score(section, &signals, None);
+        let mut breakdown = score(section, &signals, None);
+        // Community demand nudges the ranked score upward, after deterministic
+        // scoring and before diversity re-ranking.
+        let boost = play_intent_boost(
+            candidate.play_intent_count,
+            play_intent_weight,
+            play_intent_saturation,
+        );
+        if boost > 0.0 {
+            breakdown.final_score = crate::unit(breakdown.final_score + boost);
+        }
         let explanation = explain(
             candidate.app_id,
             &signals,

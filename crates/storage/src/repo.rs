@@ -569,4 +569,61 @@ impl Repository {
         self.db
             .with_conn(|conn| crate::feedback::list_active_feedback(conn, user_id))
     }
+
+    // --- play-intent votes ---
+
+    pub fn set_play_intent(
+        &self,
+        user_id: &str,
+        app_id: u32,
+        intent: bool,
+    ) -> StorageResult<crate::play_intent::PlayIntentState> {
+        let now = self.db.now_ms();
+        self.db.with_conn_mut(|conn| {
+            crate::play_intent::set_play_intent(conn, user_id, app_id, intent, now)
+        })
+    }
+
+    pub fn play_intent_counts(&self) -> StorageResult<std::collections::HashMap<u32, u32>> {
+        self.db.with_conn(crate::play_intent::all_counts)
+    }
+
+    pub fn play_intent_count(&self, app_id: u32) -> StorageResult<u32> {
+        self.db
+            .with_conn(|conn| crate::play_intent::count_for(conn, app_id))
+    }
+
+    pub fn user_play_intents(
+        &self,
+        user_id: &str,
+    ) -> StorageResult<std::collections::HashSet<u32>> {
+        self.db
+            .with_conn(|conn| crate::play_intent::user_votes(conn, user_id))
+    }
+
+    pub fn has_play_intent(&self, user_id: &str, app_id: u32) -> StorageResult<bool> {
+        self.db
+            .with_conn(|conn| crate::play_intent::has_voted(conn, user_id, app_id))
+    }
+
+    pub fn play_intent_epoch(&self) -> StorageResult<crate::play_intent::PlayIntentEpoch> {
+        self.db.with_conn(crate::play_intent::epoch)
+    }
+
+    pub fn play_intent_feed_snapshot(
+        &self,
+        user_id: Option<&str>,
+    ) -> StorageResult<crate::play_intent::PlayIntentFeedSnapshot> {
+        self.db
+            .with_conn(|conn| crate::play_intent::feed_snapshot(conn, user_id))
+    }
+
+    pub fn play_intent_game_snapshot(
+        &self,
+        user_id: Option<&str>,
+        app_id: u32,
+    ) -> StorageResult<crate::play_intent::PlayIntentGameSnapshot> {
+        self.db
+            .with_conn(|conn| crate::play_intent::game_snapshot(conn, user_id, app_id))
+    }
 }
