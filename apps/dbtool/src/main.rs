@@ -7,6 +7,7 @@ use std::process::ExitCode;
 use std::thread;
 use std::time::Duration;
 
+use mpgs_ai::{EmbeddingInput, encode_f32_le, embedding_provider_from_env};
 use mpgs_steam_source::{
     CcuRequest, DEFAULT_STORE_COUNTRY, DEFAULT_STORE_LANGUAGE, DEFAULT_USER_AGENT, GoldenSet,
     RawResponse, ReviewSummaryRequest, STEAM_STORE_HOST, STEAM_WEB_API_HOST, STORE_ADAPTER_VERSION,
@@ -14,7 +15,7 @@ use mpgs_steam_source::{
     StoreDetailsRequest, StoreSearchPage, StoreSearchRequest, parse_ccu, parse_review_summary,
     parse_store_details, parse_store_search_page,
 };
-use mpgs_storage::{Clock, Database, Repository, SystemClock};
+use mpgs_storage::{Clock, Database, PutEmbedding, Repository, SystemClock};
 use serde::{Deserialize, Serialize};
 
 const STORE_SEARCH_CURSOR_KEY: &str = "steam_store_search:multiplayer:reviews_desc";
@@ -160,6 +161,52 @@ fn run() -> Result<(), String> {
                 repo.ai_analysis_count().map_err(err)?
             );
             println!("offline_feature_extract=ok");
+            Ok(())
+        }
+        "embed-documents" => {
+            let db_path = required_path(args.next(), "--db path")?;
+            let limit = args
+                .next()
+                .as_deref()
+                .unwrap_or("200")
+                .parse::<u32>()
+                .map_err(|_| "embed-documents limit must be an integer".to_owned())?
+                .clamp(1, 10_000);
+            let batch = args
+                .next()
+                .as_deref()
+                .unwrap_or("16")
+                .parse::<usize>()
+                .map_err(|_| "embed-documents batch must be an integer".to_owned())?
+                .clamp(1, 64);
+            let db = Database::open(&db_path).map_err(err)?;
+            db.assert_ready().map_err(err)?;
+            let repo = Repository::new(db);
+            // Ensure documents exist before embedding.
+            if repo.document_count().map_err(err)? == 0 {
+                let _ = repo
+                    .sync_retrieval_from_catalog(limit.max(100), 0, false)
+                    .map_err(err)?;
+            }
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| e.to_string())?;
+            let stats = rt
+                .block_on(embed_documents_batch(&repo, limit, batch))
+                .map_err(err_ai)?;
+            println!("path={}", db_path.display());
+            println!("provider={}", stats.provider);
+            println!("model={}", stats.model);
+            println!("targets={}", stats.targets);
+            println!("written={}", stats.written);
+            println!("unchanged={}", stats.unchanged);
+            println!("batches={}", stats.batches);
+            println!(
+                "embedding_count={}",
+                repo.embedding_count().map_err(err)?
+            );
+            println!("embed_documents=ok");
             Ok(())
         }
         "collect-steam-candidates" => {
@@ -979,6 +1026,102 @@ fn err(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
 
+fn err_ai(error: impl std::fmt::Display) -> String {
+    format!("ai: {error}")
+}
+
+#[derive(Debug, Default)]
+struct EmbedBatchStats {
+    provider: String,
+    model: String,
+    targets: u32,
+    written: u32,
+    unchanged: u32,
+    batches: u32,
+}
+
+async fn embed_documents_batch(
+    repo: &Repository,
+    limit: u32,
+    batch: usize,
+) -> Result<EmbedBatchStats, String> {
+    let provider = embedding_provider_from_env().map_err(|e| e.to_string())?;
+    if !provider.is_available() {
+        return Err(
+            "embedding provider is disabled; set MPGS_AI_EMBED_PROVIDER=hash|openai_compat"
+                .into(),
+        );
+    }
+    let provider_name = provider.name().to_owned();
+    // Prefer model reported by first successful embed; default label for hash-embed.
+    let model_hint = std::env::var("MPGS_AI_EMBED_MODEL").unwrap_or_else(|_| {
+        if provider_name.contains("hash") {
+            "hash-embed-v1".into()
+        } else {
+            "text-embedding-3-small".into()
+        }
+    });
+
+    let targets = repo
+        .list_documents_missing_embedding(&provider_name, &model_hint, limit)
+        .map_err(err)?;
+    // Hash provider uses fixed model name hash-embed-v1, not env model.
+    let targets = if targets.is_empty() && provider_name.contains("hash") {
+        repo.list_documents_missing_embedding(&provider_name, "hash-embed-v1", limit)
+            .map_err(err)?
+    } else {
+        targets
+    };
+
+    let mut stats = EmbedBatchStats {
+        provider: provider_name.clone(),
+        model: model_hint.clone(),
+        targets: targets.len() as u32,
+        ..EmbedBatchStats::default()
+    };
+
+    for chunk in targets.chunks(batch) {
+        stats.batches += 1;
+        let inputs: Vec<EmbeddingInput> = chunk
+            .iter()
+            .map(|doc| EmbeddingInput {
+                id: doc.document_id.clone(),
+                text: format!("{} {}", doc.title, doc.body),
+            })
+            .collect();
+        let embeddings = provider.embed(&inputs).await.map_err(|e| e.to_string())?;
+        if embeddings.len() != chunk.len() {
+            return Err(format!(
+                "embedding provider returned {} vectors for {} inputs",
+                embeddings.len(),
+                chunk.len()
+            ));
+        }
+        for (doc, emb) in chunk.iter().zip(embeddings.iter()) {
+            if stats.model == model_hint && emb.model != model_hint {
+                stats.model = emb.model.clone();
+            }
+            let written = repo
+                .put_embedding(&PutEmbedding {
+                    document_id: doc.document_id.clone(),
+                    provider: provider_name.clone(),
+                    model: emb.model.clone(),
+                    dimensions: emb.dimensions,
+                    vector_blob: encode_f32_le(&emb.vector),
+                    is_l2_normalized: true,
+                    content_hash: doc.content_hash.clone(),
+                })
+                .map_err(err)?;
+            if written {
+                stats.written += 1;
+            } else {
+                stats.unchanged += 1;
+            }
+        }
+    }
+    Ok(stats)
+}
+
 fn configured_store_locale() -> Result<(String, String), String> {
     let country =
         env::var("MPGS_STEAM_COUNTRY").unwrap_or_else(|_| DEFAULT_STORE_COUNTRY.to_owned());
@@ -996,6 +1139,7 @@ fn usage() -> &'static str {
        m3-audit <db-path>\n\
        sync-retrieval <db-path> [limit=5000] [after_app_id=0]\n\
        extract-offline-features <db-path> [limit=5000] [after_app_id=0]\n\
+       embed-documents <db-path> [limit=200] [batch=16]\n\
        collect-steam-candidates <db-path> [target, default 2000]\n\
        enrich-steam-candidates <db-path> [limit, default 100]\n\
        import-golden-profiles <db-path>\n\

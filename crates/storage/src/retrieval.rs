@@ -456,8 +456,74 @@ impl Repository {
         Ok(stats)
     }
 
-    /// Hybrid retrieval: FTS ranks + in-memory cosine over stored hash embeddings, fused with RRF.
+    /// Hybrid retrieval over the default local hash-embed index.
     pub fn hybrid_search(&self, query: &str, limit: u32) -> StorageResult<Vec<HybridHit>> {
+        self.hybrid_search_with_vector(query, &[], HASH_EMBED_PROVIDER, HASH_EMBED_MODEL, limit)
+    }
+
+    pub fn document_count(&self) -> StorageResult<i64> {
+        self.db.with_conn(|conn| {
+            conn.query_row("SELECT COUNT(*) FROM game_documents", [], |row| row.get(0))
+                .map_err(StorageError::from)
+        })
+    }
+
+    pub fn embedding_count(&self) -> StorageResult<i64> {
+        self.db.with_conn(|conn| {
+            conn.query_row("SELECT COUNT(*) FROM game_embeddings", [], |row| row.get(0))
+                .map_err(StorageError::from)
+        })
+    }
+
+    /// Documents whose current content_hash is not embedded for the given provider/model.
+    pub fn list_documents_missing_embedding(
+        &self,
+        provider: &str,
+        model: &str,
+        limit: u32,
+    ) -> StorageResult<Vec<DocumentEmbedTarget>> {
+        let limit = limit.clamp(1, 10_000);
+        self.db.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT d.document_id, d.app_id, d.title, d.body, d.content_hash
+                 FROM game_documents d
+                 WHERE NOT EXISTS (
+                    SELECT 1 FROM game_embeddings e
+                    WHERE e.document_id = d.document_id
+                      AND e.provider = ?1
+                      AND e.model = ?2
+                      AND e.content_hash = d.content_hash
+                 )
+                 ORDER BY d.app_id ASC, d.document_id ASC
+                 LIMIT ?3",
+            )?;
+            let rows = stmt.query_map(params![provider, model, limit as i64], |row| {
+                Ok(DocumentEmbedTarget {
+                    document_id: row.get(0)?,
+                    app_id: row.get::<_, i64>(1)? as u32,
+                    title: row.get(2)?,
+                    body: row.get(3)?,
+                    content_hash: row.get(4)?,
+                })
+            })?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row?);
+            }
+            Ok(out)
+        })
+    }
+
+    /// Hybrid search using an explicit query vector and embedding provider/model.
+    /// When `query_vector` is empty, falls back to local hash embedding of `query`.
+    pub fn hybrid_search_with_vector(
+        &self,
+        query: &str,
+        query_vector: &[f32],
+        provider: &str,
+        model: &str,
+        limit: u32,
+    ) -> StorageResult<Vec<HybridHit>> {
         let limit = limit.clamp(1, 100);
         let fts_query = fts_match_query(query);
         let fts_hits = if fts_query.is_empty() {
@@ -469,25 +535,28 @@ impl Repository {
         let mut fts_best: HashMap<u32, f64> = HashMap::new();
         let mut fts_order: Vec<u32> = Vec::new();
         for hit in &fts_hits {
-            // bm25: lower is better; convert to positive preference for display.
             fts_best.entry(hit.app_id).or_insert_with(|| {
                 fts_order.push(hit.app_id);
                 -hit.rank
             });
         }
 
-        let query_vec = hash_embed_text(query, HASH_EMBED_DIMENSIONS);
-        let embeddings =
-            self.list_embeddings_for_provider(HASH_EMBED_PROVIDER, HASH_EMBED_MODEL, 10_000)?;
+        let qvec: Vec<f32> = if query_vector.is_empty() {
+            hash_embed_text(query, HASH_EMBED_DIMENSIONS)
+        } else {
+            query_vector.to_vec()
+        };
+        let dims = qvec.len();
+        let embeddings = self.list_embeddings_for_provider(provider, model, 10_000)?;
         let mut vector_best: HashMap<u32, f64> = HashMap::new();
         for emb in &embeddings {
-            if emb.dimensions != HASH_EMBED_DIMENSIONS {
+            if emb.dimensions != dims {
                 continue;
             }
             let Ok(vec) = decode_f32_le(&emb.vector_blob, emb.dimensions) else {
                 continue;
             };
-            let score = cosine_similarity(&query_vec, &vec);
+            let score = cosine_similarity(&qvec, &vec);
             let entry = vector_best.entry(emb.app_id).or_insert(score);
             if score > *entry {
                 *entry = score;
@@ -501,7 +570,7 @@ impl Repository {
             .map(|(id, _)| id)
             .collect();
 
-        let fused = reciprocal_rank_fusion(&[fts_order.clone(), vector_ids], 60);
+        let fused = reciprocal_rank_fusion(&[fts_order, vector_ids], 60);
         let mut out = Vec::new();
         for (app_id, score) in fused.into_iter().take(limit as usize) {
             out.push(HybridHit {
@@ -513,13 +582,15 @@ impl Repository {
         }
         Ok(out)
     }
+}
 
-    pub fn document_count(&self) -> StorageResult<i64> {
-        self.db.with_conn(|conn| {
-            conn.query_row("SELECT COUNT(*) FROM game_documents", [], |row| row.get(0))
-                .map_err(StorageError::from)
-        })
-    }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentEmbedTarget {
+    pub document_id: String,
+    pub app_id: u32,
+    pub title: String,
+    pub body: String,
+    pub content_hash: String,
 }
 
 #[derive(Debug, Clone)]
@@ -908,5 +979,12 @@ mod tests {
         // Ensure identity docs are searchable by type tokens used in document body.
         let typed = repo.hybrid_search("game released", 10).unwrap();
         assert!(!typed.is_empty());
+
+        let missing = repo
+            .list_documents_missing_embedding(HASH_EMBED_PROVIDER, HASH_EMBED_MODEL, 10)
+            .unwrap();
+        // After sync with embeddings, current hashes should already be embedded.
+        assert!(missing.is_empty());
+        assert!(repo.embedding_count().unwrap() > 0);
     }
 }

@@ -39,9 +39,9 @@ pub use offline_features::{
     OFFLINE_FEATURE_TASK, OfflineFeatureStats,
 };
 pub use retrieval::{
-    AiCacheEntry, FtsHit, GameDocument, HASH_EMBED_DIMENSIONS, HASH_EMBED_MODEL,
-    HASH_EMBED_PROVIDER, HybridHit, PutEmbedding, RetrievalSyncStats, StoredEmbedding,
-    UpsertGameDocument,
+    AiCacheEntry, DocumentEmbedTarget, FtsHit, GameDocument, HASH_EMBED_DIMENSIONS,
+    HASH_EMBED_MODEL, HASH_EMBED_PROVIDER, HybridHit, PutEmbedding, RetrievalSyncStats,
+    StoredEmbedding, UpsertGameDocument,
 };
 
 #[cfg(test)]

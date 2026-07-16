@@ -957,11 +957,13 @@ dependencies = [
 name = "mpgs-dbtool"
 version = "0.1.0"
 dependencies = [
+ "mpgs-ai",
  "mpgs-steam-source",
  "mpgs-storage",
  "reqwest",
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
