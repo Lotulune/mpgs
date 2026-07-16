@@ -47,20 +47,22 @@ pub fn validate_rank_result(
         let item_obj = item.as_object().ok_or_else(|| {
             AiError::InvalidOutput(format!("recommendations[{idx}] must be an object"))
         })?;
-        let app_id = item_obj
+        let raw_app_id = item_obj
             .get("app_id")
             .and_then(Value::as_u64)
-            .ok_or_else(|| AiError::InvalidOutput(format!("recommendations[{idx}].app_id")))?
-            as u32;
+            .ok_or_else(|| AiError::InvalidOutput(format!("recommendations[{idx}].app_id")))?;
+        let app_id = u32::try_from(raw_app_id).map_err(|_| {
+            AiError::InvalidOutput(format!(
+                "recommendations[{idx}].app_id exceeds the supported range"
+            ))
+        })?;
         if !by_id.contains_key(&app_id) {
             return Err(AiError::InvalidOutput(format!(
                 "app_id {app_id} is outside the candidate set"
             )));
         }
         if !seen.insert(app_id) {
-            return Err(AiError::InvalidOutput(format!(
-                "duplicate app_id {app_id}"
-            )));
+            return Err(AiError::InvalidOutput(format!("duplicate app_id {app_id}")));
         }
         let fit_score = unit_field(item_obj, "fit_score", idx)?;
         let confidence = unit_field(item_obj, "confidence", idx)?;
@@ -81,10 +83,10 @@ pub fn validate_rank_result(
                 )));
             }
         }
-        // Concrete facts require evidence; empty evidence is only allowed with empty reasons.
-        if !reasons.is_empty() && evidence.is_empty() {
+        // Every user-visible candidate claim requires evidence.
+        if (!reasons.is_empty() || !cautions.is_empty()) && evidence.is_empty() {
             return Err(AiError::InvalidOutput(format!(
-                "recommendations[{idx}] reasons require reason_evidence_ids"
+                "recommendations[{idx}] reasons/cautions require reason_evidence_ids"
             )));
         }
         items.push(AiRankItem {
@@ -101,22 +103,76 @@ pub fn validate_rank_result(
         .get("summary")
         .and_then(Value::as_str)
         .unwrap_or("")
-        .trim()
-        .chars()
-        .take(MAX_SUMMARY_CHARS)
-        .collect::<String>();
+        .trim();
+    if summary.chars().count() > MAX_SUMMARY_CHARS {
+        return Err(AiError::InvalidOutput("summary is too long".into()));
+    }
+    if looks_like_html_or_url(summary) {
+        return Err(AiError::InvalidOutput(
+            "summary contains disallowed content".into(),
+        ));
+    }
+    let summary_evidence_ids =
+        root_string_list(obj, "summary_evidence_ids", 20, MAX_EVIDENCE_ID_CHARS)?;
+    let all_evidence: HashSet<&str> = candidates
+        .iter()
+        .flat_map(|candidate| candidate.evidence_ids.iter().map(String::as_str))
+        .collect();
+    for evidence_id in &summary_evidence_ids {
+        if !all_evidence.contains(evidence_id.as_str()) {
+            return Err(AiError::InvalidOutput(format!(
+                "summary evidence_id '{evidence_id}' is not allowed"
+            )));
+        }
+    }
+    if !summary.is_empty() && summary_evidence_ids.is_empty() {
+        return Err(AiError::InvalidOutput(
+            "summary requires summary_evidence_ids".into(),
+        ));
+    }
 
     Ok(AiRankResult {
         recommendations: items,
-        summary,
+        summary: summary.to_owned(),
+        summary_evidence_ids,
     })
 }
 
-fn unit_field(
+fn root_string_list(
     obj: &serde_json::Map<String, Value>,
     key: &str,
-    idx: usize,
-) -> Result<f64, AiError> {
+    max_items: usize,
+    max_chars: usize,
+) -> Result<Vec<String>, AiError> {
+    let Some(raw) = obj.get(key) else {
+        return Err(AiError::InvalidOutput(format!("{key} is required")));
+    };
+    let arr = raw
+        .as_array()
+        .ok_or_else(|| AiError::InvalidOutput(format!("{key} must be an array")))?;
+    if arr.len() > max_items {
+        return Err(AiError::InvalidOutput(format!(
+            "{key} exceeds {max_items} items"
+        )));
+    }
+    let mut out = Vec::with_capacity(arr.len());
+    for (idx, value) in arr.iter().enumerate() {
+        let text = value
+            .as_str()
+            .ok_or_else(|| AiError::InvalidOutput(format!("{key}[{idx}] must be string")))?
+            .trim();
+        if text.is_empty() {
+            continue;
+        }
+        if text.chars().count() > max_chars || looks_like_html_or_url(text) {
+            return Err(AiError::InvalidOutput(format!("{key}[{idx}] is invalid")));
+        }
+        out.push(text.to_owned());
+    }
+    Ok(out)
+}
+
+fn unit_field(obj: &serde_json::Map<String, Value>, key: &str, idx: usize) -> Result<f64, AiError> {
     let value = obj
         .get(key)
         .and_then(Value::as_f64)
@@ -173,7 +229,8 @@ fn string_list(
 
 fn looks_like_html_or_url(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
-    lower.contains("<script")
+    lower.contains('<')
+        || lower.contains('>')
         || lower.contains("javascript:")
         || lower.contains("http://")
         || lower.contains("https://")
@@ -208,7 +265,8 @@ mod tests {
                 "reasons": ["private coop"],
                 "cautions": []
             }],
-            "summary": "ok"
+            "summary": "ok",
+            "summary_evidence_ids": ["e1"]
         });
         let result = validate_rank_result(&value, &candidates(), 20).unwrap();
         assert_eq!(result.recommendations.len(), 1);
@@ -226,7 +284,8 @@ mod tests {
                 "reasons": [],
                 "cautions": []
             }],
-            "summary": "inject"
+            "summary": "",
+            "summary_evidence_ids": []
         });
         let err = validate_rank_result(&value, &candidates(), 20).unwrap_err();
         assert!(matches!(err, AiError::InvalidOutput(_)));
@@ -243,7 +302,8 @@ mod tests {
                 "reasons": ["claim"],
                 "cautions": []
             }],
-            "summary": "x"
+            "summary": "",
+            "summary_evidence_ids": []
         });
         assert!(validate_rank_result(&value, &candidates(), 20).is_err());
     }
@@ -259,8 +319,57 @@ mod tests {
                 "reasons": [],
                 "cautions": []
             }],
-            "summary": "x"
+            "summary": "",
+            "summary_evidence_ids": []
         });
         assert!(validate_rank_result(&value, &candidates(), 20).is_err());
+    }
+
+    #[test]
+    fn rejects_app_id_that_overflows_u32() {
+        let value = json!({
+            "recommendations": [{
+                "app_id": 4_294_967_297_u64,
+                "fit_score": 0.5,
+                "confidence": 0.5,
+                "reason_evidence_ids": [],
+                "reasons": [],
+                "cautions": []
+            }],
+            "summary": "",
+            "summary_evidence_ids": []
+        });
+        assert!(validate_rank_result(&value, &candidates(), 20).is_err());
+    }
+
+    #[test]
+    fn user_visible_cautions_and_summary_require_evidence() {
+        let caution = json!({
+            "recommendations": [{
+                "app_id": 1,
+                "fit_score": 0.5,
+                "confidence": 0.5,
+                "reason_evidence_ids": [],
+                "reasons": [],
+                "cautions": ["requires an external service"]
+            }],
+            "summary": "",
+            "summary_evidence_ids": []
+        });
+        assert!(validate_rank_result(&caution, &candidates(), 20).is_err());
+
+        let summary = json!({
+            "recommendations": [],
+            "summary": "Game 1 supports private co-op",
+            "summary_evidence_ids": []
+        });
+        assert!(validate_rank_result(&summary, &candidates(), 20).is_err());
+
+        let html_summary = json!({
+            "recommendations": [],
+            "summary": "<b>Game 1</b>",
+            "summary_evidence_ids": ["e1"]
+        });
+        assert!(validate_rank_result(&html_summary, &candidates(), 20).is_err());
     }
 }

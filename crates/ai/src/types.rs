@@ -83,6 +83,7 @@ pub struct AiRankItem {
 pub struct AiRankResult {
     pub recommendations: Vec<AiRankItem>,
     pub summary: String,
+    pub summary_evidence_ids: Vec<String>,
 }
 
 /// Capability snapshot for meta/runtime decisions.

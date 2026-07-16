@@ -111,7 +111,12 @@ export function NaturalLanguageScreen({ onOpenGame }: { onOpenGame: (appId: numb
             </p>
           )}
           {(result.ai_status === "used" || result.ai_status === "cached") && result.ai_summary && (
-            <p className="cal-note">{result.ai_summary}</p>
+            <p
+              className="cal-note"
+              title={result.ai_summary_evidence_ids?.length ? result.ai_summary_evidence_ids.join(", ") : undefined}
+            >
+              {result.ai_summary}
+            </p>
           )}
           {result.items.length === 0 ? (
             <div className="state-box"><span className="big">∅</span><span>没有找到满足已识别条件的候选。</span></div>

@@ -2,7 +2,7 @@
 
 ## 1. 当前基线
 
-仓库当前 **M3–M5 已验收关闭**（确定性推荐/公开 API + Tauri 客户端 + AI/检索）。下一工程主线可进入 [M6 发布加固](MVP_PLAN.md#m6发布加固)；发布前数据富化仍须并行推进。
+仓库当前 **M3–M4 已验收关闭，M5 审查修复待干净提交重新验收**。M5 通过后再进入 [M6 发布加固](MVP_PLAN.md#m6发布加固)；发布前数据富化仍须并行推进。
 
 - `mpgs-domain`：分区、偏好、反馈类型与推荐信号。
 - `mpgs-recommender`：评分、个性化、硬过滤、MMR、解释与 `rank_feed`。
@@ -15,6 +15,7 @@
 - 检索索引：`mpgs-dbtool sync-retrieval <db> [limit] [after_app_id]` 增量同步 `game_documents`/`game_fts`/`game_embeddings`（hash-embed）。自然语言推荐会在文档为空时自动同步一次（上限 2000）。
 - 离线特征：`mpgs-dbtool extract-offline-features <db> [limit] [after_app_id]`。
 - Embedding：`MPGS_AI_EMBED_PROVIDER=hash|openai_compat|disabled`；openai_compat 时用 `MPGS_AI_EMBED_MODEL`（默认 `text-embedding-3-small`）与 `MPGS_AI_EMBED_DIMENSIONS`。
+- Hash Embedding 当前版本为 `hash-embed-v2`；已有数据库升级后运行一次 `sync-retrieval` 或 `embed-documents` 重建派生向量。
 - 批处理：`mpgs-dbtool embed-documents <db> [limit] [batch]`；离线验收：`.\scripts\m5_acceptance.ps1`（见 [M5_ACCEPTANCE.md](M5_ACCEPTANCE.md)）。
 
 M4 关闭证据：本机验收与 E2E 见 [`M4_ACCEPTANCE.md`](M4_ACCEPTANCE.md)；跨平台 CI 全绿见 [`M4_CI_RUN.md`](M4_CI_RUN.md)（[run 29497583493](https://github.com/Lotulune/mpgs/actions/runs/29497583493)，commit `5e0274b`）。

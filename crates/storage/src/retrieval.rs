@@ -1,6 +1,6 @@
 //! Game retrieval documents, FTS sync, embeddings, hybrid search, and AI cache.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use rusqlite::{OptionalExtension, params};
 use sha2::{Digest, Sha256};
@@ -9,7 +9,7 @@ use crate::error::{StorageError, StorageResult};
 use crate::repo::Repository;
 
 pub const HASH_EMBED_PROVIDER: &str = "hash-embed";
-pub const HASH_EMBED_MODEL: &str = "hash-embed-v1";
+pub const HASH_EMBED_MODEL: &str = "hash-embed-v2";
 pub const HASH_EMBED_DIMENSIONS: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,6 +142,11 @@ impl Repository {
                 ],
             )?;
             tx.execute(
+                "DELETE FROM game_embeddings
+                 WHERE document_id = ?1 AND content_hash <> ?2",
+                params![doc.document_id, doc.content_hash],
+            )?;
+            tx.execute(
                 "DELETE FROM game_fts WHERE document_id = ?1",
                 params![doc.document_id],
             )?;
@@ -170,9 +175,10 @@ impl Repository {
         }
         self.db.with_conn(|conn| {
             let mut stmt = conn.prepare(
-                "SELECT document_id, app_id, bm25(game_fts) AS rank
+                "SELECT game_fts.document_id, game_fts.app_id, bm25(game_fts) AS rank
                  FROM game_fts
-                 WHERE game_fts MATCH ?1
+                 JOIN game_documents d ON d.document_id = game_fts.document_id
+                 WHERE game_fts MATCH ?1 AND d.visibility = 'public'
                  ORDER BY rank
                  LIMIT ?2",
             )?;
@@ -193,27 +199,34 @@ impl Repository {
 
     /// Returns `true` when a new embedding row was inserted (same hash is a no-op).
     pub fn put_embedding(&self, embedding: &PutEmbedding) -> StorageResult<bool> {
-        if embedding.dimensions == 0
-            || embedding.vector_blob.len() != embedding.dimensions * 4
-        {
+        if embedding.dimensions == 0 || embedding.vector_blob.len() != embedding.dimensions * 4 {
             return Err(StorageError::validation(
                 "embedding dimensions do not match vector blob length",
             ));
         }
         let now = self.db.now_ms();
         self.db.with_conn_mut(|conn| {
-            let exists: bool = conn.query_row(
-                "SELECT COUNT(*) > 0 FROM game_embeddings
+            let existing: Option<(i64, Vec<u8>, i64)> = conn
+                .query_row(
+                    "SELECT dimensions, vector_blob, is_l2_normalized FROM game_embeddings
                  WHERE document_id = ?1 AND provider = ?2 AND model = ?3 AND content_hash = ?4",
-                params![
-                    embedding.document_id,
-                    embedding.provider,
-                    embedding.model,
-                    embedding.content_hash
-                ],
-                |row| row.get(0),
-            )?;
-            if exists {
+                    params![
+                        embedding.document_id,
+                        embedding.provider,
+                        embedding.model,
+                        embedding.content_hash
+                    ],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()?;
+            if existing
+                .as_ref()
+                .is_some_and(|(dimensions, blob, normalized)| {
+                    *dimensions == embedding.dimensions as i64
+                        && blob == &embedding.vector_blob
+                        && *normalized == i64::from(embedding.is_l2_normalized)
+                })
+            {
                 return Ok(false);
             }
             conn.execute(
@@ -254,6 +267,7 @@ impl Repository {
                  FROM game_embeddings e
                  JOIN game_documents d ON d.document_id = e.document_id
                  WHERE e.provider = ?1 AND e.model = ?2
+                   AND e.content_hash = d.content_hash
                  ORDER BY e.created_at_ms DESC
                  LIMIT ?3",
             )?;
@@ -273,7 +287,11 @@ impl Repository {
         })
     }
 
-    pub fn get_ai_cache(&self, cache_key: &str, now_ms: i64) -> StorageResult<Option<AiCacheEntry>> {
+    pub fn get_ai_cache(
+        &self,
+        cache_key: &str,
+        now_ms: i64,
+    ) -> StorageResult<Option<AiCacheEntry>> {
         self.db.with_conn(|conn| {
             conn.query_row(
                 "SELECT cache_key, task_type, provider, model, prompt_version, input_hash,
@@ -409,7 +427,11 @@ impl Repository {
         };
 
         for source in &rows {
-            for doc in source.build_documents() {
+            let docs = source.build_documents();
+            let keep_ids: HashSet<String> =
+                docs.iter().map(|doc| doc.document_id.clone()).collect();
+            self.prune_managed_documents(source.app_id, &keep_ids)?;
+            for doc in docs {
                 if self.upsert_game_document(&doc)? {
                     stats.documents_written += 1;
                     if write_embeddings {
@@ -456,6 +478,52 @@ impl Repository {
         Ok(stats)
     }
 
+    fn prune_managed_documents(
+        &self,
+        app_id: u32,
+        keep_ids: &HashSet<String>,
+    ) -> StorageResult<()> {
+        self.db.with_conn_mut(|conn| {
+            let managed_ids = HashSet::from([
+                format!("app:{app_id}:identity"),
+                format!("app:{app_id}:multiplayer_profile"),
+                format!("app:{app_id}:store_summary"),
+            ]);
+            let stale_ids: Vec<String> = {
+                let mut stmt = conn.prepare(
+                    "SELECT document_id FROM game_documents
+                     WHERE app_id = ?1
+                       AND doc_type IN ('identity', 'multiplayer_profile', 'store_summary')",
+                )?;
+                let rows = stmt.query_map(params![app_id as i64], |row| row.get(0))?;
+                let mut stale = Vec::new();
+                for row in rows {
+                    let document_id: String = row?;
+                    if managed_ids.contains(&document_id) && !keep_ids.contains(&document_id) {
+                        stale.push(document_id);
+                    }
+                }
+                stale
+            };
+            if stale_ids.is_empty() {
+                return Ok(());
+            }
+            let tx = conn.transaction()?;
+            for document_id in stale_ids {
+                tx.execute(
+                    "DELETE FROM game_fts WHERE document_id = ?1",
+                    params![document_id],
+                )?;
+                tx.execute(
+                    "DELETE FROM game_documents WHERE document_id = ?1",
+                    params![document_id],
+                )?;
+            }
+            tx.commit()?;
+            Ok(())
+        })
+    }
+
     /// Hybrid retrieval over the default local hash-embed index.
     pub fn hybrid_search(&self, query: &str, limit: u32) -> StorageResult<Vec<HybridHit>> {
         self.hybrid_search_with_vector(query, &[], HASH_EMBED_PROVIDER, HASH_EMBED_MODEL, limit)
@@ -480,6 +548,7 @@ impl Repository {
         &self,
         provider: &str,
         model: &str,
+        dimensions: usize,
         limit: u32,
     ) -> StorageResult<Vec<DocumentEmbedTarget>> {
         let limit = limit.clamp(1, 10_000);
@@ -493,19 +562,23 @@ impl Repository {
                       AND e.provider = ?1
                       AND e.model = ?2
                       AND e.content_hash = d.content_hash
+                      AND e.dimensions = ?3
                  )
                  ORDER BY d.app_id ASC, d.document_id ASC
-                 LIMIT ?3",
+                 LIMIT ?4",
             )?;
-            let rows = stmt.query_map(params![provider, model, limit as i64], |row| {
-                Ok(DocumentEmbedTarget {
-                    document_id: row.get(0)?,
-                    app_id: row.get::<_, i64>(1)? as u32,
-                    title: row.get(2)?,
-                    body: row.get(3)?,
-                    content_hash: row.get(4)?,
-                })
-            })?;
+            let rows = stmt.query_map(
+                params![provider, model, dimensions as i64, limit as i64],
+                |row| {
+                    Ok(DocumentEmbedTarget {
+                        document_id: row.get(0)?,
+                        app_id: row.get::<_, i64>(1)? as u32,
+                        title: row.get(2)?,
+                        body: row.get(3)?,
+                        content_hash: row.get(4)?,
+                    })
+                },
+            )?;
             let mut out = Vec::new();
             for row in rows {
                 out.push(row?);
@@ -621,12 +694,15 @@ impl CatalogDocSource {
             "type={} release={} platforms={} languages={}",
             self.app_type, self.release_state, platforms, languages
         );
+        let identity_tags = format!("{} {}", self.app_type, self.release_state);
         let identity_hash = content_hash(&[
             "identity",
+            "und",
             &self.canonical_name,
             &identity_body,
             alias,
-            platforms,
+            &identity_tags,
+            "public",
         ]);
         docs.push(UpsertGameDocument {
             document_id: format!("app:{}:identity", self.app_id),
@@ -637,7 +713,7 @@ impl CatalogDocSource {
             body: identity_body,
             content_hash: identity_hash,
             aliases: alias.to_owned(),
-            tags: format!("{} {}", self.app_type, self.release_state),
+            tags: identity_tags,
             visibility: "public".into(),
         });
 
@@ -647,10 +723,22 @@ impl CatalogDocSource {
             fmt_opt_bool(self.private_session),
             fmt_opt_bool(self.online_coop),
             fmt_opt_bool(self.self_hosted_server),
-            self.recommended_min.map(|v| v.to_string()).unwrap_or_else(|| "?".into()),
-            self.recommended_max.map(|v| v.to_string()).unwrap_or_else(|| "?".into()),
+            self.recommended_min
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "?".into()),
+            self.recommended_max
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "?".into()),
         );
-        let mp_hash = content_hash(&["multiplayer_profile", &mp_body]);
+        let mp_hash = content_hash(&[
+            "multiplayer_profile",
+            "und",
+            &self.canonical_name,
+            &mp_body,
+            alias,
+            &self.dominant_mode,
+            "public",
+        ]);
         docs.push(UpsertGameDocument {
             document_id: format!("app:{}:multiplayer_profile", self.app_id),
             app_id: self.app_id,
@@ -666,14 +754,22 @@ impl CatalogDocSource {
 
         let desc = self.short_description.trim();
         if !desc.is_empty() {
-            let store_hash = content_hash(&["store_summary", desc]);
+            let body: String = desc.chars().take(4_000).collect();
+            let store_hash = content_hash(&[
+                "store_summary",
+                "und",
+                &self.canonical_name,
+                &body,
+                alias,
+                "public",
+            ]);
             docs.push(UpsertGameDocument {
                 document_id: format!("app:{}:store_summary", self.app_id),
                 app_id: self.app_id,
                 doc_type: "store_summary".into(),
                 language: "und".into(),
                 title: self.canonical_name.clone(),
-                body: desc.chars().take(4_000).collect(),
+                body,
                 content_hash: store_hash,
                 aliases: alias.to_owned(),
                 tags: String::new(),
@@ -834,9 +930,11 @@ mod tests {
         let app_id = repo
             .database()
             .with_conn(|conn| {
-                conn.query_row("SELECT app_id FROM apps LIMIT 1", [], |row| row.get::<_, i64>(0))
-                    .map(|v| v as u32)
-                    .map_err(StorageError::from)
+                conn.query_row("SELECT app_id FROM apps LIMIT 1", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .map(|v| v as u32)
+                .map_err(StorageError::from)
             })
             .unwrap();
         assert!(
@@ -873,6 +971,25 @@ mod tests {
         let hits = repo.search_game_fts("cooperative", 10).unwrap();
         assert!(!hits.is_empty());
         assert_eq!(hits[0].app_id, app_id);
+
+        repo.upsert_game_document(&UpsertGameDocument {
+            document_id: format!("doc-{app_id}-internal"),
+            app_id,
+            doc_type: "curation_notes".into(),
+            language: "en".into(),
+            title: "Internal".into(),
+            body: "classifiedterm".into(),
+            content_hash: "internal-hash".into(),
+            aliases: String::new(),
+            tags: String::new(),
+            visibility: "internal".into(),
+        })
+        .unwrap();
+        assert!(
+            repo.search_game_fts("classifiedterm", 10)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -881,9 +998,11 @@ mod tests {
         let app_id = repo
             .database()
             .with_conn(|conn| {
-                conn.query_row("SELECT app_id FROM apps LIMIT 1", [], |row| row.get::<_, i64>(0))
-                    .map(|v| v as u32)
-                    .map_err(StorageError::from)
+                conn.query_row("SELECT app_id FROM apps LIMIT 1", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .map(|v| v as u32)
+                .map_err(StorageError::from)
             })
             .unwrap();
         let doc_id = format!("doc-{app_id}-store");
@@ -928,11 +1047,24 @@ mod tests {
                 })
                 .unwrap()
         );
+        assert!(
+            repo.put_embedding(&PutEmbedding {
+                document_id: doc_id.clone(),
+                provider: "hash-embed".into(),
+                model: "hash-embed-v1".into(),
+                dimensions: 2,
+                vector_blob: [1.0f32.to_le_bytes(), 0.0f32.to_le_bytes()].concat(),
+                is_l2_normalized: true,
+                content_hash: "h2".into(),
+            })
+            .unwrap()
+        );
         let listed = repo
             .list_embeddings_for_provider("hash-embed", "hash-embed-v1", 10)
             .unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].document_id, doc_id);
+        assert_eq!(listed[0].dimensions, 2);
 
         let entry = AiCacheEntry {
             cache_key: "k1".into(),
@@ -951,15 +1083,17 @@ mod tests {
         repo.put_ai_cache(&entry).unwrap();
         let loaded = repo.get_ai_cache("k1", 200).unwrap().unwrap();
         assert_eq!(loaded.output_json, entry.output_json);
-        assert!(repo.get_ai_cache("k1", 10_000_000_000_000).unwrap().is_none());
+        assert!(
+            repo.get_ai_cache("k1", 10_000_000_000_000)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
     fn catalog_sync_and_hybrid_search() {
         let repo = repo();
-        let stats = repo
-            .sync_retrieval_from_catalog(500, 0, true)
-            .unwrap();
+        let stats = repo.sync_retrieval_from_catalog(500, 0, true).unwrap();
         assert!(stats.apps_scanned > 0);
         assert!(stats.documents_written > 0);
         assert!(stats.embeddings_written > 0);
@@ -981,10 +1115,88 @@ mod tests {
         assert!(!typed.is_empty());
 
         let missing = repo
-            .list_documents_missing_embedding(HASH_EMBED_PROVIDER, HASH_EMBED_MODEL, 10)
+            .list_documents_missing_embedding(
+                HASH_EMBED_PROVIDER,
+                HASH_EMBED_MODEL,
+                HASH_EMBED_DIMENSIONS,
+                10,
+            )
             .unwrap();
         // After sync with embeddings, current hashes should already be embedded.
         assert!(missing.is_empty());
         assert!(repo.embedding_count().unwrap() > 0);
+    }
+
+    #[test]
+    fn stale_embeddings_and_removed_managed_documents_are_pruned() {
+        let repo = repo();
+        let app_id = repo
+            .database()
+            .with_conn(|conn| {
+                conn.query_row("SELECT app_id FROM apps LIMIT 1", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .map(|value| value as u32)
+                .map_err(StorageError::from)
+            })
+            .unwrap();
+        let document_id = format!("app:{app_id}:store_summary");
+        let base = UpsertGameDocument {
+            document_id: document_id.clone(),
+            app_id,
+            doc_type: "store_summary".into(),
+            language: "und".into(),
+            title: "Old title".into(),
+            body: "retired description".into(),
+            content_hash: "old-hash".into(),
+            aliases: String::new(),
+            tags: String::new(),
+            visibility: "public".into(),
+        };
+        repo.upsert_game_document(&base).unwrap();
+        repo.put_embedding(&PutEmbedding {
+            document_id: document_id.clone(),
+            provider: HASH_EMBED_PROVIDER.into(),
+            model: HASH_EMBED_MODEL.into(),
+            dimensions: 1,
+            vector_blob: 1.0f32.to_le_bytes().to_vec(),
+            is_l2_normalized: true,
+            content_hash: "old-hash".into(),
+        })
+        .unwrap();
+
+        let mut changed = base;
+        changed.body = "replacement description".into();
+        changed.content_hash = "new-hash".into();
+        repo.upsert_game_document(&changed).unwrap();
+        assert!(
+            repo.list_embeddings_for_provider(HASH_EMBED_PROVIDER, HASH_EMBED_MODEL, 10)
+                .unwrap()
+                .is_empty()
+        );
+
+        repo.prune_managed_documents(app_id, &HashSet::new())
+            .unwrap();
+        assert!(repo.search_game_fts("replacement", 10).unwrap().is_empty());
+        assert_eq!(
+            repo.database()
+                .with_conn(|conn| {
+                    conn.query_row(
+                        "SELECT COUNT(*) FROM game_documents WHERE document_id = ?1",
+                        params![document_id],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .map_err(StorageError::from)
+                })
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn local_hash_embedding_uses_the_shared_v2_mapping() {
+        let vector = hash_embed_text("a", 64);
+        assert_eq!(vector[17], 1.0);
+        assert_eq!(vector.iter().filter(|value| **value != 0.0).count(), 1);
     }
 }

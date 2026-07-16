@@ -178,7 +178,7 @@ flowchart LR
 
 - 新增 `crates/ai`：`AiProvider` / `EmbeddingProvider`、`DisabledProvider`、`FakeProvider`、OpenAI-compatible HTTP 适配器、超时/预算/熔断 `AiGateway`、非可信文本包装、排序输出校验（候选外 AppID / 分数范围 / 伪造 evidence 拒绝）、float32 向量编解码、余弦相似度与 RRF。
 - 迁移 `0007_m5_ai_retrieval`：`game_documents`、`game_fts`、`game_embeddings`、`ai_analyses`、`ai_analysis_cache`；`storage::retrieval` 支持文档/FTS/向量/缓存读写。
-- 服务端：`MPGS_AI_PROVIDER=disabled|openai_compat`（及 Key/Base URL/Model/Timeout）；`/v1/meta.ai_available` 反映网关；自然语言推荐在 Provider 可用时做 Top-N AI 分析并返回 `ai_status=used|fallback`，失败时确定性结果仍可用。
+- 服务端：`MPGS_AI_PROVIDER=disabled|openai_compat`（及 Key/Base URL/Model/Timeout）；`/v1/meta.ai_available` 反映网关；自然语言推荐内部固定做 Top 20 AI 分析、再截断到公开 limit，并返回 `ai_status=used|cached|fallback`，失败时确定性结果仍可用。
 - 测试：`mpgs-ai` 单元测试、FTS/embedding/cache 存储测试、NL fallback 与 Fake AI `used` 集成测试。
 - 检索同步：`sync_retrieval_from_catalog` + `hybrid_search`（FTS/向量/RRF）+ `mpgs-dbtool sync-retrieval`。
 - Embedding：`OpenAiCompatEmbeddingProvider` + `embedding_provider_from_env`（`MPGS_AI_EMBED_PROVIDER=hash|openai_compat|disabled`）；默认本地 hash。
@@ -186,7 +186,7 @@ flowchart LR
 - NL：AI 结果写入 `ai_analysis_cache`，重复请求返回 `ai_status=cached`；UI 展示 used/cached/fallback/disabled 与 `ai_summary`。
 - Embedding 批任务：`mpgs-dbtool embed-documents` 按 `MPGS_AI_EMBED_PROVIDER` 对缺失 content_hash 的文档批量回写 `game_embeddings`（hash 默认可用；openai_compat 需 Key）。
 - 验收：[`docs/M5_ACCEPTANCE.md`](M5_ACCEPTANCE.md) + [`scripts/m5_acceptance.ps1`](../scripts/m5_acceptance.ps1) 覆盖离线退出条件；生产 Key 实时联调可选。
-- **M5 已关闭（2026-07-16，离线验收）**：[`scripts/m5_acceptance.ps1`](../scripts/m5_acceptance.ps1) 全绿，记录见 [`M5_ACCEPTANCE_RUN.md`](M5_ACCEPTANCE_RUN.md)。无 Key 时推荐/NL 可用且诚实 fallback；校验拦截候选外 AppID/伪造 evidence；检索/离线特征/embedding 批任务可运行。可选增强：真实 Key 的 `used` 联调、设置页 AI 开关文案细化（不回退退出条件）。
+- **M5 待重新验收（2026-07-17 审查修复）**：已修复用户可见 evidence 约束、AppID 溢出、Provider URL/响应边界、Embedding 查询接线与 Hash 一致性、历史向量/文档失效、Top 20、缓存隔离和验收空跑问题。须在干净提交上重新运行 [`scripts/m5_acceptance.ps1`](../scripts/m5_acceptance.ps1) 并更新 [`M5_ACCEPTANCE_RUN.md`](M5_ACCEPTANCE_RUN.md) 后关闭。
 
 ### M6：发布加固
 

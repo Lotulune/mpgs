@@ -80,6 +80,13 @@ export function GameCard({
           <VoteButton appId={item.app_id} intent={item.play_intent} />
         </span>
       </div>
+      {item.ai_reasons && item.ai_reasons.length > 0 && (
+        <ul className="reason-list">
+          {item.ai_reasons.slice(0, 3).map((reason) => (
+            <li key={`ai-${reason}`}>{reason}</li>
+          ))}
+        </ul>
+      )}
       {item.reasons.length > 0 && (
         <ul className="reason-list">
           {item.reasons.slice(0, 3).map((reason) => (

@@ -10,6 +10,61 @@ use crate::types::{
 };
 use crate::vector::l2_normalize;
 
+const MAX_COMPLETION_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
+const MAX_EMBEDDING_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+
+fn validated_base_url(raw: impl Into<String>, label: &str) -> Result<String, AiError> {
+    let raw = raw.into();
+    let parsed = reqwest::Url::parse(raw.trim())
+        .map_err(|error| AiError::Config(format!("{label} is invalid: {error}")))?;
+    let local_http = parsed.scheme() == "http"
+        && matches!(parsed.host_str(), Some("localhost" | "127.0.0.1" | "::1"));
+    if parsed.scheme() != "https" && !local_http {
+        return Err(AiError::Config(format!(
+            "{label} must be https:// or exact localhost/127.0.0.1/[::1] HTTP"
+        )));
+    }
+    if !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err(AiError::Config(format!(
+            "{label} must not contain credentials, query, or fragment"
+        )));
+    }
+    Ok(parsed.as_str().trim_end_matches('/').to_owned())
+}
+
+async fn read_limited_body(
+    mut response: reqwest::Response,
+    max_bytes: usize,
+) -> Result<(reqwest::StatusCode, Vec<u8>), AiError> {
+    let status = response.status();
+    if response
+        .content_length()
+        .is_some_and(|length| length > max_bytes as u64)
+    {
+        return Err(AiError::InvalidOutput(format!(
+            "provider response exceeds {max_bytes} bytes"
+        )));
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| AiError::Transport(error.to_string()))?
+    {
+        if body.len().saturating_add(chunk.len()) > max_bytes {
+            return Err(AiError::InvalidOutput(format!(
+                "provider response exceeds {max_bytes} bytes"
+            )));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok((status, body))
+}
+
 /// OpenAI-compatible chat completions adapter (official OpenAI or compatible gateways).
 #[derive(Debug, Clone)]
 pub struct OpenAiCompatProvider {
@@ -28,15 +83,7 @@ impl OpenAiCompatProvider {
         model: impl Into<String>,
         timeout: Duration,
     ) -> Result<Self, AiError> {
-        let base_url = base_url.into().trim_end_matches('/').to_owned();
-        if base_url.is_empty() {
-            return Err(AiError::Config("AI base URL is empty".into()));
-        }
-        if !(base_url.starts_with("https://") || base_url.starts_with("http://127.0.0.1") || base_url.starts_with("http://localhost")) {
-            return Err(AiError::Config(
-                "AI base URL must be https:// or localhost/127.0.0.1 for MVP".into(),
-            ));
-        }
+        let base_url = validated_base_url(base_url, "AI base URL")?;
         let api_key = api_key.into();
         if api_key.trim().is_empty() {
             return Err(AiError::Config("AI API key is empty".into()));
@@ -60,6 +107,10 @@ impl OpenAiCompatProvider {
 impl AiProvider for OpenAiCompatProvider {
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn cache_identity(&self) -> String {
+        format!("{}:{}:{}", self.name, self.base_url, self.model)
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
@@ -115,11 +166,7 @@ impl AiProvider for OpenAiCompatProvider {
                 }
             })?;
 
-        let status = response.status();
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|error| AiError::Transport(error.to_string()))?;
+        let (status, bytes) = read_limited_body(response, MAX_COMPLETION_RESPONSE_BYTES).await?;
         if status.as_u16() == 429 {
             return Err(AiError::RateLimited);
         }
@@ -180,18 +227,7 @@ impl OpenAiCompatEmbeddingProvider {
         dimensions: usize,
         timeout: Duration,
     ) -> Result<Self, AiError> {
-        let base_url = base_url.into().trim_end_matches('/').to_owned();
-        if base_url.is_empty() {
-            return Err(AiError::Config("AI embedding base URL is empty".into()));
-        }
-        if !(base_url.starts_with("https://")
-            || base_url.starts_with("http://127.0.0.1")
-            || base_url.starts_with("http://localhost"))
-        {
-            return Err(AiError::Config(
-                "AI embedding base URL must be https:// or localhost/127.0.0.1 for MVP".into(),
-            ));
-        }
+        let base_url = validated_base_url(base_url, "AI embedding base URL")?;
         let api_key = api_key.into();
         if api_key.trim().is_empty() {
             return Err(AiError::Config("AI embedding API key is empty".into()));
@@ -244,6 +280,7 @@ impl EmbeddingProvider for OpenAiCompatEmbeddingProvider {
         let body = json!({
             "model": self.model,
             "input": inputs.iter().map(|i| &i.text).collect::<Vec<_>>(),
+            "dimensions": self.dimensions,
         });
         let response = self
             .client
@@ -259,11 +296,7 @@ impl EmbeddingProvider for OpenAiCompatEmbeddingProvider {
                     AiError::Transport(error.to_string())
                 }
             })?;
-        let status = response.status();
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|error| AiError::Transport(error.to_string()))?;
+        let (status, bytes) = read_limited_body(response, MAX_EMBEDDING_RESPONSE_BYTES).await?;
         if status.as_u16() == 429 {
             return Err(AiError::RateLimited);
         }
@@ -288,14 +321,27 @@ impl EmbeddingProvider for OpenAiCompatEmbeddingProvider {
                 inputs.len()
             )));
         }
-        let mut out = Vec::with_capacity(inputs.len());
-        for (idx, (input, item)) in inputs.iter().zip(data.iter()).enumerate() {
+        let mut out: Vec<Option<Embedding>> = vec![None; inputs.len()];
+        for (position, item) in data.iter().enumerate() {
+            let idx = item
+                .get("index")
+                .and_then(Value::as_u64)
+                .map(usize::try_from)
+                .transpose()
+                .map_err(|_| AiError::InvalidOutput("embedding index is too large".into()))?
+                .unwrap_or(position);
+            let input = inputs.get(idx).ok_or_else(|| {
+                AiError::InvalidOutput(format!("embedding index {idx} is out of range"))
+            })?;
+            if out[idx].is_some() {
+                return Err(AiError::InvalidOutput(format!(
+                    "duplicate embedding index {idx}"
+                )));
+            }
             let values = item
                 .get("embedding")
                 .and_then(Value::as_array)
-                .ok_or_else(|| {
-                    AiError::InvalidOutput(format!("data[{idx}].embedding missing"))
-                })?;
+                .ok_or_else(|| AiError::InvalidOutput(format!("data[{idx}].embedding missing")))?;
             let mut vector = Vec::with_capacity(values.len());
             for value in values {
                 let f = value.as_f64().ok_or_else(|| {
@@ -303,19 +349,72 @@ impl EmbeddingProvider for OpenAiCompatEmbeddingProvider {
                 })? as f32;
                 vector.push(f);
             }
-            if vector.is_empty() {
+            if vector.len() != self.dimensions {
                 return Err(AiError::InvalidOutput(format!(
-                    "data[{idx}].embedding empty"
+                    "data[{idx}].embedding dimensions {} != configured {}",
+                    vector.len(),
+                    self.dimensions
                 )));
             }
             l2_normalize(&mut vector);
-            out.push(Embedding {
+            out[idx] = Some(Embedding {
                 id: input.id.clone(),
                 model: self.model.clone(),
                 dimensions: vector.len(),
                 vector,
             });
         }
-        Ok(out)
+        out.into_iter()
+            .enumerate()
+            .map(|(idx, item)| {
+                item.ok_or_else(|| AiError::InvalidOutput(format!("missing embedding index {idx}")))
+            })
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn base_url_requires_exact_local_http_host() {
+        for invalid in [
+            "http://localhost.evil.example/v1",
+            "http://localhost@evil.example/v1",
+            "http://127.0.0.1.evil.example/v1",
+        ] {
+            assert!(
+                OpenAiCompatProvider::new(invalid, "key", "model", Duration::from_secs(1)).is_err()
+            );
+        }
+        assert!(
+            OpenAiCompatProvider::new(
+                "http://localhost:1234/v1",
+                "key",
+                "model",
+                Duration::from_secs(1)
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn cache_identity_changes_with_model_or_endpoint() {
+        let first = OpenAiCompatProvider::new(
+            "https://provider.example/v1",
+            "key",
+            "model-a",
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        let second = OpenAiCompatProvider::new(
+            "https://provider.example/v1",
+            "key",
+            "model-b",
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        assert_ne!(first.cache_identity(), second.cache_identity());
     }
 }

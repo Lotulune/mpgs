@@ -10,8 +10,8 @@
   - NL hybrid path remains available
   - unit gates for validation / offline features
 
-  Optional live AI check runs only when MPGS_AI_API_KEY is set and
-  -LiveAi is passed.
+  Optional live AI check starts an openai_compat server and requires a
+  validated used/cached response when -LiveAi is passed.
 
 .EXAMPLE
   .\scripts\m5_acceptance.ps1
@@ -104,17 +104,23 @@ function Write-Report([string]$Path, [bool]$Passed) {
         $lines += "| $($r.id) | $ok | $detail |"
     }
     $lines += ''
-    $lines += 'This run proves offline M5 exit conditions (disabled AI safety, retrieval/embed/offline features, NL fallback).'
+    if ($Passed) {
+        $lines += 'This run proves offline M5 exit conditions (disabled AI safety, retrieval/embed/offline features, NL fallback).'
+    } else {
+        $lines += 'This run does not close M5; inspect the failed checks above.'
+    }
     $lines += 'Live provider success requires an API key and is optional.'
     [System.IO.File]::WriteAllLines($Path, $lines)
 }
 
 try {
+    Add-Result 'source.clean' (-not $gitDirty) "git_worktree_dirty=$gitDirty"
+
     Write-Step 'unit gates'
     Push-Location $repoRoot
-    cargo test -p mpgs-ai -p mpgs-storage --locked --quiet
-    if ($LASTEXITCODE -ne 0) { throw "cargo test ai/storage failed: $LASTEXITCODE" }
-    Add-Result 'unit.ai_storage' $true 'mpgs-ai + mpgs-storage tests passed'
+    cargo test -p mpgs-ai -p mpgs-storage -p mpgs-server --locked --quiet
+    if ($LASTEXITCODE -ne 0) { throw "cargo test ai/storage/server failed: $LASTEXITCODE" }
+    Add-Result 'unit.ai_storage_server' $true 'mpgs-ai + mpgs-storage + mpgs-server tests passed'
 
     Write-Step 'build tools'
     cargo build -p mpgs-server -p mpgs-dbtool --locked --quiet
@@ -161,11 +167,23 @@ try {
     $feed = Invoke-Json -Method GET -Url "$base/v1/feeds/classic_legacy?limit=5"
     Add-Result 'feed.without_ai' ($feed.StatusCode -eq 200 -and @($feed.Json.items).Count -gt 0) "items=$(@($feed.Json.items).Count)"
 
+    # Exercise the provider-backed batch path before NL lazily creates retrieval data.
+    $embedOutput = @(& $dbtool embed-documents $dbPath 200 16 2>&1)
+    $embedExit = $LASTEXITCODE
+    $embedOutput | ForEach-Object { Write-Host $_ }
+    if ($embedExit -ne 0) { throw "embed-documents failed: $embedExit" }
+    $targetsLine = $embedOutput | Where-Object { "$_" -match '^targets=\d+$' } | Select-Object -Last 1
+    $writtenLine = $embedOutput | Where-Object { "$_" -match '^written=\d+$' } | Select-Object -Last 1
+    $embedTargets = if ($null -eq $targetsLine) { 0 } else { [int]("$targetsLine" -replace '^targets=', '') }
+    $embedWritten = if ($null -eq $writtenLine) { 0 } else { [int]("$writtenLine" -replace '^written=', '') }
+    $embedOk = $embedTargets -gt 0 -and $embedWritten -gt 0
+    Add-Result 'embed.batch' $embedOk "targets=$embedTargets written=$embedWritten"
+
     $nl = Invoke-Json -Method POST -Url "$base/v1/recommendations/natural-language" -Body '{"query":"3 people casual coop replayable","limit":5}'
     $nlOk = $nl.StatusCode -eq 200 -and $nl.Json.ai_status -eq 'fallback' -and -not [string]::IsNullOrWhiteSpace([string]$nl.Json.fallback_reason) -and @($nl.Json.items).Count -ge 3
     Add-Result 'nl.fallback' $nlOk "ai_status=$($nl.Json.ai_status) items=$(@($nl.Json.items).Count)"
 
-    if (-not $KeepServer -and $null -ne $serverProc -and -not $serverProc.HasExited) {
+    if (($LiveAi -or -not $KeepServer) -and $null -ne $serverProc -and -not $serverProc.HasExited) {
         Stop-Process -Id $serverProc.Id -Force -ErrorAction SilentlyContinue
         $serverProc = $null
         Start-Sleep -Seconds 1
@@ -179,17 +197,37 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "extract-offline-features failed: $LASTEXITCODE" }
     Add-Result 'offline.features' $true 'extract-offline-features completed'
 
-    & $dbtool embed-documents $dbPath 200 16
-    if ($LASTEXITCODE -ne 0) { throw "embed-documents failed: $LASTEXITCODE" }
-    Add-Result 'embed.batch' $true 'embed-documents (hash) completed'
-
     if ($LiveAi) {
         Write-Step 'optional live AI'
         $key = [Environment]::GetEnvironmentVariable('MPGS_AI_API_KEY', 'Process')
         if ([string]::IsNullOrWhiteSpace($key)) {
-            Add-Result 'live.ai.skipped' $true 'MPGS_AI_API_KEY not set; live AI skipped'
+            Add-Result 'live.ai.key' $false 'MPGS_AI_API_KEY not set'
         } else {
-            Add-Result 'live.ai.manual' $true 'Key present; configure MPGS_AI_PROVIDER=openai_compat and re-run manual NL used check'
+            $env:MPGS_AI_PROVIDER = 'openai_compat'
+            $livePort = Get-Random -Minimum 19000 -Maximum 20000
+            $env:MPGS_BIND_ADDR = "127.0.0.1:$livePort"
+            $serverProc = Start-Process -FilePath $serverExe -PassThru -WindowStyle Hidden
+            $liveBase = "http://127.0.0.1:$livePort"
+            $liveReady = $false
+            for ($i = 0; $i -lt 40; $i++) {
+                try {
+                    $h = Invoke-Json -Method GET -Url "$liveBase/health/live"
+                    if ($h.StatusCode -eq 200) { $liveReady = $true; break }
+                } catch { }
+                Start-Sleep -Milliseconds 250
+            }
+            if (-not $liveReady) { throw 'live AI server failed to become ready' }
+            $timer = [System.Diagnostics.Stopwatch]::StartNew()
+            $liveNl = Invoke-Json -Method POST -Url "$liveBase/v1/recommendations/natural-language" -Body '{"query":"3 people casual coop replayable","limit":5}'
+            $timer.Stop()
+            $liveStatus = [string]$liveNl.Json.ai_status
+            $liveOk = $liveNl.StatusCode -eq 200 -and $liveStatus -in @('used', 'cached') -and $timer.Elapsed.TotalSeconds -le 65
+            Add-Result 'live.ai.request' $liveOk "status=$liveStatus elapsed_ms=$($timer.ElapsedMilliseconds)"
+            if (-not $KeepServer -and $null -ne $serverProc -and -not $serverProc.HasExited) {
+                Stop-Process -Id $serverProc.Id -Force -ErrorAction SilentlyContinue
+                $serverProc = $null
+            }
+            $env:MPGS_AI_PROVIDER = 'disabled'
         }
     } else {
         Add-Result 'live.ai.not_requested' $true 'pass -LiveAi with MPGS_AI_API_KEY for live provider check'

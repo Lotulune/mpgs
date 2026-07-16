@@ -7,7 +7,7 @@ use std::process::ExitCode;
 use std::thread;
 use std::time::Duration;
 
-use mpgs_ai::{EmbeddingInput, encode_f32_le, embedding_provider_from_env};
+use mpgs_ai::{EmbeddingInput, embedding_provider_from_env, encode_f32_le};
 use mpgs_steam_source::{
     CcuRequest, DEFAULT_STORE_COUNTRY, DEFAULT_STORE_LANGUAGE, DEFAULT_USER_AGENT, GoldenSet,
     RawResponse, ReviewSummaryRequest, STEAM_STORE_HOST, STEAM_WEB_API_HOST, STORE_ADAPTER_VERSION,
@@ -15,7 +15,7 @@ use mpgs_steam_source::{
     StoreDetailsRequest, StoreSearchPage, StoreSearchRequest, parse_ccu, parse_review_summary,
     parse_store_details, parse_store_search_page,
 };
-use mpgs_storage::{Clock, Database, PutEmbedding, Repository, SystemClock};
+use mpgs_storage::{Clock, Database, HASH_EMBED_MODEL, PutEmbedding, Repository, SystemClock};
 use serde::{Deserialize, Serialize};
 
 const STORE_SEARCH_CURSOR_KEY: &str = "steam_store_search:multiplayer:reviews_desc";
@@ -124,10 +124,7 @@ fn run() -> Result<(), String> {
             println!("documents_unchanged={}", stats.documents_unchanged);
             println!("embeddings_written={}", stats.embeddings_written);
             println!("embeddings_unchanged={}", stats.embeddings_unchanged);
-            println!(
-                "document_count={}",
-                repo.document_count().map_err(err)?
-            );
+            println!("document_count={}", repo.document_count().map_err(err)?);
             println!("retrieval_sync=ok");
             Ok(())
         }
@@ -202,10 +199,7 @@ fn run() -> Result<(), String> {
             println!("written={}", stats.written);
             println!("unchanged={}", stats.unchanged);
             println!("batches={}", stats.batches);
-            println!(
-                "embedding_count={}",
-                repo.embedding_count().map_err(err)?
-            );
+            println!("embedding_count={}", repo.embedding_count().map_err(err)?);
             println!("embed_documents=ok");
             Ok(())
         }
@@ -1048,27 +1042,31 @@ async fn embed_documents_batch(
     let provider = embedding_provider_from_env().map_err(|e| e.to_string())?;
     if !provider.is_available() {
         return Err(
-            "embedding provider is disabled; set MPGS_AI_EMBED_PROVIDER=hash|openai_compat"
-                .into(),
+            "embedding provider is disabled; set MPGS_AI_EMBED_PROVIDER=hash|openai_compat".into(),
         );
     }
     let provider_name = provider.name().to_owned();
     // Prefer model reported by first successful embed; default label for hash-embed.
     let model_hint = std::env::var("MPGS_AI_EMBED_MODEL").unwrap_or_else(|_| {
         if provider_name.contains("hash") {
-            "hash-embed-v1".into()
+            HASH_EMBED_MODEL.into()
         } else {
             "text-embedding-3-small".into()
         }
     });
 
     let targets = repo
-        .list_documents_missing_embedding(&provider_name, &model_hint, limit)
+        .list_documents_missing_embedding(&provider_name, &model_hint, provider.dimensions(), limit)
         .map_err(err)?;
-    // Hash provider uses fixed model name hash-embed-v1, not env model.
+    // Hash provider uses the fixed versioned model name, not the external model env var.
     let targets = if targets.is_empty() && provider_name.contains("hash") {
-        repo.list_documents_missing_embedding(&provider_name, "hash-embed-v1", limit)
-            .map_err(err)?
+        repo.list_documents_missing_embedding(
+            &provider_name,
+            HASH_EMBED_MODEL,
+            provider.dimensions(),
+            limit,
+        )
+        .map_err(err)?
     } else {
         targets
     };

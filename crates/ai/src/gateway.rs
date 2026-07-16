@@ -70,11 +70,18 @@ impl AiGateway {
     }
 
     pub fn disabled() -> Self {
-        Self::new(Arc::new(crate::provider::DisabledProvider), AiPolicy::default())
+        Self::new(
+            Arc::new(crate::provider::DisabledProvider),
+            AiPolicy::default(),
+        )
     }
 
     pub fn provider_name(&self) -> &str {
         self.provider.name()
+    }
+
+    pub fn provider_cache_identity(&self) -> String {
+        self.provider.cache_identity()
     }
 
     pub fn is_available(&self) -> bool {
@@ -166,9 +173,16 @@ impl AiGateway {
     fn note_failure(&self, error: &AiError) {
         if matches!(
             error,
-            AiError::Timeout | AiError::Transport(_) | AiError::RateLimited | AiError::ProviderRejected(_)
+            AiError::Timeout
+                | AiError::Transport(_)
+                | AiError::RateLimited
+                | AiError::ProviderRejected(_)
         ) {
-            let failures = self.state.consecutive_failures.fetch_add(1, Ordering::Relaxed) + 1;
+            let failures = self
+                .state
+                .consecutive_failures
+                .fetch_add(1, Ordering::Relaxed)
+                + 1;
             if failures >= self.policy.circuit_failure_threshold {
                 let until = now_ms().saturating_add(self.policy.circuit_open_ms);
                 self.state
@@ -231,5 +245,22 @@ mod tests {
         assert!(gw.structured_completion(request()).await.is_ok());
         let err = gw.structured_completion(request()).await.unwrap_err();
         assert_eq!(err, AiError::BudgetExhausted);
+    }
+
+    #[tokio::test]
+    async fn provider_timeout_opens_fallback_path() {
+        let policy = AiPolicy {
+            online_timeout: Duration::from_millis(5),
+            ..AiPolicy::default()
+        };
+        let provider = FakeProvider {
+            delay: Duration::from_millis(50),
+            ..FakeProvider::default()
+        };
+        let gw = AiGateway::new(Arc::new(provider), policy);
+        assert_eq!(
+            gw.structured_completion(request()).await.unwrap_err(),
+            AiError::Timeout
+        );
     }
 }

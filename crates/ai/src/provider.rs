@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use std::time::Duration;
 
 use crate::error::AiError;
 use crate::types::{
@@ -8,6 +9,9 @@ use crate::types::{
 #[async_trait]
 pub trait AiProvider: Send + Sync {
     fn name(&self) -> &str;
+    fn cache_identity(&self) -> String {
+        self.name().to_owned()
+    }
     fn capabilities(&self) -> ProviderCapabilities;
     fn is_available(&self) -> bool;
     async fn structured_completion(
@@ -81,6 +85,7 @@ pub struct FakeProvider {
     pub response: serde_json::Value,
     pub fail_with: Option<AiError>,
     pub available: bool,
+    pub delay: Duration,
 }
 
 impl Default for FakeProvider {
@@ -88,10 +93,12 @@ impl Default for FakeProvider {
         Self {
             response: serde_json::json!({
                 "recommendations": [],
-                "summary": "fake"
+                "summary": "",
+                "summary_evidence_ids": []
             }),
             fail_with: None,
             available: true,
+            delay: Duration::ZERO,
         }
     }
 }
@@ -112,6 +119,10 @@ impl AiProvider for FakeProvider {
         }
     }
 
+    fn cache_identity(&self) -> String {
+        "fake:fake-model".into()
+    }
+
     fn is_available(&self) -> bool {
         self.available
     }
@@ -120,6 +131,9 @@ impl AiProvider for FakeProvider {
         &self,
         request: StructuredRequest,
     ) -> Result<StructuredResponse, AiError> {
+        if !self.delay.is_zero() {
+            tokio::time::sleep(self.delay).await;
+        }
         if let Some(error) = &self.fail_with {
             return Err(error.clone());
         }
@@ -169,17 +183,43 @@ impl EmbeddingProvider for HashEmbeddingProvider {
         for input in inputs {
             let mut vector = vec![0.0f32; dims];
             for (i, ch) in input.text.chars().enumerate() {
-                let idx = (ch as usize).wrapping_add(i) % dims;
+                let idx = (ch as usize).wrapping_add(i).wrapping_mul(2_654_435_761) % dims;
                 vector[idx] += 1.0;
             }
             crate::vector::l2_normalize(&mut vector);
             out.push(Embedding {
                 id: input.id.clone(),
-                model: "hash-embed-v1".into(),
+                model: "hash-embed-v2".into(),
                 dimensions: dims,
                 vector,
             });
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn hash_embedding_uses_the_shared_v2_mapping() {
+        let provider = HashEmbeddingProvider { dimensions: 64 };
+        let result = provider
+            .embed(&[EmbeddingInput {
+                id: "one".into(),
+                text: "a".into(),
+            }])
+            .await
+            .unwrap();
+        assert_eq!(result[0].vector[17], 1.0);
+        assert_eq!(
+            result[0]
+                .vector
+                .iter()
+                .filter(|value| **value != 0.0)
+                .count(),
+            1
+        );
     }
 }

@@ -10,8 +10,9 @@ use axum::{
     routing::{get, post},
 };
 use mpgs_ai::{
-    AiGateway, AiStatus, AiTaskType, CandidateEvidence, StructuredRequest, rank_analysis_schema,
-    rank_analysis_system_prompt, validate_rank_result, wrap_untrusted_data_block,
+    AiGateway, AiStatus, AiTaskType, CandidateEvidence, EmbeddingInput, EmbeddingProvider,
+    RANK_PROMPT_VERSION, StructuredRequest, rank_analysis_schema, rank_analysis_system_prompt,
+    validate_rank_result, wrap_untrusted_data_block,
 };
 use mpgs_domain::{
     FeedSection, FeedbackType, RankingSignals, RecommendationConfig, UserPreferences,
@@ -33,6 +34,7 @@ tokio::task_local! {
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -41,6 +43,7 @@ pub struct AppState {
     pub rate_limits: RateLimitConfig,
     pub cors: CorsConfig,
     pub ai: AiGateway,
+    pub embedding: Arc<dyn EmbeddingProvider>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -134,6 +137,10 @@ struct FeedItemSchema {
     evidence_ids: Vec<String>,
     components: ScoreComponentsSchema,
     algorithm_version: String,
+    hybrid_score: Option<f64>,
+    ai_fit: Option<f64>,
+    ai_confidence: Option<f64>,
+    ai_reasons: Option<Vec<String>>,
 }
 
 #[allow(dead_code)]
@@ -173,6 +180,7 @@ struct NaturalLanguageResponseSchema {
     ai_status: String,
     fallback_reason: Option<String>,
     ai_summary: Option<String>,
+    ai_summary_evidence_ids: Vec<String>,
     algorithm_version: String,
     data_updated_at_ms: i64,
 }
@@ -1021,8 +1029,8 @@ async fn natural_language_recommendations(
             None,
         );
     }
-    let limit = body.limit.unwrap_or(6);
-    if !(3..=10).contains(&limit) {
+    let output_limit = body.limit.unwrap_or(6);
+    if !(3..=10).contains(&output_limit) {
         return error_response(
             StatusCode::BAD_REQUEST,
             "invalid_argument",
@@ -1033,7 +1041,8 @@ async fn natural_language_recommendations(
 
     let interpreted = interpret_natural_language(&query);
     let feed_query = FeedQuery {
-        limit: Some(limit),
+        // Rank and validate the required Top 20, then truncate the public response.
+        limit: Some(20),
         cursor: None,
         party_size: interpreted.party_size,
         coop_competitive: interpreted.coop_competitive,
@@ -1096,16 +1105,44 @@ async fn natural_language_recommendations(
             Ok(())
         })
         .await;
+        let query_embedding = if state.embedding.is_available() {
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                state.embedding.embed(&[EmbeddingInput {
+                    id: "nl-query".into(),
+                    text: query.clone(),
+                }]),
+            )
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .and_then(|mut embeddings| (embeddings.len() == 1).then(|| embeddings.remove(0)))
+        } else {
+            None
+        };
         let query_for_search = query.clone();
-        if let Ok(hits) =
+        let search_result = if let Some(embedding) = query_embedding {
+            let provider = state.embedding.name().to_owned();
+            storage_result(repo, move |repo| {
+                repo.hybrid_search_with_vector(
+                    &query_for_search,
+                    &embedding.vector,
+                    &provider,
+                    &embedding.model,
+                    40,
+                )
+            })
+            .await
+        } else {
             storage_result(repo, move |repo| repo.hybrid_search(&query_for_search, 40)).await
-        {
+        };
+        if let Ok(hits) = search_result {
             reorder_items_by_hybrid(&mut items, &hits);
         }
     }
-    let (ai_status, fallback_reason, ai_summary) =
-        enhance_natural_language_with_ai(&state.ai, state.repo.as_ref(), &query, &mut items)
-            .await;
+    let (ai_status, fallback_reason, ai_summary, ai_summary_evidence_ids) =
+        enhance_natural_language_with_ai(&state.ai, state.repo.as_ref(), &query, &mut items).await;
+    items.truncate(output_limit as usize);
     Json(json!({
         "query": query,
         "interpreted": interpreted,
@@ -1113,6 +1150,7 @@ async fn natural_language_recommendations(
         "ai_status": ai_status.as_str(),
         "fallback_reason": fallback_reason,
         "ai_summary": ai_summary,
+        "ai_summary_evidence_ids": ai_summary_evidence_ids,
         "algorithm_version": feed.get("algorithm_version").cloned().unwrap_or(json!(ALGORITHM_VERSION)),
         "data_updated_at_ms": feed.get("data_updated_at_ms").cloned().unwrap_or(json!(0)),
     }))
@@ -1128,8 +1166,12 @@ fn reorder_items_by_hybrid(items: &mut [serde_json::Value], hits: &[mpgs_storage
     items.sort_by(|a, b| {
         let id_a = a.get("app_id").and_then(|v| v.as_u64()).map(|v| v as u32);
         let id_b = b.get("app_id").and_then(|v| v.as_u64()).map(|v| v as u32);
-        let ha = id_a.and_then(|id| score_by_id.get(&id).copied()).unwrap_or(0.0);
-        let hb = id_b.and_then(|id| score_by_id.get(&id).copied()).unwrap_or(0.0);
+        let ha = id_a
+            .and_then(|id| score_by_id.get(&id).copied())
+            .unwrap_or(0.0);
+        let hb = id_b
+            .and_then(|id| score_by_id.get(&id).copied())
+            .unwrap_or(0.0);
         match hb.partial_cmp(&ha).unwrap_or(std::cmp::Ordering::Equal) {
             std::cmp::Ordering::Equal => {
                 let sa = a.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
@@ -1140,7 +1182,10 @@ fn reorder_items_by_hybrid(items: &mut [serde_json::Value], hits: &[mpgs_storage
         }
     });
     for item in items.iter_mut() {
-        if let Some(app_id) = item.get("app_id").and_then(|v| v.as_u64()).map(|v| v as u32)
+        if let Some(app_id) = item
+            .get("app_id")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32)
             && let Some(score) = score_by_id.get(&app_id)
             && let Some(obj) = item.as_object_mut()
         {
@@ -1155,15 +1200,16 @@ async fn enhance_natural_language_with_ai(
     repo: Option<&Repository>,
     query: &str,
     items: &mut Vec<serde_json::Value>,
-) -> (AiStatus, Option<String>, Option<String>) {
+) -> (AiStatus, Option<String>, Option<String>, Vec<String>) {
     if items.is_empty() {
         if gateway.is_available() {
-            return (AiStatus::Used, None, None);
+            return (AiStatus::Used, None, None, Vec::new());
         }
         return (
             AiStatus::Disabled,
             Some(mpgs_ai::AiError::Disabled.fallback_reason().to_owned()),
             None,
+            Vec::new(),
         );
     }
     if !gateway.is_available() {
@@ -1172,13 +1218,18 @@ async fn enhance_natural_language_with_ai(
             AiStatus::Fallback,
             Some(mpgs_ai::AiError::Disabled.fallback_reason().to_owned()),
             None,
+            Vec::new(),
         );
     }
 
     let mut candidates = Vec::new();
     let mut compact = Vec::new();
     for item in items.iter() {
-        let Some(app_id) = item.get("app_id").and_then(|v| v.as_u64()).map(|v| v as u32) else {
+        let Some(app_id) = item
+            .get("app_id")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32)
+        else {
             continue;
         };
         let evidence_ids = item
@@ -1210,10 +1261,12 @@ async fn enhance_natural_language_with_ai(
             AiStatus::Fallback,
             Some("no valid candidates for AI analysis".into()),
             None,
+            Vec::new(),
         );
     }
 
-    let cache_key = nl_ai_cache_key(query, &compact, gateway.provider_name());
+    let provider_identity = gateway.provider_cache_identity();
+    let cache_key = nl_ai_cache_key(query, &compact, &provider_identity);
     if let Some(repo) = repo {
         let now_ms = chrono_like_now_ms();
         if let Ok(Some(entry)) =
@@ -1227,7 +1280,12 @@ async fn enhance_natural_language_with_ai(
             } else {
                 Some(validated.summary)
             };
-            return (AiStatus::Cached, None, summary);
+            return (
+                AiStatus::Cached,
+                None,
+                summary,
+                validated.summary_evidence_ids,
+            );
         }
     }
 
@@ -1257,6 +1315,7 @@ async fn enhance_natural_language_with_ai(
                 AiStatus::Fallback,
                 Some(error.fallback_reason().to_owned()),
                 None,
+                Vec::new(),
             );
         }
     };
@@ -1268,6 +1327,7 @@ async fn enhance_natural_language_with_ai(
                 AiStatus::Fallback,
                 Some(error.fallback_reason().to_owned()),
                 None,
+                Vec::new(),
             );
         }
     };
@@ -1276,12 +1336,12 @@ async fn enhance_natural_language_with_ai(
         let now_ms = chrono_like_now_ms();
         let output_json = response.content.to_string();
         let entry = mpgs_storage::AiCacheEntry {
-            cache_key: nl_ai_cache_key(query, &compact, gateway.provider_name()),
+            cache_key: nl_ai_cache_key(query, &compact, &provider_identity),
             task_type: "rank_analysis".into(),
             provider: response.provider.clone(),
             model: response.model.clone(),
-            prompt_version: "rank-v1".into(),
-            input_hash: nl_ai_cache_key(query, &compact, gateway.provider_name()),
+            prompt_version: RANK_PROMPT_VERSION.into(),
+            input_hash: nl_ai_cache_key(query, &compact, &provider_identity),
             output_json,
             validation_status: "accepted".into(),
             usage_input: i64::from(response.usage_input),
@@ -1299,17 +1359,22 @@ async fn enhance_natural_language_with_ai(
     } else {
         Some(validated.summary)
     };
-    (AiStatus::Used, None, summary)
+    (
+        AiStatus::Used,
+        None,
+        summary,
+        validated.summary_evidence_ids,
+    )
 }
 
-fn apply_validated_ai_rank(
-    items: &mut Vec<serde_json::Value>,
-    validated: &mpgs_ai::AiRankResult,
-) {
+fn apply_validated_ai_rank(items: &mut Vec<serde_json::Value>, validated: &mpgs_ai::AiRankResult) {
     let mut by_id: std::collections::HashMap<u32, serde_json::Value> = items
         .drain(..)
         .filter_map(|item| {
-            let app_id = item.get("app_id").and_then(|v| v.as_u64()).map(|v| v as u32)?;
+            let app_id = item
+                .get("app_id")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32)?;
             Some((app_id, item))
         })
         .collect();
@@ -1366,10 +1431,14 @@ fn apply_validated_ai_rank(
     *items = reordered;
 }
 
-fn nl_ai_cache_key(query: &str, compact: &[serde_json::Value], provider: &str) -> String {
+fn nl_ai_cache_key(query: &str, compact: &[serde_json::Value], provider_identity: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
-    hasher.update(provider.as_bytes());
+    hasher.update(provider_identity.as_bytes());
+    hasher.update([0]);
+    hasher.update(RANK_PROMPT_VERSION.as_bytes());
+    hasher.update([0]);
+    hasher.update(ALGORITHM_VERSION.as_bytes());
     hasher.update([0]);
     hasher.update(query.as_bytes());
     hasher.update([0]);

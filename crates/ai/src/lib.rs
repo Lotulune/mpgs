@@ -27,6 +27,8 @@ pub use vector::{
     cosine_similarity, decode_f32_le, encode_f32_le, l2_normalize, reciprocal_rank_fusion,
 };
 
+pub const RANK_PROMPT_VERSION: &str = "rank-v2";
+
 use std::env;
 use std::sync::Arc;
 use std::time::Duration;
@@ -48,8 +50,8 @@ pub fn gateway_from_env() -> Result<AiGateway, AiError> {
             let api_key = env::var("MPGS_AI_API_KEY").map_err(|_| {
                 AiError::Config("MPGS_AI_API_KEY is required for openai_compat".into())
             })?;
-            let base_url = env::var("MPGS_AI_BASE_URL")
-                .unwrap_or_else(|_| "https://api.openai.com/v1".into());
+            let base_url =
+                env::var("MPGS_AI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".into());
             let model = env::var("MPGS_AI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
             let timeout_secs: u64 = env::var("MPGS_AI_TIMEOUT_SECS")
                 .ok()
@@ -98,10 +100,10 @@ pub fn embedding_provider_from_env() -> Result<Arc<dyn EmbeddingProvider>, AiErr
             let api_key = env::var("MPGS_AI_API_KEY").map_err(|_| {
                 AiError::Config("MPGS_AI_API_KEY is required for openai_compat embeddings".into())
             })?;
-            let base_url = env::var("MPGS_AI_BASE_URL")
-                .unwrap_or_else(|_| "https://api.openai.com/v1".into());
-            let model = env::var("MPGS_AI_EMBED_MODEL")
-                .unwrap_or_else(|_| "text-embedding-3-small".into());
+            let base_url =
+                env::var("MPGS_AI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".into());
+            let model =
+                env::var("MPGS_AI_EMBED_MODEL").unwrap_or_else(|_| "text-embedding-3-small".into());
             let dimensions = env::var("MPGS_AI_EMBED_DIMENSIONS")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -138,9 +140,13 @@ pub fn rank_analysis_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
         "additionalProperties": false,
-        "required": ["recommendations", "summary"],
+        "required": ["recommendations", "summary", "summary_evidence_ids"],
         "properties": {
             "summary": { "type": "string" },
+            "summary_evidence_ids": {
+                "type": "array",
+                "items": { "type": "string" }
+            },
             "recommendations": {
                 "type": "array",
                 "items": {

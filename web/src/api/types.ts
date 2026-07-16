@@ -149,6 +149,7 @@ export interface NaturalLanguageRecommendationResponse {
   ai_status: AiStatus;
   fallback_reason: string | null;
   ai_summary?: string | null;
+  ai_summary_evidence_ids?: string[];
   algorithm_version: string;
   data_updated_at_ms: number;
 }
