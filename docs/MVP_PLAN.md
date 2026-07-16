@@ -186,7 +186,7 @@ flowchart LR
 - NL：AI 结果写入 `ai_analysis_cache`，重复请求返回 `ai_status=cached`；UI 展示 used/cached/fallback/disabled 与 `ai_summary`。
 - Embedding 批任务：`mpgs-dbtool embed-documents` 按 `MPGS_AI_EMBED_PROVIDER` 对缺失 content_hash 的文档批量回写 `game_embeddings`（hash 默认可用；openai_compat 需 Key）。
 - 验收：[`docs/M5_ACCEPTANCE.md`](M5_ACCEPTANCE.md) + [`scripts/m5_acceptance.ps1`](../scripts/m5_acceptance.ps1) 覆盖离线退出条件；生产 Key 实时联调可选。
-- **M5 待重新验收（2026-07-17 审查修复）**：已修复用户可见 evidence 约束、AppID 溢出、Provider URL/响应边界、Embedding 查询接线与 Hash 一致性、历史向量/文档失效、Top 20、缓存隔离和验收空跑问题。须在干净提交上重新运行 [`scripts/m5_acceptance.ps1`](../scripts/m5_acceptance.ps1) 并更新 [`M5_ACCEPTANCE_RUN.md`](M5_ACCEPTANCE_RUN.md) 后关闭。
+- **M5 已重新关闭（2026-07-17，审查修复后离线验收）**：已修复用户可见 evidence 约束、AppID 溢出、Provider URL/响应边界、Embedding 查询接线与 Hash 一致性、历史向量/文档失效、Top 20、缓存隔离和验收空跑问题。干净提交 `1a2188c` 的 [`scripts/m5_acceptance.ps1`](../scripts/m5_acceptance.ps1) `11/11` 全绿，记录见 [`M5_ACCEPTANCE_RUN.md`](M5_ACCEPTANCE_RUN.md)；生产 Key 的 `-LiveAi` 仍为可选增强证据。
 
 ### M6：发布加固
 
