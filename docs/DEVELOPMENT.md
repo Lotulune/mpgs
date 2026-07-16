@@ -12,6 +12,7 @@
 - `mpgs-dbtool`：migrate / Steam 候选采集 / integrity / m3-audit / backup / restore。
 - 桌面：`web/`（Vite + React + TS，多主题/离线缓存/自然语言 UI）+ `apps/desktop/src-tauri/`（Tauri 2）+ `e2e-tests/`（Windows/Linux `tauri-driver`）。
 - M5 起步：`mpgs-ai` Provider/Gateway 已接入；默认 `MPGS_AI_PROVIDER=disabled`。可选 `openai_compat` + `MPGS_AI_API_KEY`（及 `MPGS_AI_BASE_URL`/`MPGS_AI_MODEL`/`MPGS_AI_TIMEOUT_SECS`）。关闭或失败时自然语言仍返回确定性结果与 `ai_status=fallback`。
+- 检索索引：`mpgs-dbtool sync-retrieval <db> [limit] [after_app_id]` 增量同步 `game_documents`/`game_fts`/`game_embeddings`（hash-embed）。自然语言推荐会在文档为空时自动同步一次（上限 2000）。
 
 M4 关闭证据：本机验收与 E2E 见 [`M4_ACCEPTANCE.md`](M4_ACCEPTANCE.md)；跨平台 CI 全绿见 [`M4_CI_RUN.md`](M4_CI_RUN.md)（[run 29497583493](https://github.com/Lotulune/mpgs/actions/runs/29497583493)，commit `5e0274b`）。
 ### Git

@@ -1012,7 +1012,7 @@ async fn natural_language_recommendations(
     headers: HeaderMap,
     Json(body): Json<NaturalLanguageRequest>,
 ) -> Response {
-    let query = body.query.trim();
+    let query = body.query.trim().to_owned();
     if query.len() < 3 || query.len() > 500 {
         return error_response(
             StatusCode::BAD_REQUEST,
@@ -1031,7 +1031,7 @@ async fn natural_language_recommendations(
         );
     }
 
-    let interpreted = interpret_natural_language(query);
+    let interpreted = interpret_natural_language(&query);
     let feed_query = FeedQuery {
         limit: Some(limit),
         cursor: None,
@@ -1086,8 +1086,25 @@ async fn natural_language_recommendations(
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
+    // Best-effort hybrid retrieval boost among the deterministic candidate set.
+    if let Some(repo) = state.repo.as_ref() {
+        let _ = storage_result(repo, |repo| {
+            // Ensure demo/local catalogs have retrieval docs without blocking requests on large DBs.
+            if repo.document_count().unwrap_or(0) == 0 {
+                let _ = repo.sync_retrieval_from_catalog(2_000, 0, true);
+            }
+            Ok(())
+        })
+        .await;
+        let query_for_search = query.clone();
+        if let Ok(hits) =
+            storage_result(repo, move |repo| repo.hybrid_search(&query_for_search, 40)).await
+        {
+            reorder_items_by_hybrid(&mut items, &hits);
+        }
+    }
     let (ai_status, fallback_reason, ai_summary) =
-        enhance_natural_language_with_ai(&state.ai, query, &mut items).await;
+        enhance_natural_language_with_ai(&state.ai, &query, &mut items).await;
     Json(json!({
         "query": query,
         "interpreted": interpreted,
@@ -1099,6 +1116,36 @@ async fn natural_language_recommendations(
         "data_updated_at_ms": feed.get("data_updated_at_ms").cloned().unwrap_or(json!(0)),
     }))
     .into_response()
+}
+
+fn reorder_items_by_hybrid(items: &mut [serde_json::Value], hits: &[mpgs_storage::HybridHit]) {
+    if items.is_empty() || hits.is_empty() {
+        return;
+    }
+    let score_by_id: std::collections::HashMap<u32, f64> =
+        hits.iter().map(|h| (h.app_id, h.score)).collect();
+    items.sort_by(|a, b| {
+        let id_a = a.get("app_id").and_then(|v| v.as_u64()).map(|v| v as u32);
+        let id_b = b.get("app_id").and_then(|v| v.as_u64()).map(|v| v as u32);
+        let ha = id_a.and_then(|id| score_by_id.get(&id).copied()).unwrap_or(0.0);
+        let hb = id_b.and_then(|id| score_by_id.get(&id).copied()).unwrap_or(0.0);
+        match hb.partial_cmp(&ha).unwrap_or(std::cmp::Ordering::Equal) {
+            std::cmp::Ordering::Equal => {
+                let sa = a.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let sb = b.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
+            }
+            other => other,
+        }
+    });
+    for item in items.iter_mut() {
+        if let Some(app_id) = item.get("app_id").and_then(|v| v.as_u64()).map(|v| v as u32)
+            && let Some(score) = score_by_id.get(&app_id)
+            && let Some(obj) = item.as_object_mut()
+        {
+            obj.insert("hybrid_score".into(), json!(score));
+        }
+    }
 }
 
 /// Apply optional AI Top-N analysis. Always preserves deterministic items on failure.

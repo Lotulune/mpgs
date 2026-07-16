@@ -34,7 +34,9 @@ pub use models::*;
 pub use quality::QualityFinding;
 pub use repo::Repository;
 pub use retrieval::{
-    AiCacheEntry, FtsHit, GameDocument, PutEmbedding, StoredEmbedding, UpsertGameDocument,
+    AiCacheEntry, FtsHit, GameDocument, HASH_EMBED_DIMENSIONS, HASH_EMBED_MODEL,
+    HASH_EMBED_PROVIDER, HybridHit, PutEmbedding, RetrievalSyncStats, StoredEmbedding,
+    UpsertGameDocument,
 };
 
 #[cfg(test)]

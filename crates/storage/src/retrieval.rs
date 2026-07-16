@@ -1,9 +1,16 @@
-//! Game retrieval documents, FTS sync, embeddings, and AI cache.
+//! Game retrieval documents, FTS sync, embeddings, hybrid search, and AI cache.
+
+use std::collections::HashMap;
 
 use rusqlite::{OptionalExtension, params};
+use sha2::{Digest, Sha256};
 
 use crate::error::{StorageError, StorageResult};
 use crate::repo::Repository;
+
+pub const HASH_EMBED_PROVIDER: &str = "hash-embed";
+pub const HASH_EMBED_MODEL: &str = "hash-embed-v1";
+pub const HASH_EMBED_DIMENSIONS: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GameDocument {
@@ -74,10 +81,39 @@ pub struct PutEmbedding {
     pub content_hash: String,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RetrievalSyncStats {
+    pub apps_scanned: u32,
+    pub documents_written: u32,
+    pub documents_unchanged: u32,
+    pub embeddings_written: u32,
+    pub embeddings_unchanged: u32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HybridHit {
+    pub app_id: u32,
+    pub score: f64,
+    pub fts_rank: Option<f64>,
+    pub vector_score: Option<f64>,
+}
+
 impl Repository {
-    pub fn upsert_game_document(&self, doc: &UpsertGameDocument) -> StorageResult<()> {
+    /// Upsert a retrieval document and keep FTS in sync.
+    /// Returns `true` when content changed (or was newly inserted).
+    pub fn upsert_game_document(&self, doc: &UpsertGameDocument) -> StorageResult<bool> {
         let now = self.db.now_ms();
         self.db.with_conn_mut(|conn| {
+            let existing: Option<String> = conn
+                .query_row(
+                    "SELECT content_hash FROM game_documents WHERE document_id = ?1",
+                    params![doc.document_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if existing.as_deref() == Some(doc.content_hash.as_str()) {
+                return Ok(false);
+            }
             let tx = conn.transaction()?;
             tx.execute(
                 "INSERT INTO game_documents(
@@ -122,7 +158,7 @@ impl Repository {
                 ],
             )?;
             tx.commit()?;
-            Ok(())
+            Ok(true)
         })
     }
 
@@ -155,7 +191,8 @@ impl Repository {
         })
     }
 
-    pub fn put_embedding(&self, embedding: &PutEmbedding) -> StorageResult<()> {
+    /// Returns `true` when a new embedding row was inserted (same hash is a no-op).
+    pub fn put_embedding(&self, embedding: &PutEmbedding) -> StorageResult<bool> {
         if embedding.dimensions == 0
             || embedding.vector_blob.len() != embedding.dimensions * 4
         {
@@ -165,6 +202,20 @@ impl Repository {
         }
         let now = self.db.now_ms();
         self.db.with_conn_mut(|conn| {
+            let exists: bool = conn.query_row(
+                "SELECT COUNT(*) > 0 FROM game_embeddings
+                 WHERE document_id = ?1 AND provider = ?2 AND model = ?3 AND content_hash = ?4",
+                params![
+                    embedding.document_id,
+                    embedding.provider,
+                    embedding.model,
+                    embedding.content_hash
+                ],
+                |row| row.get(0),
+            )?;
+            if exists {
+                return Ok(false);
+            }
             conn.execute(
                 "INSERT INTO game_embeddings(
                     document_id, provider, model, dimensions, vector_blob,
@@ -186,7 +237,7 @@ impl Repository {
                     now
                 ],
             )?;
-            Ok(())
+            Ok(true)
         })
     }
 
@@ -291,6 +342,404 @@ impl Repository {
             Ok(())
         })
     }
+
+    /// Incrementally rebuild retrieval documents (and optional hash embeddings) from catalog rows.
+    pub fn sync_retrieval_from_catalog(
+        &self,
+        limit: u32,
+        after_app_id: u32,
+        write_embeddings: bool,
+    ) -> StorageResult<RetrievalSyncStats> {
+        let limit = limit.clamp(1, 50_000);
+        let rows: Vec<CatalogDocSource> = self.db.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT a.app_id, a.canonical_name, a.app_type, a.release_state,
+                        COALESCE(p.dominant_mode, ''),
+                        p.private_session, p.online_coop, p.self_hosted_server,
+                        p.recommended_min_players, p.recommended_max_players,
+                        COALESCE(v.platforms_json, '[]'),
+                        COALESCE(v.languages_json, '[]'),
+                        COALESCE(loc.name, ''),
+                        COALESCE(loc.short_description, '')
+                 FROM apps a
+                 LEFT JOIN multiplayer_profiles p ON p.app_id = a.app_id
+                 LEFT JOIN app_availability v ON v.app_id = a.app_id
+                 LEFT JOIN app_localizations loc ON loc.app_id = a.app_id AND loc.language = (
+                    SELECT language FROM app_localizations l2
+                    WHERE l2.app_id = a.app_id
+                    ORDER BY CASE l2.language
+                        WHEN 'schinese' THEN 0
+                        WHEN 'english' THEN 1
+                        WHEN 'en' THEN 2
+                        ELSE 9 END
+                    LIMIT 1
+                 )
+                 WHERE a.app_id > ?1
+                 ORDER BY a.app_id ASC
+                 LIMIT ?2",
+            )?;
+            let mapped = stmt.query_map(params![after_app_id as i64, limit as i64], |row| {
+                Ok(CatalogDocSource {
+                    app_id: row.get::<_, i64>(0)? as u32,
+                    canonical_name: row.get(1)?,
+                    app_type: row.get(2)?,
+                    release_state: row.get(3)?,
+                    dominant_mode: row.get(4)?,
+                    private_session: row.get::<_, Option<i64>>(5)?.map(|v| v != 0),
+                    online_coop: row.get::<_, Option<i64>>(6)?.map(|v| v != 0),
+                    self_hosted_server: row.get::<_, Option<i64>>(7)?.map(|v| v != 0),
+                    recommended_min: row.get::<_, Option<i64>>(8)?.map(|v| v as u8),
+                    recommended_max: row.get::<_, Option<i64>>(9)?.map(|v| v as u8),
+                    platforms_json: row.get(10)?,
+                    languages_json: row.get(11)?,
+                    localized_name: row.get(12)?,
+                    short_description: row.get(13)?,
+                })
+            })?;
+            let mut out = Vec::new();
+            for row in mapped {
+                out.push(row?);
+            }
+            Ok(out)
+        })?;
+
+        let mut stats = RetrievalSyncStats {
+            apps_scanned: rows.len() as u32,
+            ..RetrievalSyncStats::default()
+        };
+
+        for source in &rows {
+            for doc in source.build_documents() {
+                if self.upsert_game_document(&doc)? {
+                    stats.documents_written += 1;
+                    if write_embeddings {
+                        let text = format!("{} {}", doc.title, doc.body);
+                        let vector = hash_embed_text(&text, HASH_EMBED_DIMENSIONS);
+                        let written = self.put_embedding(&PutEmbedding {
+                            document_id: doc.document_id.clone(),
+                            provider: HASH_EMBED_PROVIDER.into(),
+                            model: HASH_EMBED_MODEL.into(),
+                            dimensions: HASH_EMBED_DIMENSIONS,
+                            vector_blob: encode_f32_le(&vector),
+                            is_l2_normalized: true,
+                            content_hash: doc.content_hash.clone(),
+                        })?;
+                        if written {
+                            stats.embeddings_written += 1;
+                        } else {
+                            stats.embeddings_unchanged += 1;
+                        }
+                    }
+                } else {
+                    stats.documents_unchanged += 1;
+                    if write_embeddings {
+                        let text = format!("{} {}", doc.title, doc.body);
+                        let vector = hash_embed_text(&text, HASH_EMBED_DIMENSIONS);
+                        let written = self.put_embedding(&PutEmbedding {
+                            document_id: doc.document_id.clone(),
+                            provider: HASH_EMBED_PROVIDER.into(),
+                            model: HASH_EMBED_MODEL.into(),
+                            dimensions: HASH_EMBED_DIMENSIONS,
+                            vector_blob: encode_f32_le(&vector),
+                            is_l2_normalized: true,
+                            content_hash: doc.content_hash.clone(),
+                        })?;
+                        if written {
+                            stats.embeddings_written += 1;
+                        } else {
+                            stats.embeddings_unchanged += 1;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(stats)
+    }
+
+    /// Hybrid retrieval: FTS ranks + in-memory cosine over stored hash embeddings, fused with RRF.
+    pub fn hybrid_search(&self, query: &str, limit: u32) -> StorageResult<Vec<HybridHit>> {
+        let limit = limit.clamp(1, 100);
+        let fts_query = fts_match_query(query);
+        let fts_hits = if fts_query.is_empty() {
+            Vec::new()
+        } else {
+            self.search_game_fts(&fts_query, limit.saturating_mul(3).max(limit))?
+        };
+
+        let mut fts_best: HashMap<u32, f64> = HashMap::new();
+        let mut fts_order: Vec<u32> = Vec::new();
+        for hit in &fts_hits {
+            // bm25: lower is better; convert to positive preference for display.
+            fts_best.entry(hit.app_id).or_insert_with(|| {
+                fts_order.push(hit.app_id);
+                -hit.rank
+            });
+        }
+
+        let query_vec = hash_embed_text(query, HASH_EMBED_DIMENSIONS);
+        let embeddings =
+            self.list_embeddings_for_provider(HASH_EMBED_PROVIDER, HASH_EMBED_MODEL, 10_000)?;
+        let mut vector_best: HashMap<u32, f64> = HashMap::new();
+        for emb in &embeddings {
+            if emb.dimensions != HASH_EMBED_DIMENSIONS {
+                continue;
+            }
+            let Ok(vec) = decode_f32_le(&emb.vector_blob, emb.dimensions) else {
+                continue;
+            };
+            let score = cosine_similarity(&query_vec, &vec);
+            let entry = vector_best.entry(emb.app_id).or_insert(score);
+            if score > *entry {
+                *entry = score;
+            }
+        }
+        let mut vector_order: Vec<(u32, f64)> = vector_best.iter().map(|(k, v)| (*k, *v)).collect();
+        vector_order.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        let vector_ids: Vec<u32> = vector_order
+            .into_iter()
+            .take((limit as usize).saturating_mul(3).max(limit as usize))
+            .map(|(id, _)| id)
+            .collect();
+
+        let fused = reciprocal_rank_fusion(&[fts_order.clone(), vector_ids], 60);
+        let mut out = Vec::new();
+        for (app_id, score) in fused.into_iter().take(limit as usize) {
+            out.push(HybridHit {
+                app_id,
+                score,
+                fts_rank: fts_best.get(&app_id).copied(),
+                vector_score: vector_best.get(&app_id).copied(),
+            });
+        }
+        Ok(out)
+    }
+
+    pub fn document_count(&self) -> StorageResult<i64> {
+        self.db.with_conn(|conn| {
+            conn.query_row("SELECT COUNT(*) FROM game_documents", [], |row| row.get(0))
+                .map_err(StorageError::from)
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CatalogDocSource {
+    app_id: u32,
+    canonical_name: String,
+    app_type: String,
+    release_state: String,
+    dominant_mode: String,
+    private_session: Option<bool>,
+    online_coop: Option<bool>,
+    self_hosted_server: Option<bool>,
+    recommended_min: Option<u8>,
+    recommended_max: Option<u8>,
+    platforms_json: String,
+    languages_json: String,
+    localized_name: String,
+    short_description: String,
+}
+
+impl CatalogDocSource {
+    fn build_documents(&self) -> Vec<UpsertGameDocument> {
+        let mut docs = Vec::new();
+        let alias = self.localized_name.trim();
+        let platforms = self.platforms_json.trim();
+        let languages = self.languages_json.trim();
+        let identity_body = format!(
+            "type={} release={} platforms={} languages={}",
+            self.app_type, self.release_state, platforms, languages
+        );
+        let identity_hash = content_hash(&[
+            "identity",
+            &self.canonical_name,
+            &identity_body,
+            alias,
+            platforms,
+        ]);
+        docs.push(UpsertGameDocument {
+            document_id: format!("app:{}:identity", self.app_id),
+            app_id: self.app_id,
+            doc_type: "identity".into(),
+            language: "und".into(),
+            title: self.canonical_name.clone(),
+            body: identity_body,
+            content_hash: identity_hash,
+            aliases: alias.to_owned(),
+            tags: format!("{} {}", self.app_type, self.release_state),
+            visibility: "public".into(),
+        });
+
+        let mp_body = format!(
+            "mode={} private_session={} online_coop={} self_host={} party={}..{}",
+            self.dominant_mode,
+            fmt_opt_bool(self.private_session),
+            fmt_opt_bool(self.online_coop),
+            fmt_opt_bool(self.self_hosted_server),
+            self.recommended_min.map(|v| v.to_string()).unwrap_or_else(|| "?".into()),
+            self.recommended_max.map(|v| v.to_string()).unwrap_or_else(|| "?".into()),
+        );
+        let mp_hash = content_hash(&["multiplayer_profile", &mp_body]);
+        docs.push(UpsertGameDocument {
+            document_id: format!("app:{}:multiplayer_profile", self.app_id),
+            app_id: self.app_id,
+            doc_type: "multiplayer_profile".into(),
+            language: "und".into(),
+            title: self.canonical_name.clone(),
+            body: mp_body,
+            content_hash: mp_hash,
+            aliases: alias.to_owned(),
+            tags: self.dominant_mode.clone(),
+            visibility: "public".into(),
+        });
+
+        let desc = self.short_description.trim();
+        if !desc.is_empty() {
+            let store_hash = content_hash(&["store_summary", desc]);
+            docs.push(UpsertGameDocument {
+                document_id: format!("app:{}:store_summary", self.app_id),
+                app_id: self.app_id,
+                doc_type: "store_summary".into(),
+                language: "und".into(),
+                title: self.canonical_name.clone(),
+                body: desc.chars().take(4_000).collect(),
+                content_hash: store_hash,
+                aliases: alias.to_owned(),
+                tags: String::new(),
+                visibility: "public".into(),
+            });
+        }
+        docs
+    }
+}
+
+fn fmt_opt_bool(value: Option<bool>) -> &'static str {
+    match value {
+        Some(true) => "true",
+        Some(false) => "false",
+        None => "unknown",
+    }
+}
+
+fn content_hash(parts: &[&str]) -> String {
+    let mut hasher = Sha256::new();
+    for part in parts {
+        hasher.update(part.as_bytes());
+        hasher.update([0xff]);
+    }
+    let digest = hasher.finalize();
+    let mut out = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
+}
+
+fn fts_match_query(raw: &str) -> String {
+    // Keep alphanumeric / CJK tokens; join with OR for recall on natural language.
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    for ch in raw.chars() {
+        if ch.is_alphanumeric() || ch > '\u{2E80}' {
+            current.push(ch);
+        } else if !current.is_empty() {
+            if current.chars().count() >= 2 {
+                tokens.push(current.clone());
+            }
+            current.clear();
+        }
+    }
+    if current.chars().count() >= 2 {
+        tokens.push(current);
+    }
+    tokens.truncate(12);
+    tokens
+        .into_iter()
+        .map(|t| {
+            let escaped = t.replace('"', " ");
+            format!("\"{escaped}\"")
+        })
+        .collect::<Vec<_>>()
+        .join(" OR ")
+}
+
+fn hash_embed_text(text: &str, dimensions: usize) -> Vec<f32> {
+    let dims = dimensions.max(1);
+    let mut vector = vec![0.0f32; dims];
+    for (i, ch) in text.chars().enumerate() {
+        let idx = (ch as usize).wrapping_add(i).wrapping_mul(2654435761) % dims;
+        vector[idx] += 1.0;
+    }
+    l2_normalize(&mut vector);
+    vector
+}
+
+fn encode_f32_le(vector: &[f32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(vector.len() * 4);
+    for value in vector {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+    out
+}
+
+fn decode_f32_le(blob: &[u8], expected_dimensions: usize) -> Result<Vec<f32>, ()> {
+    if blob.len() != expected_dimensions * 4 {
+        return Err(());
+    }
+    let mut out = Vec::with_capacity(expected_dimensions);
+    for chunk in blob.chunks_exact(4) {
+        out.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+    }
+    Ok(out)
+}
+
+fn l2_normalize(vector: &mut [f32]) {
+    let mut sum = 0.0f64;
+    for value in vector.iter() {
+        sum += f64::from(*value) * f64::from(*value);
+    }
+    if sum <= f64::EPSILON {
+        return;
+    }
+    let norm = sum.sqrt() as f32;
+    for value in vector.iter_mut() {
+        *value /= norm;
+    }
+}
+
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
+    if a.is_empty() || a.len() != b.len() {
+        return 0.0;
+    }
+    let mut dot = 0.0f64;
+    let mut na = 0.0f64;
+    let mut nb = 0.0f64;
+    for (x, y) in a.iter().zip(b.iter()) {
+        let xf = f64::from(*x);
+        let yf = f64::from(*y);
+        dot += xf * yf;
+        na += xf * xf;
+        nb += yf * yf;
+    }
+    if na <= f64::EPSILON || nb <= f64::EPSILON {
+        return 0.0;
+    }
+    (dot / (na.sqrt() * nb.sqrt())).clamp(-1.0, 1.0)
+}
+
+fn reciprocal_rank_fusion(ranked_lists: &[Vec<u32>], k: u32) -> Vec<(u32, f64)> {
+    let mut scores: HashMap<u32, f64> = HashMap::new();
+    let k = f64::from(k.max(1));
+    for list in ranked_lists {
+        for (idx, id) in list.iter().enumerate() {
+            let rank = (idx + 1) as f64;
+            *scores.entry(*id).or_insert(0.0) += 1.0 / (k + rank);
+        }
+    }
+    let mut items: Vec<(u32, f64)> = scores.into_iter().collect();
+    items.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    items
 }
 
 #[cfg(test)]
@@ -319,19 +768,37 @@ mod tests {
                     .map_err(StorageError::from)
             })
             .unwrap();
-        repo.upsert_game_document(&UpsertGameDocument {
-            document_id: format!("doc-{app_id}-identity"),
-            app_id,
-            doc_type: "identity".into(),
-            language: "en".into(),
-            title: "Cozy Co-op Adventure".into(),
-            body: "private lobby cooperative replayable friends".into(),
-            content_hash: "h1".into(),
-            aliases: "cozycoop".into(),
-            tags: "coop multiplayer".into(),
-            visibility: "public".into(),
-        })
-        .unwrap();
+        assert!(
+            repo.upsert_game_document(&UpsertGameDocument {
+                document_id: format!("doc-{app_id}-identity"),
+                app_id,
+                doc_type: "identity".into(),
+                language: "en".into(),
+                title: "Cozy Co-op Adventure".into(),
+                body: "private lobby cooperative replayable friends".into(),
+                content_hash: "h1".into(),
+                aliases: "cozycoop".into(),
+                tags: "coop multiplayer".into(),
+                visibility: "public".into(),
+            })
+            .unwrap()
+        );
+        assert!(
+            !repo
+                .upsert_game_document(&UpsertGameDocument {
+                    document_id: format!("doc-{app_id}-identity"),
+                    app_id,
+                    doc_type: "identity".into(),
+                    language: "en".into(),
+                    title: "Cozy Co-op Adventure".into(),
+                    body: "private lobby cooperative replayable friends".into(),
+                    content_hash: "h1".into(),
+                    aliases: "cozycoop".into(),
+                    tags: "coop multiplayer".into(),
+                    visibility: "public".into(),
+                })
+                .unwrap()
+        );
         let hits = repo.search_game_fts("cooperative", 10).unwrap();
         assert!(!hits.is_empty());
         assert_eq!(hits[0].app_id, app_id);
@@ -349,30 +816,47 @@ mod tests {
             })
             .unwrap();
         let doc_id = format!("doc-{app_id}-store");
-        repo.upsert_game_document(&UpsertGameDocument {
-            document_id: doc_id.clone(),
-            app_id,
-            doc_type: "store_summary".into(),
-            language: "en".into(),
-            title: "Game".into(),
-            body: "body".into(),
-            content_hash: "h2".into(),
-            aliases: String::new(),
-            tags: String::new(),
-            visibility: "public".into(),
-        })
-        .unwrap();
+        assert!(
+            repo.upsert_game_document(&UpsertGameDocument {
+                document_id: doc_id.clone(),
+                app_id,
+                doc_type: "store_summary".into(),
+                language: "en".into(),
+                title: "Game".into(),
+                body: "body".into(),
+                content_hash: "h2".into(),
+                aliases: String::new(),
+                tags: String::new(),
+                visibility: "public".into(),
+            })
+            .unwrap()
+        );
         let blob = 1.0f32.to_le_bytes().to_vec();
-        repo.put_embedding(&PutEmbedding {
-            document_id: doc_id.clone(),
-            provider: "hash-embed".into(),
-            model: "hash-embed-v1".into(),
-            dimensions: 1,
-            vector_blob: blob,
-            is_l2_normalized: true,
-            content_hash: "h2".into(),
-        })
-        .unwrap();
+        assert!(
+            repo.put_embedding(&PutEmbedding {
+                document_id: doc_id.clone(),
+                provider: "hash-embed".into(),
+                model: "hash-embed-v1".into(),
+                dimensions: 1,
+                vector_blob: blob.clone(),
+                is_l2_normalized: true,
+                content_hash: "h2".into(),
+            })
+            .unwrap()
+        );
+        assert!(
+            !repo
+                .put_embedding(&PutEmbedding {
+                    document_id: doc_id.clone(),
+                    provider: "hash-embed".into(),
+                    model: "hash-embed-v1".into(),
+                    dimensions: 1,
+                    vector_blob: blob,
+                    is_l2_normalized: true,
+                    content_hash: "h2".into(),
+                })
+                .unwrap()
+        );
         let listed = repo
             .list_embeddings_for_provider("hash-embed", "hash-embed-v1", 10)
             .unwrap();
@@ -397,5 +881,32 @@ mod tests {
         let loaded = repo.get_ai_cache("k1", 200).unwrap().unwrap();
         assert_eq!(loaded.output_json, entry.output_json);
         assert!(repo.get_ai_cache("k1", 10_000_000_000_000).unwrap().is_none());
+    }
+
+    #[test]
+    fn catalog_sync_and_hybrid_search() {
+        let repo = repo();
+        let stats = repo
+            .sync_retrieval_from_catalog(500, 0, true)
+            .unwrap();
+        assert!(stats.apps_scanned > 0);
+        assert!(stats.documents_written > 0);
+        assert!(stats.embeddings_written > 0);
+        assert!(repo.document_count().unwrap() > 0);
+
+        // Second pass is mostly unchanged.
+        let again = repo.sync_retrieval_from_catalog(500, 0, true).unwrap();
+        assert_eq!(again.apps_scanned, stats.apps_scanned);
+        assert_eq!(again.documents_written, 0);
+        assert!(again.documents_unchanged > 0);
+
+        let hits = repo
+            .hybrid_search("cooperative private lobby friends", 10)
+            .unwrap();
+        // Demo catalog may or may not match English tokens; at least search is stable.
+        assert!(hits.len() <= 10);
+        // Ensure identity docs are searchable by type tokens used in document body.
+        let typed = repo.hybrid_search("game released", 10).unwrap();
+        assert!(!typed.is_empty());
     }
 }

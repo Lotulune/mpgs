@@ -96,6 +96,40 @@ fn run() -> Result<(), String> {
             repo.readiness_check().map_err(err)?;
             audit_m3(&repo, &db_path)
         }
+        "sync-retrieval" => {
+            let db_path = required_path(args.next(), "--db path")?;
+            let limit = args
+                .next()
+                .as_deref()
+                .unwrap_or("5000")
+                .parse::<u32>()
+                .map_err(|_| "sync-retrieval limit must be an integer".to_owned())?
+                .clamp(1, 50_000);
+            let after = args
+                .next()
+                .as_deref()
+                .unwrap_or("0")
+                .parse::<u32>()
+                .map_err(|_| "sync-retrieval after_app_id must be an integer".to_owned())?;
+            let db = Database::open(&db_path).map_err(err)?;
+            db.assert_ready().map_err(err)?;
+            let repo = Repository::new(db);
+            let stats = repo
+                .sync_retrieval_from_catalog(limit, after, true)
+                .map_err(err)?;
+            println!("path={}", db_path.display());
+            println!("apps_scanned={}", stats.apps_scanned);
+            println!("documents_written={}", stats.documents_written);
+            println!("documents_unchanged={}", stats.documents_unchanged);
+            println!("embeddings_written={}", stats.embeddings_written);
+            println!("embeddings_unchanged={}", stats.embeddings_unchanged);
+            println!(
+                "document_count={}",
+                repo.document_count().map_err(err)?
+            );
+            println!("retrieval_sync=ok");
+            Ok(())
+        }
         "collect-steam-candidates" => {
             let db_path = required_path(args.next(), "--db path")?;
             let target = optional_target(args.next())?;
@@ -928,6 +962,7 @@ fn usage() -> &'static str {
        migrate <db-path>\n\
        integrity <db-path>\n\
        m3-audit <db-path>\n\
+       sync-retrieval <db-path> [limit=5000] [after_app_id=0]\n\
        collect-steam-candidates <db-path> [target, default 2000]\n\
        enrich-steam-candidates <db-path> [limit, default 100]\n\
        import-golden-profiles <db-path>\n\

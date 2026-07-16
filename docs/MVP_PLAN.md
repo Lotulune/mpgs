@@ -180,7 +180,8 @@ flowchart LR
 - 迁移 `0007_m5_ai_retrieval`：`game_documents`、`game_fts`、`game_embeddings`、`ai_analyses`、`ai_analysis_cache`；`storage::retrieval` 支持文档/FTS/向量/缓存读写。
 - 服务端：`MPGS_AI_PROVIDER=disabled|openai_compat`（及 Key/Base URL/Model/Timeout）；`/v1/meta.ai_available` 反映网关；自然语言推荐在 Provider 可用时做 Top-N AI 分析并返回 `ai_status=used|fallback`，失败时确定性结果仍可用。
 - 测试：`mpgs-ai` 单元测试、FTS/embedding/cache 存储测试、NL fallback 与 Fake AI `used` 集成测试。
-- 待办：离线特征提取流水线、真实 Embedding Provider、目录批量文档同步、生产 Key 下的端到端 AI 验收、UI `used/cached/disabled/fallback` 全态展示（UI-007）。
+- 检索同步（续）：`Repository::sync_retrieval_from_catalog` 从 apps/画像/本地化增量构建 identity / multiplayer_profile / store_summary 文档与 FTS；`hash-embed` 本地 embedding；`hybrid_search` = FTS + 向量余弦 + RRF。`mpgs-dbtool sync-retrieval`；NL 推荐对候选做 hybrid 重排并附 `hybrid_score`。
+- 待办：离线特征提取流水线、真实 Embedding Provider（替换 hash-embed）、生产 Key 端到端 AI 验收、UI `used/cached/disabled/fallback` 全态展示（UI-007）。
 
 ### M6：发布加固
 
