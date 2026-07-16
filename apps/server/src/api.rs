@@ -139,6 +139,36 @@ struct FeedResponseSchema {
     data_updated_at_ms: i64,
 }
 
+#[derive(Debug, Deserialize, ToSchema)]
+struct NaturalLanguageRequest {
+    query: String,
+    limit: Option<i64>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Serialize, ToSchema)]
+struct NaturalLanguageInterpretationSchema {
+    party_size: Option<u8>,
+    session_minutes_max: Option<u32>,
+    coop_competitive: Option<f64>,
+    self_hosting_willingness: Option<f64>,
+    platforms: Vec<String>,
+    demo_only: bool,
+    selected_section: FeedSection,
+}
+
+#[allow(dead_code)]
+#[derive(ToSchema)]
+struct NaturalLanguageResponseSchema {
+    query: String,
+    interpreted: NaturalLanguageInterpretationSchema,
+    items: Vec<FeedItemSchema>,
+    ai_status: String,
+    fallback_reason: Option<String>,
+    algorithm_version: String,
+    data_updated_at_ms: i64,
+}
+
 #[allow(dead_code)]
 #[derive(ToSchema)]
 struct CalendarItemSchema {
@@ -151,6 +181,8 @@ struct CalendarItemSchema {
     release_date_precision: Option<String>,
     is_early_access: Option<bool>,
     current_data_confidence: Option<f64>,
+    review_total: Option<u32>,
+    early_data: bool,
     source_modified_at_ms: Option<i64>,
     created_at_ms: i64,
     updated_at_ms: i64,
@@ -291,6 +323,7 @@ impl utoipa::Modify for SecurityAddon {
         get_preferences,
         put_preferences,
         get_feed,
+        natural_language_recommendations,
         get_calendar,
         search_games,
         get_game,
@@ -311,6 +344,9 @@ impl utoipa::Modify for SecurityAddon {
         FeedSection,
         FeedItemSchema,
         FeedResponseSchema,
+        NaturalLanguageRequest,
+        NaturalLanguageInterpretationSchema,
+        NaturalLanguageResponseSchema,
         PartySchema,
         MultiplayerSummarySchema,
         PlayIntentSummarySchema,
@@ -360,6 +396,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/session/refresh", post(refresh_session))
         .route("/v1/preferences", get(get_preferences).put(put_preferences))
         .route("/v1/feeds/{section}", get(get_feed))
+        .route(
+            "/v1/recommendations/natural-language",
+            post(natural_language_recommendations),
+        )
         .route("/v1/calendar", get(get_calendar))
         .route("/v1/search", get(search_games))
         .route("/v1/games/{app_id}", get(get_game))
@@ -656,6 +696,8 @@ struct FeedQuery {
     limit: Option<i64>,
     cursor: Option<String>,
     party_size: Option<u8>,
+    coop_competitive: Option<f64>,
+    self_hosting_willingness: Option<f64>,
     platforms: Option<String>,
     languages: Option<String>,
     session_minutes_min: Option<u32>,
@@ -935,11 +977,293 @@ async fn get_feed(
     (StatusCode::OK, [(header::ETAG, etag)], Json(body)).into_response()
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct NaturalLanguageInterpretation {
+    party_size: Option<u8>,
+    session_minutes_max: Option<u32>,
+    coop_competitive: Option<f64>,
+    self_hosting_willingness: Option<f64>,
+    platforms: Vec<String>,
+    demo_only: bool,
+    selected_section: FeedSection,
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/recommendations/natural-language",
+    request_body = NaturalLanguageRequest,
+    responses(
+        (status = 200, body = NaturalLanguageResponseSchema),
+        (status = 400, body = ErrorBody),
+        (status = 503, body = ErrorBody)
+    ),
+    tag = "recommendations"
+)]
+async fn natural_language_recommendations(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<NaturalLanguageRequest>,
+) -> Response {
+    let query = body.query.trim();
+    if query.len() < 3 || query.len() > 500 {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_argument",
+            "query must contain between 3 and 500 characters",
+            None,
+        );
+    }
+    let limit = body.limit.unwrap_or(6);
+    if !(3..=10).contains(&limit) {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_argument",
+            "limit must be between 3 and 10",
+            None,
+        );
+    }
+
+    let interpreted = interpret_natural_language(query);
+    let feed_query = FeedQuery {
+        limit: Some(limit),
+        cursor: None,
+        party_size: interpreted.party_size,
+        coop_competitive: interpreted.coop_competitive,
+        self_hosting_willingness: interpreted.self_hosting_willingness,
+        platforms: (!interpreted.platforms.is_empty()).then(|| interpreted.platforms.join(",")),
+        languages: None,
+        session_minutes_min: None,
+        session_minutes_max: interpreted.session_minutes_max,
+        max_price_minor: None,
+        currency: None,
+        demo_only: Some(interpreted.demo_only),
+    };
+    let feed_response = get_feed(
+        State(state),
+        headers,
+        Path(interpreted.selected_section.as_str().to_owned()),
+        Query(feed_query),
+    )
+    .await
+    .into_response();
+    if feed_response.status() != StatusCode::OK {
+        return feed_response;
+    }
+
+    let (_, feed_body) = feed_response.into_parts();
+    let bytes = match axum::body::to_bytes(feed_body, 2 * 1024 * 1024).await {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "failed to assemble recommendation response",
+                None,
+            );
+        }
+    };
+    let feed: serde_json::Value = match serde_json::from_slice(&bytes) {
+        Ok(feed) => feed,
+        Err(_) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "failed to decode recommendation response",
+                None,
+            );
+        }
+    };
+    Json(json!({
+        "query": query,
+        "interpreted": interpreted,
+        "items": feed.get("items").cloned().unwrap_or_else(|| json!([])),
+        "ai_status": "fallback",
+        "fallback_reason": "AI provider is not configured; deterministic recommendations are shown",
+        "algorithm_version": feed.get("algorithm_version").cloned().unwrap_or(json!(ALGORITHM_VERSION)),
+        "data_updated_at_ms": feed.get("data_updated_at_ms").cloned().unwrap_or(json!(0)),
+    }))
+    .into_response()
+}
+
+fn interpret_natural_language(query: &str) -> NaturalLanguageInterpretation {
+    let normalized = query.to_lowercase();
+    let party_size = extract_party_size(&normalized);
+    let session_minutes_max = extract_session_minutes(&normalized);
+    let coop_competitive = if contains_any(
+        &normalized,
+        &[
+            "不要太卷",
+            "不太卷",
+            "不要太竞技",
+            "不竞技",
+            "休闲",
+            "轻松",
+            "合作",
+            "coop",
+            "casual",
+        ],
+    ) {
+        Some(0.1)
+    } else if contains_any(&normalized, &["竞技", "排位", "competitive", "ranked"]) {
+        Some(0.85)
+    } else {
+        None
+    };
+    let self_hosting_willingness = contains_any(
+        &normalized,
+        &[
+            "自建服",
+            "自建服务器",
+            "专用服务器",
+            "self-host",
+            "dedicated server",
+        ],
+    )
+    .then_some(1.0);
+    let mut platforms = Vec::new();
+    if normalized.contains("windows") {
+        platforms.push("windows".to_owned());
+    }
+    if contains_any(&normalized, &["macos", "mac os", "mac版", "mac 版"]) {
+        platforms.push("macos".to_owned());
+    }
+    if normalized.contains("linux") {
+        platforms.push("linux".to_owned());
+    }
+    let demo_only = contains_any(&normalized, &["demo", "试玩", "playtest", "测试版"]);
+    let selected_section =
+        if contains_any(&normalized, &["即将", "未发售", "coming soon"]) || demo_only {
+            FeedSection::Upcoming
+        } else if contains_any(
+            &normalized,
+            &["经典", "老游戏", "反复刷", "耐玩", "replayable"],
+        ) {
+            FeedSection::ClassicLegacy
+        } else if contains_any(&normalized, &["热门", "人多", "popular"]) {
+            FeedSection::PopularLegacy
+        } else {
+            FeedSection::RecentRelease
+        };
+    NaturalLanguageInterpretation {
+        party_size,
+        session_minutes_max,
+        coop_competitive,
+        self_hosting_willingness,
+        platforms,
+        demo_only,
+        selected_section,
+    }
+}
+
+fn contains_any(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| haystack.contains(needle))
+}
+
+fn extract_party_size(query: &str) -> Option<u8> {
+    const NUMBERS: [(&str, u8); 16] = [
+        ("1", 1),
+        ("一", 1),
+        ("2", 2),
+        ("二", 2),
+        ("3", 3),
+        ("三", 3),
+        ("4", 4),
+        ("四", 4),
+        ("5", 5),
+        ("五", 5),
+        ("6", 6),
+        ("六", 6),
+        ("7", 7),
+        ("七", 7),
+        ("8", 8),
+        ("八", 8),
+    ];
+    for (token, value) in NUMBERS {
+        if [
+            format!("{token}个人"),
+            format!("{token} 人"),
+            format!("{token}人"),
+            format!("{token} people"),
+            format!("{token} players"),
+        ]
+        .iter()
+        .any(|pattern| query.contains(pattern))
+        {
+            return Some(value);
+        }
+    }
+    for (token, value) in [
+        ("one", 1),
+        ("two", 2),
+        ("three", 3),
+        ("four", 4),
+        ("five", 5),
+        ("six", 6),
+        ("seven", 7),
+        ("eight", 8),
+    ] {
+        if [format!("{token} people"), format!("{token} players")]
+            .iter()
+            .any(|pattern| query.contains(pattern))
+        {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn extract_session_minutes(query: &str) -> Option<u32> {
+    const HOURS: [(&str, u32); 8] = [
+        ("1", 60),
+        ("一", 60),
+        ("2", 120),
+        ("二", 120),
+        ("3", 180),
+        ("三", 180),
+        ("4", 240),
+        ("四", 240),
+    ];
+    for (token, minutes) in HOURS {
+        if [
+            format!("{token}小时"),
+            format!("{token} 小时"),
+            format!("{token} hour"),
+        ]
+        .iter()
+        .any(|pattern| query.contains(pattern))
+        {
+            return Some(minutes);
+        }
+    }
+    for (token, minutes) in [("one", 60), ("two", 120), ("three", 180), ("four", 240)] {
+        if [format!("{token} hour"), format!("{token} hours")]
+            .iter()
+            .any(|pattern| query.contains(pattern))
+        {
+            return Some(minutes);
+        }
+    }
+    for minutes in [15_u32, 20, 30, 45, 60, 90, 120, 180, 240] {
+        if [
+            format!("{minutes}分钟"),
+            format!("{minutes} 分钟"),
+            format!("{minutes} min"),
+        ]
+        .iter()
+        .any(|pattern| query.contains(pattern))
+        {
+            return Some(minutes);
+        }
+    }
+    None
+}
+
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 struct CalendarQuery {
     from: Option<String>,
     to: Option<String>,
+    state: Option<String>,
 }
 
 #[utoipa::path(
@@ -962,12 +1286,31 @@ async fn get_calendar(
         return storage_disabled();
     };
     let now_ms = repo.database().now_ms();
+    let calendar_state = query.state.unwrap_or_else(|| "upcoming".to_owned());
+    if !matches!(calendar_state.as_str(), "upcoming" | "recent") {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_argument",
+            "calendar state must be upcoming or recent",
+            None,
+        );
+    }
+    let default_from_ms = if calendar_state == "recent" {
+        now_ms.saturating_sub(180_i64 * 24 * 60 * 60 * 1000)
+    } else {
+        now_ms
+    };
+    let default_to_ms = if calendar_state == "recent" {
+        now_ms
+    } else {
+        now_ms.saturating_add(365_i64 * 24 * 60 * 60 * 1000)
+    };
     let from = query
         .from
-        .unwrap_or_else(|| mpgs_storage::util::day_utc_from_ms(now_ms));
-    let to = query.to.unwrap_or_else(|| {
-        mpgs_storage::util::day_utc_from_ms(now_ms.saturating_add(365_i64 * 24 * 60 * 60 * 1000))
-    });
+        .unwrap_or_else(|| mpgs_storage::util::day_utc_from_ms(default_from_ms));
+    let to = query
+        .to
+        .unwrap_or_else(|| mpgs_storage::util::day_utc_from_ms(default_to_ms));
     let Some(from_day) = mpgs_storage::util::iso_day_to_unix_days(&from) else {
         return error_response(
             StatusCode::BAD_REQUEST,
@@ -996,11 +1339,29 @@ async fn get_calendar(
         Ok(value) => value,
         Err(error) => return map_storage_error(error, None),
     };
-    let etag = weak_etag(&format!("calendar:v1:{from}:{to}:{data_updated_at_ms}"));
+    let etag = weak_etag(&format!(
+        "calendar:v2:{calendar_state}:{from}:{to}:{data_updated_at_ms}"
+    ));
     if let Some(response) = if_none_match_ok(&headers, &etag) {
         return response;
     }
-    match storage_result(repo, move |repo| repo.list_calendar(&from, &to)).await {
+    match storage_result(repo, move |repo| {
+        let (dated, undated) = repo.list_calendar(&from, &to, &calendar_state)?;
+        let attach_review_state = |items: Vec<mpgs_storage::AppRecord>| {
+            items
+                .into_iter()
+                .map(|item| {
+                    let review_total = repo
+                        .game_detail(item.app_id)?
+                        .and_then(|detail| detail.total_reviews);
+                    Ok(calendar_item_json(item, review_total))
+                })
+                .collect::<Result<Vec<_>, StorageError>>()
+        };
+        Ok((attach_review_state(dated)?, attach_review_state(undated)?))
+    })
+    .await
+    {
         Ok((dated, undated)) => {
             let body = json!({
                 "dated_items": dated,
@@ -1011,6 +1372,28 @@ async fn get_calendar(
         }
         Err(error) => map_storage_error(error, None),
     }
+}
+
+fn calendar_item_json(
+    item: mpgs_storage::AppRecord,
+    review_total: Option<u32>,
+) -> serde_json::Value {
+    json!({
+        "app_id": item.app_id,
+        "app_type": item.app_type,
+        "canonical_name": item.canonical_name,
+        "release_state": item.release_state,
+        "release_date": item.release_date,
+        "release_date_raw": item.release_date_raw,
+        "release_date_precision": item.release_date_precision,
+        "is_early_access": item.is_early_access,
+        "current_data_confidence": item.current_data_confidence,
+        "review_total": review_total,
+        "early_data": review_total.unwrap_or(0) < 100,
+        "source_modified_at_ms": item.source_modified_at_ms,
+        "created_at_ms": item.created_at_ms,
+        "updated_at_ms": item.updated_at_ms,
+    })
 }
 
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
@@ -1910,6 +2293,12 @@ fn apply_feed_overrides(
     prefs: &mut UserPreferences,
     query: &FeedQuery,
 ) -> Result<(), Box<Response>> {
+    if let Some(value) = query.coop_competitive {
+        prefs.coop_competitive = value;
+    }
+    if let Some(value) = query.self_hosting_willingness {
+        prefs.self_hosting_willingness = value;
+    }
     if let Some(platforms) = query.platforms.as_deref() {
         prefs.platforms = parse_csv_filter("platforms", platforms)?;
     }

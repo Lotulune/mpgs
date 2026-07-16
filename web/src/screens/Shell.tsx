@@ -14,10 +14,12 @@ import { GameDetailScreen } from "./GameDetailScreen";
 import { SearchScreen } from "./SearchScreen";
 import { CalendarScreen } from "./CalendarScreen";
 import { SettingsScreen } from "./SettingsScreen";
+import { NaturalLanguageScreen } from "./NaturalLanguageScreen";
 
 type ListView =
   | { kind: "feed"; section: FeedSection }
   | { kind: "search" }
+  | { kind: "natural-language" }
   | { kind: "calendar" }
   | { kind: "settings" };
 
@@ -27,6 +29,7 @@ const FX_LABELS: Record<FxIntensity, string> = { off: "特效关", low: "特效�
 const FX_CYCLE: FxIntensity[] = ["full", "low", "off"];
 
 const AUX_TABS: { view: ListView; label: string; glyph: string }[] = [
+  { view: { kind: "natural-language" }, label: "描述推荐", glyph: "✦" },
   { view: { kind: "search" }, label: "搜索", glyph: "⌕" },
   { view: { kind: "calendar" }, label: "日历", glyph: "▦" },
   { view: { kind: "settings" }, label: "设置", glyph: "⚙" },
@@ -156,6 +159,7 @@ export function Shell() {
       <main className="main">
         {view.kind === "feed" && <FeedScreen section={view.section} onOpenGame={openGame} />}
         {view.kind === "search" && <SearchScreen onOpenGame={openGame} />}
+        {view.kind === "natural-language" && <NaturalLanguageScreen onOpenGame={openGame} />}
         {view.kind === "calendar" && <CalendarScreen onOpenGame={openGame} />}
         {view.kind === "settings" && <SettingsScreen />}
         {view.kind === "game" && <GameDetailScreen appId={view.appId} onBack={backToList} />}

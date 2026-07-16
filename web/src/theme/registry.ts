@@ -3,6 +3,8 @@
 // its onActivate hook (procedural texture variables).
 
 import { fxEngine } from "../fx/engine";
+import { getClientStorage } from "../api/storage";
+import type { StorageLike } from "../api/types";
 import { mcTheme } from "./themes/mc";
 import { minimalTheme } from "./themes/minimal";
 import { retroTheme } from "./themes/retro";
@@ -26,7 +28,7 @@ export function isThemeId(value: string | null): value is ThemeId {
   return value !== null && value in THEMES;
 }
 
-export function loadSavedTheme(storage: Storage = globalThis.localStorage): ThemeId | null {
+export function loadSavedTheme(storage: StorageLike = getClientStorage()): ThemeId | null {
   try {
     const saved = storage.getItem(THEME_KEY);
     return isThemeId(saved) ? saved : null;
@@ -35,7 +37,7 @@ export function loadSavedTheme(storage: Storage = globalThis.localStorage): Them
   }
 }
 
-export function saveTheme(id: ThemeId, storage: Storage = globalThis.localStorage): void {
+export function saveTheme(id: ThemeId, storage: StorageLike = getClientStorage()): void {
   try {
     storage.setItem(THEME_KEY, id);
   } catch {

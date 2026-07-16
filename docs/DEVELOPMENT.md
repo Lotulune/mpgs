@@ -70,6 +70,8 @@ Invoke-RestMethod 'http://127.0.0.1:8080/openapi.json'
 cargo run -p mpgs-dbtool -- migrate .\data\mpgs.db
 cargo run -p mpgs-dbtool -- integrity .\data\mpgs.db
 cargo run -p mpgs-dbtool --locked -- collect-steam-candidates .\data\m3-real.db 2000
+cargo run -p mpgs-dbtool --locked -- import-golden-profiles .\data\m3-real.db
+cargo run -p mpgs-dbtool --locked -- enrich-steam-candidates .\data\m3-real.db 100
 cargo run -p mpgs-dbtool -- m3-audit .\data\m3-real.db
 cargo run -p mpgs-dbtool -- backup .\data\mpgs.db .\backups\mpgs.db
 cargo run -p mpgs-dbtool -- restore .\backups\mpgs.db .\data-restored\mpgs.db
@@ -80,7 +82,11 @@ cargo run -p mpgs-dbtool -- restore .\backups\mpgs.db .\data-restored\mpgs.db
 
 `collect-steam-candidates` 使用 Steam 商店搜索的 `category2=1` 多人分类和 `Reviews_DESC` 排序。该接口没有稳定公开契约，因此实现位于独立易变适配器中：响应限制为 4 MiB，HTML 通过 DOM 解析器读取，失败最多退避重试 3 次，成功页间隔至少 1.1 秒；每页写入 `source_documents`、`feature_evidence`、`source_runs` 和 `source_cursors`。命令可安全续传，但它只建立低置信候选证据，不会推断合作、自建服或私人房间能力。
 
+`import-golden-profiles` 将带版本、内容哈希和原始文档的嵌入式黄金集幂等写入 `multiplayer_profiles` 与 `feature_evidence`（不覆盖人工 override），用于提升 `recommendation_ready_profiles` / `trusted_familiar_profiles`。`enrich-steam-candidates` 对多人候选按轮转游标抓取 `appdetails`、评价摘要与 CCU：平台/语言缺失时补抓，评价和价格每 24 小时到期，CCU 每 6 小时到期；默认每次 100 个 App，请求间隔约 1.1 秒。商店区域默认 `CN/schinese`，可用 `MPGS_STEAM_COUNTRY`、`MPGS_STEAM_LANGUAGE` 覆盖。深度熟人联机画像仍依赖黄金集与人工校正，不由商店分类自动推断。
+
 2026-07-14 的本地门禁结果：`normalized_multiplayer_candidates=2071`、`category_evidence_candidates=2071`、`recommendation_ready_profiles=0`。后两个指标必须分开阅读，不能把分类覆盖当成推荐质量。
+
+2026-07-16 本地审计结果（`data/m3-real.db`）：候选 2091，`recommendation_ready_profiles=50`、`trusted_familiar_profiles=14`、`with_platforms=2091`、`with_languages=2090`、`with_reviews=2091`、`with_ccu=2091`、`with_price=2081`。`with_price` 只统计有实际金额的快照；免费游戏记 0 价，商店未返回币种或金额时不再伪造 USD 价格。数据库中历史 `US/USD` 快照不代表中国区价格覆盖完成，需继续按默认 `CN/schinese` 运行富化刷新。`with_typical_session=0`，典型局时长仍需人工校准。
 
 服务默认绑定 `127.0.0.1:8080`。仅在本地端口冲突时临时设置进程变量：
 
@@ -105,9 +111,19 @@ pnpm --filter mpgs-web dev            # http://localhost:5173
 pnpm --filter mpgs-web typecheck
 pnpm --filter mpgs-web test
 pnpm --filter mpgs-web build
+# M4 API 级验收（自动起临时演示服务端 + web test/build + desktop cargo check）：
+.\scripts\m4_acceptance.ps1
+# Windows/Linux 原生桌面 E2E（需先安装 tauri-driver 与平台 WebDriver）：
+pnpm desktop:e2e:build
+pnpm desktop:e2e
+# Windows 桌面安装包冒烟（未签名；NSIS 会按需下载工具链）：
+pnpm exec tauri build --config apps/desktop/src-tauri/tauri.conf.json --ci --no-sign -b nsis
+pnpm exec tauri build --config apps/desktop/src-tauri/tauri.conf.json --ci --no-sign -b msi
 ```
 
-Tauri 壳是独立 Cargo workspace，不进入根 workspace，因此 `cargo test --workspace` 与 CI 不需要 WebView 工具链。打包需另装 Tauri CLI 与平台依赖（Windows: MSVC + WebView2；Linux: WebKitGTK 4.1）。
+验收说明与结果：[M4_ACCEPTANCE.md](M4_ACCEPTANCE.md)。PRD 7.2 已提供确定性自然语言意图解析和推荐流程；未配置外部 AI Provider 时响应明确标记 `ai_status=fallback`，不谎报 AI 可用。
+
+Tauri 壳是独立 Cargo workspace，不进入根 workspace，因此 `cargo test --workspace` 与 CI 不需要 WebView 工具链。仓库 devDependency 含 `@tauri-apps/cli`。Windows 打包依赖 MSVC + WebView2；NSIS/WiX 由 Tauri 首次构建时拉取。Linux 需 WebKitGTK 4.1；macOS 需 Xcode 与原生 runner。桌面客户端默认把状态写入应用私有数据目录；自动化测试可设置 `MPGS_CLIENT_DATA_DIR` 使用隔离目录。
 
 ## 4. Workspace 依赖方向
 

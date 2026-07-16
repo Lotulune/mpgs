@@ -75,6 +75,12 @@ impl GoldenSet {
     }
 
     pub fn validate(&self) -> Result<(), SourceError> {
+        if self.version != GOLDEN_SET_VERSION {
+            return Err(SourceError::invalid_structure(format!(
+                "golden set version {} does not match parser version {GOLDEN_SET_VERSION}",
+                self.version
+            )));
+        }
         if self.games.len() < 50 {
             return Err(SourceError::invalid_structure(format!(
                 "golden set requires at least 50 games, found {}",
@@ -173,5 +179,12 @@ mod tests {
                 game.app_id
             );
         }
+    }
+
+    #[test]
+    fn embedded_data_version_must_match_parser_version() {
+        let mut set = GoldenSet::load_embedded().unwrap();
+        set.version = "golden-stale".into();
+        assert!(set.validate().is_err());
     }
 }

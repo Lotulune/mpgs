@@ -64,6 +64,24 @@ export function precisionLabel(precision: string | null): string | null {
   return PRECISION_LABELS[precision] ?? precision;
 }
 
+export function confidenceLabel(confidence: number | null): string {
+  if (confidence === null) return "置信度未知";
+  if (confidence >= 0.8) return `高置信 ${Math.round(confidence * 100)}%`;
+  if (confidence >= 0.5) return `中置信 ${Math.round(confidence * 100)}%`;
+  return `低置信 ${Math.round(confidence * 100)}%`;
+}
+
+export function appTypeLabel(appType: string): string {
+  if (appType === "demo") return "Demo";
+  if (appType === "playtest") return "Playtest";
+  return "正式游戏";
+}
+
+export function earlyDataLabel(earlyData: boolean, reviewTotal: number | null): string | null {
+  if (!earlyData) return null;
+  return reviewTotal === null ? "早期数据" : `早期数据 · ${reviewTotal} 条评价`;
+}
+
 /** Format a Date as `YYYY-MM-DD` in UTC (calendar API uses calendar days). */
 export function toDayString(date: Date): string {
   const y = date.getUTCFullYear();
@@ -78,5 +96,14 @@ export function defaultWindow(now: number, months = 6): { from: string; to: stri
   const end = new Date(now);
   const clamped = Math.min(Math.max(months, 1), 12);
   end.setUTCMonth(end.getUTCMonth() + clamped);
+  return { from: toDayString(start), to: toDayString(end) };
+}
+
+/** Recent-release window: -months through today, clamped to one year. */
+export function recentWindow(now: number, months = 6): { from: string; to: string } {
+  const end = new Date(now);
+  const start = new Date(now);
+  const clamped = Math.min(Math.max(months, 1), 12);
+  start.setUTCMonth(start.getUTCMonth() - clamped);
   return { from: toDayString(start), to: toDayString(end) };
 }

@@ -207,10 +207,10 @@ session_minutes_max, max_price_minor, currency, demo_only
 ### `GET /v1/calendar`
 
 ```text
-?from=2026-07-01&to=2026-12-31
+?state=upcoming&from=2026-07-01&to=2026-12-31
 ```
 
-`from/to` 最大跨度一年。日期不精确的条目进入 `undated_items`，不能伪造具体日期。
+`state` 必须是 `recent` 或 `upcoming`，省略时默认为 `upcoming`。`from/to` 最大跨度一年。日期不精确的条目进入 `undated_items`，不能伪造具体日期。每个条目包含 `release_date_precision`、`source_modified_at_ms`、`review_total` 和布尔型 `early_data`；`early_data` 由评论数量判断，不使用来源置信度代替评论成熟度。
 
 ```json
 {
@@ -248,14 +248,12 @@ Embedding 或 AI 意图解析不可用时回退到 FTS 和当前偏好。
 
 ## 11. AI 推荐
 
-### `POST /v1/recommendations/query`
+### `POST /v1/recommendations/natural-language`
 
 ```json
 {
-  "query": "四个人长期玩，能自己开服，预算每人一百五十元",
-  "max_results": 10,
-  "include_sections": ["recent_release", "popular_legacy", "classic_legacy"],
-  "request_ai_analysis": true
+  "query": "四个人长期玩，能自己开服，优先 Windows",
+  "limit": 6
 }
 ```
 
@@ -263,20 +261,25 @@ Embedding 或 AI 意图解析不可用时回退到 FTS 和当前偏好。
 
 ```json
 {
-  "recommendations": [],
-  "parsed_intent": {
+  "query": "四个人长期玩，能自己开服，优先 Windows",
+  "interpreted": {
     "party_size": 4,
-    "self_hosting": "preferred",
-    "budget": { "currency": "CNY", "max_each_minor": 15000 }
+    "session_minutes_max": null,
+    "coop_competitive": null,
+    "self_hosting_willingness": 1.0,
+    "platforms": ["windows"],
+    "include_demos": false,
+    "selected_section": "popular_legacy"
   },
-  "ai_status": "used",
-  "ai_notice": null,
+  "items": [],
+  "ai_status": "fallback",
+  "fallback_reason": "AI provider is not configured; deterministic intent parsing was used",
   "algorithm_version": "rules-0.2.0",
-  "data_updated_at": "2026-07-13T10:00:00Z"
+  "data_updated_at_ms": 1783936800000
 }
 ```
 
-`ai_status`：`used`、`cached`、`disabled`、`fallback`。即使 `fallback`，HTTP 状态仍可为 200。
+`query` 长度为 3–500 个字符，`limit` 为 3–10。当前实现从自然语言中确定性解析人数、时长、合作/竞技倾向、平台、Demo 和自建服意愿，再复用候选检索与硬约束排序。未配置外部 AI Provider 时返回 `ai_status=fallback` 和非空 `fallback_reason`；这仍是成功的可用降级流程，HTTP 状态为 200。
 
 ## 12. 游戏详情与证据
 

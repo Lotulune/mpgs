@@ -1,24 +1,31 @@
 #![forbid(unsafe_code)]
 
 use std::env;
-use std::io::Read;
+use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::thread;
 use std::time::Duration;
 
 use mpgs_steam_source::{
-    DEFAULT_USER_AGENT, RawResponse, STEAM_STORE_HOST, STORE_SEARCH_ADAPTER_VERSION,
-    STORE_SEARCH_SOURCE_NAME, SourceError, StoreSearchPage, StoreSearchRequest,
-    parse_store_search_page,
+    CcuRequest, DEFAULT_STORE_COUNTRY, DEFAULT_STORE_LANGUAGE, DEFAULT_USER_AGENT, GoldenSet,
+    RawResponse, ReviewSummaryRequest, STEAM_STORE_HOST, STEAM_WEB_API_HOST, STORE_ADAPTER_VERSION,
+    STORE_SEARCH_ADAPTER_VERSION, STORE_SEARCH_SOURCE_NAME, STORE_SOURCE_NAME, SourceError,
+    StoreDetailsRequest, StoreSearchPage, StoreSearchRequest, parse_ccu, parse_review_summary,
+    parse_store_details, parse_store_search_page,
 };
 use mpgs_storage::{Clock, Database, Repository, SystemClock};
 use serde::{Deserialize, Serialize};
 
 const STORE_SEARCH_CURSOR_KEY: &str = "steam_store_search:multiplayer:reviews_desc";
+const ENRICH_CURSOR_KEY: &str = "steam_store_enrichment:dynamic:v2";
 const STORE_SEARCH_TARGET_DEFAULT: u32 = 2_000;
 const STORE_SEARCH_TARGET_MAX: u32 = 10_000;
 const STORE_SEARCH_RESPONSE_MAX_BYTES: usize = 4 * 1024 * 1024;
+const ENRICH_LIMIT_DEFAULT: u32 = 100;
+const ENRICH_LIMIT_MAX: u32 = 5_000;
+const ENRICH_RESPONSE_MAX_BYTES: usize = 2 * 1024 * 1024;
+const ENRICH_INTER_REQUEST_MS: u64 = 1_100;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct StoreSearchCursor {
@@ -26,6 +33,11 @@ struct StoreSearchCursor {
     total_count: Option<u32>,
     target: u32,
     complete: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+struct EnrichmentCursor {
+    after_app_id: u32,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -160,6 +172,164 @@ fn run() -> Result<(), String> {
                 }
             }
         }
+        "enrich-steam-candidates" => {
+            let db_path = required_path(args.next(), "--db path")?;
+            let limit = optional_enrich_limit(args.next())?;
+            if args.next().is_some() {
+                return Err("enrich-steam-candidates accepts at most db-path and limit".into());
+            }
+            let db = Database::open(&db_path).map_err(err)?;
+            db.migrate().map_err(err)?;
+            let repo = Repository::new(db);
+            repo.ensure_runtime_defaults().map_err(err)?;
+            let before = repo.m3_catalog_coverage().map_err(err)?;
+            let (country_code, language) = configured_store_locale()?;
+            let cursor = repo
+                .source_cursor(ENRICH_CURSOR_KEY)
+                .map_err(err)?
+                .map(|value| serde_json::from_str::<EnrichmentCursor>(&value))
+                .transpose()
+                .map_err(|error| format!("invalid enrichment cursor: {error}"))?
+                .unwrap_or_default();
+            let targets = repo
+                .list_enrichment_targets_after(limit, Some(cursor.after_app_id), &country_code)
+                .map_err(err)?;
+            if targets.is_empty() {
+                println!("path={}", db_path.display());
+                print_coverage(&before);
+                println!("steam_candidate_enrichment=already_satisfied");
+                return Ok(());
+            }
+
+            let run_id = repo
+                .start_source_run(
+                    STORE_SOURCE_NAME,
+                    "candidate_enrichment",
+                    STORE_ADAPTER_VERSION,
+                    Some(&format!(
+                        "limit={limit};sources=appdetails,reviews,ccu;targets={};country={country_code};language={language};after_app_id={}",
+                        targets.len(), cursor.after_app_id
+                    )),
+                )
+                .map_err(err)?;
+            match enrich_steam_candidates(&repo, &targets, &country_code, &language) {
+                Ok(stats) => {
+                    let next_cursor = EnrichmentCursor {
+                        after_app_id: targets
+                            .last()
+                            .map_or(cursor.after_app_id, |target| target.app_id),
+                    };
+                    repo.save_source_cursor(
+                        ENRICH_CURSOR_KEY,
+                        STORE_SOURCE_NAME,
+                        &serde_json::to_value(next_cursor).map_err(err)?,
+                    )
+                    .map_err(err)?;
+                    let status = if stats.error_count > 0 && stats.success_count > 0 {
+                        "partial"
+                    } else if stats.error_count > 0 {
+                        "failed"
+                    } else {
+                        "succeeded"
+                    };
+                    repo.finish_source_run(
+                        run_id,
+                        status,
+                        stats.request_count,
+                        stats.success_count,
+                        if stats.error_count > 0 {
+                            Some("partial_errors")
+                        } else {
+                            None
+                        },
+                        Some(&format!(
+                            "apps_attempted={} store={} reviews={} ccu={} errors={}",
+                            stats.apps_attempted,
+                            stats.store_ok,
+                            stats.reviews_ok,
+                            stats.ccu_ok,
+                            stats.error_count
+                        )),
+                    )
+                    .map_err(err)?;
+                    let after = repo.m3_catalog_coverage().map_err(err)?;
+                    println!("path={}", db_path.display());
+                    println!("requests={}", stats.request_count);
+                    println!("apps_attempted={}", stats.apps_attempted);
+                    println!("store_details_ok={}", stats.store_ok);
+                    println!("reviews_ok={}", stats.reviews_ok);
+                    println!("ccu_ok={}", stats.ccu_ok);
+                    println!("errors={}", stats.error_count);
+                    print_coverage(&after);
+                    if stats.error_count > 0 {
+                        Err(format!(
+                            "Steam candidate enrichment completed with {} errors after {} requests",
+                            stats.error_count, stats.request_count
+                        ))
+                    } else {
+                        println!("steam_candidate_enrichment=ok");
+                        Ok(())
+                    }
+                }
+                Err(failure) => {
+                    let status = if failure.stats.success_count > 0 {
+                        "partial"
+                    } else {
+                        "failed"
+                    };
+                    repo.finish_source_run(
+                        run_id,
+                        status,
+                        failure.stats.request_count,
+                        failure.stats.success_count,
+                        Some(failure.category),
+                        Some(&failure.message),
+                    )
+                    .map_err(err)?;
+                    Err(format!(
+                        "Steam candidate enrichment {} after {} requests: {}",
+                        failure.category, failure.stats.request_count, failure.message
+                    ))
+                }
+            }
+        }
+        "import-golden-profiles" => {
+            let db_path = required_path(args.next(), "--db path")?;
+            if args.next().is_some() {
+                return Err("import-golden-profiles accepts only db-path".into());
+            }
+            let db = Database::open(&db_path).map_err(err)?;
+            db.migrate().map_err(err)?;
+            let repo = Repository::new(db);
+            repo.ensure_runtime_defaults().map_err(err)?;
+            let set = GoldenSet::load_embedded().map_err(err)?;
+            let before = repo.m3_catalog_coverage().map_err(err)?;
+            let mut applied = 0_i64;
+            for game in &set.games {
+                if repo.import_golden_multiplayer_profile(game).map_err(err)? {
+                    applied += 1;
+                }
+            }
+            let after = repo.m3_catalog_coverage().map_err(err)?;
+            println!("path={}", db_path.display());
+            println!("golden_set_version={}", set.version);
+            println!("golden_games={}", set.games.len());
+            println!("profiles_applied={}", applied);
+            println!(
+                "recommendation_ready_profiles_before={}",
+                before.recommendation_ready_profiles
+            );
+            println!(
+                "recommendation_ready_profiles_after={}",
+                after.recommendation_ready_profiles
+            );
+            println!(
+                "trusted_familiar_profiles_after={}",
+                after.trusted_familiar_profiles
+            );
+            println!("golden_profile_import=ok");
+            Ok(())
+        }
         "backup" => {
             let db_path = required_path(args.next(), "--db path")?;
             let out_path = required_path(args.next(), "--out path")?;
@@ -213,6 +383,46 @@ fn optional_target(arg: Option<String>) -> Result<u32, String> {
         ));
     }
     Ok(target)
+}
+
+fn optional_enrich_limit(arg: Option<String>) -> Result<u32, String> {
+    let limit = match arg {
+        Some(value) => value
+            .parse::<u32>()
+            .map_err(|_| format!("invalid enrich limit: {value}"))?,
+        None => ENRICH_LIMIT_DEFAULT,
+    };
+    if !(1..=ENRICH_LIMIT_MAX).contains(&limit) {
+        return Err(format!(
+            "enrich limit must be between 1 and {ENRICH_LIMIT_MAX}"
+        ));
+    }
+    Ok(limit)
+}
+
+fn print_coverage(coverage: &mpgs_storage::M3CatalogCoverage) {
+    println!(
+        "normalized_multiplayer_candidates={}",
+        coverage.normalized_multiplayer_candidates
+    );
+    println!(
+        "category_evidence_candidates={}",
+        coverage.category_evidence_candidates
+    );
+    println!(
+        "recommendation_ready_profiles={}",
+        coverage.recommendation_ready_profiles
+    );
+    println!(
+        "trusted_familiar_profiles={}",
+        coverage.trusted_familiar_profiles
+    );
+    println!("with_platforms={}", coverage.with_platforms);
+    println!("with_languages={}", coverage.with_languages);
+    println!("with_typical_session={}", coverage.with_typical_session);
+    println!("with_price={}", coverage.with_price);
+    println!("with_reviews={}", coverage.with_reviews);
+    println!("with_ccu={}", coverage.with_ccu);
 }
 
 fn audit_m3(repo: &Repository, db_path: &std::path::Path) -> Result<(), String> {
@@ -452,8 +662,264 @@ fn source_error_category(error: &SourceError) -> &'static str {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct EnrichStats {
+    request_count: i64,
+    success_count: i64,
+    apps_attempted: i64,
+    store_ok: i64,
+    reviews_ok: i64,
+    ccu_ok: i64,
+    error_count: i64,
+}
+
+fn enrich_steam_candidates(
+    repo: &Repository,
+    targets: &[mpgs_storage::EnrichmentTarget],
+    country_code: &str,
+    language: &str,
+) -> Result<EnrichStats, CollectionError> {
+    let client = reqwest::blocking::Client::builder()
+        .user_agent(DEFAULT_USER_AGENT)
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::limited(3))
+        .build()
+        .map_err(|error| CollectionError {
+            category: "network",
+            message: error.to_string(),
+            stats: CollectionStats::default(),
+        })?;
+
+    let mut stats = EnrichStats::default();
+    let total = targets.len();
+    for (index, target) in targets.iter().enumerate() {
+        stats.apps_attempted = stats.apps_attempted.saturating_add(1);
+        let mut app_ok = 0_i64;
+
+        // Price comes from appdetails; re-fetch store when platforms or price missing.
+        if target.needs_store_details || target.needs_price {
+            match enrich_store_details(
+                &client,
+                repo,
+                target.app_id,
+                country_code,
+                language,
+                &mut stats,
+            ) {
+                Ok(()) => {
+                    stats.store_ok = stats.store_ok.saturating_add(1);
+                    app_ok = app_ok.saturating_add(1);
+                }
+                Err(error) => {
+                    stats.error_count = stats.error_count.saturating_add(1);
+                    eprintln!(
+                        "warn app_id={} store_details: {} ({})",
+                        target.app_id, error.message, error.category
+                    );
+                }
+            }
+            thread::sleep(Duration::from_millis(ENRICH_INTER_REQUEST_MS));
+        }
+
+        if target.needs_reviews {
+            match enrich_reviews(&client, repo, target.app_id, &mut stats) {
+                Ok(()) => {
+                    stats.reviews_ok = stats.reviews_ok.saturating_add(1);
+                    app_ok = app_ok.saturating_add(1);
+                }
+                Err(error) => {
+                    stats.error_count = stats.error_count.saturating_add(1);
+                    eprintln!(
+                        "warn app_id={} reviews: {} ({})",
+                        target.app_id, error.message, error.category
+                    );
+                }
+            }
+            thread::sleep(Duration::from_millis(ENRICH_INTER_REQUEST_MS));
+        }
+
+        if target.needs_ccu {
+            match enrich_ccu(&client, repo, target.app_id, &mut stats) {
+                Ok(()) => {
+                    stats.ccu_ok = stats.ccu_ok.saturating_add(1);
+                    app_ok = app_ok.saturating_add(1);
+                }
+                Err(error) => {
+                    stats.error_count = stats.error_count.saturating_add(1);
+                    eprintln!(
+                        "warn app_id={} ccu: {} ({})",
+                        target.app_id, error.message, error.category
+                    );
+                }
+            }
+            thread::sleep(Duration::from_millis(ENRICH_INTER_REQUEST_MS));
+        }
+
+        stats.success_count = stats.success_count.saturating_add(app_ok);
+        if (index + 1) % 10 == 0 || index + 1 == total {
+            // stderr so progress is visible when stdout is piped/fully buffered.
+            eprintln!(
+                "progress enriched_apps={}/{} store_ok={} reviews_ok={} ccu_ok={} errors={}",
+                index + 1,
+                total,
+                stats.store_ok,
+                stats.reviews_ok,
+                stats.ccu_ok,
+                stats.error_count
+            );
+            let _ = io::stderr().flush();
+        }
+    }
+    Ok(stats)
+}
+
+struct SoftEnrichError {
+    category: &'static str,
+    message: String,
+}
+
+fn enrich_store_details(
+    client: &reqwest::blocking::Client,
+    repo: &Repository,
+    app_id: u32,
+    country_code: &str,
+    language: &str,
+    stats: &mut EnrichStats,
+) -> Result<(), SoftEnrichError> {
+    let request =
+        StoreDetailsRequest::with_locale(app_id, country_code, language).map_err(|error| {
+            SoftEnrichError {
+                category: source_error_category(&error),
+                message: error.to_string(),
+            }
+        })?;
+    let raw = fetch_raw_with_retry(
+        client,
+        &format!("{STEAM_STORE_HOST}{}", request.path_and_query()),
+        stats,
+    )?;
+    let parsed = parse_store_details(&request, &raw).map_err(|error| SoftEnrichError {
+        category: source_error_category(&error),
+        message: error.to_string(),
+    })?;
+    repo.ingest_store_details(&parsed.details, &parsed.relations)
+        .map_err(|error| SoftEnrichError {
+            category: "storage",
+            message: error.to_string(),
+        })?;
+    Ok(())
+}
+
+fn enrich_reviews(
+    client: &reqwest::blocking::Client,
+    repo: &Repository,
+    app_id: u32,
+    stats: &mut EnrichStats,
+) -> Result<(), SoftEnrichError> {
+    let request = ReviewSummaryRequest::summary_only(app_id);
+    let raw = fetch_raw_with_retry(
+        client,
+        &format!("{STEAM_STORE_HOST}{}", request.path_and_query()),
+        stats,
+    )?;
+    let proposal = parse_review_summary(&request, &raw).map_err(|error| SoftEnrichError {
+        category: source_error_category(&error),
+        message: error.to_string(),
+    })?;
+    repo.ingest_review(&proposal)
+        .map_err(|error| SoftEnrichError {
+            category: "storage",
+            message: error.to_string(),
+        })?;
+    Ok(())
+}
+
+fn enrich_ccu(
+    client: &reqwest::blocking::Client,
+    repo: &Repository,
+    app_id: u32,
+    stats: &mut EnrichStats,
+) -> Result<(), SoftEnrichError> {
+    let request = CcuRequest::new(app_id);
+    let raw = fetch_raw_with_retry(
+        client,
+        &format!("{STEAM_WEB_API_HOST}{}", request.path_and_query()),
+        stats,
+    )?;
+    let proposal = parse_ccu(&request, &raw).map_err(|error| SoftEnrichError {
+        category: source_error_category(&error),
+        message: error.to_string(),
+    })?;
+    repo.ingest_ccu(&proposal)
+        .map_err(|error| SoftEnrichError {
+            category: "storage",
+            message: error.to_string(),
+        })?;
+    Ok(())
+}
+
+fn fetch_raw_with_retry(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    stats: &mut EnrichStats,
+) -> Result<RawResponse, SoftEnrichError> {
+    let mut last_error = None;
+    for attempt in 0..3_u64 {
+        stats.request_count = stats.request_count.saturating_add(1);
+        match fetch_raw(client, url) {
+            Ok(raw) => return Ok(raw),
+            Err(error) => {
+                let retryable = error.is_retryable();
+                let category = source_error_category(&error);
+                let message = error.to_string();
+                last_error = Some((category, message));
+                if !retryable || attempt == 2 {
+                    break;
+                }
+                thread::sleep(Duration::from_secs(1_u64 << attempt));
+            }
+        }
+    }
+    let (category, message) = last_error.unwrap_or(("network", "unknown fetch failure".into()));
+    Err(SoftEnrichError { category, message })
+}
+
+fn fetch_raw(client: &reqwest::blocking::Client, url: &str) -> Result<RawResponse, SourceError> {
+    let response = client
+        .get(url)
+        .header(reqwest::header::ACCEPT, "application/json")
+        .send()
+        .map_err(|error| SourceError::Temporary {
+            message: error.to_string(),
+        })?;
+    let status = response.status().as_u16();
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let mut body = Vec::new();
+    response
+        .take((ENRICH_RESPONSE_MAX_BYTES + 1) as u64)
+        .read_to_end(&mut body)
+        .map_err(|error| SourceError::Temporary {
+            message: error.to_string(),
+        })?;
+    RawResponse::validate(status, body, content_type, ENRICH_RESPONSE_MAX_BYTES)
+}
+
 fn err(error: impl std::fmt::Display) -> String {
     error.to_string()
+}
+
+fn configured_store_locale() -> Result<(String, String), String> {
+    let country =
+        env::var("MPGS_STEAM_COUNTRY").unwrap_or_else(|_| DEFAULT_STORE_COUNTRY.to_owned());
+    let language =
+        env::var("MPGS_STEAM_LANGUAGE").unwrap_or_else(|_| DEFAULT_STORE_LANGUAGE.to_owned());
+    let request = StoreDetailsRequest::with_locale(1, country, language).map_err(err)?;
+    Ok((request.country_code, request.language))
 }
 
 fn usage() -> &'static str {
@@ -463,6 +929,11 @@ fn usage() -> &'static str {
        integrity <db-path>\n\
        m3-audit <db-path>\n\
        collect-steam-candidates <db-path> [target, default 2000]\n\
+       enrich-steam-candidates <db-path> [limit, default 100]\n\
+       import-golden-profiles <db-path>\n\
        backup <db-path> <backup-path>\n\
-       restore <backup-path> <dest-db-path>\n"
+       restore <backup-path> <dest-db-path>\n\n\
+     Enrichment environment:\n\
+       MPGS_STEAM_COUNTRY (default cn)\n\
+       MPGS_STEAM_LANGUAGE (default schinese)\n"
 }

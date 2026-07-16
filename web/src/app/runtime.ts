@@ -3,6 +3,8 @@
 import { ApiClient } from "../api/client";
 import { FeedbackQueue } from "../api/feedbackQueue";
 import { PlayIntentStore } from "../api/playIntentStore";
+import { getClientStorage } from "../api/storage";
+import type { StorageLike } from "../api/types";
 import { flushPendingPreferencePatch } from "./preferences";
 
 // Dev + Tauri-dev load through the Vite proxy, so same-origin ("") works.
@@ -12,9 +14,10 @@ const API_BASE =
   import.meta.env.VITE_MPGS_API_BASE ??
   (import.meta.env.PROD ? "http://127.0.0.1:8080" : "");
 
-export const apiClient = new ApiClient({ baseUrl: API_BASE });
-export const feedbackQueue = new FeedbackQueue(apiClient);
-export const playIntentStore = new PlayIntentStore(apiClient);
+const storage = getClientStorage();
+export const apiClient = new ApiClient({ baseUrl: API_BASE, storage });
+export const feedbackQueue = new FeedbackQueue(apiClient, storage);
+export const playIntentStore = new PlayIntentStore(apiClient, storage);
 
 // Replay pending feedback and votes when connectivity returns.
 if (typeof window !== "undefined") {
@@ -30,7 +33,7 @@ if (typeof window !== "undefined") {
 
 const ONBOARDED_KEY = "mpgs.onboarded.v1";
 
-export function isOnboarded(storage: Storage = globalThis.localStorage): boolean {
+export function isOnboarded(storage: StorageLike = getClientStorage()): boolean {
   try {
     return storage.getItem(ONBOARDED_KEY) === "true";
   } catch {
@@ -38,7 +41,7 @@ export function isOnboarded(storage: Storage = globalThis.localStorage): boolean
   }
 }
 
-export function markOnboarded(storage: Storage = globalThis.localStorage): void {
+export function markOnboarded(storage: StorageLike = getClientStorage()): void {
   try {
     storage.setItem(ONBOARDED_KEY, "true");
   } catch {
@@ -48,7 +51,7 @@ export function markOnboarded(storage: Storage = globalThis.localStorage): void 
 
 const FX_KEY = "mpgs.fx.v1";
 
-export function loadFxIntensity(storage: Storage = globalThis.localStorage): string | null {
+export function loadFxIntensity(storage: StorageLike = getClientStorage()): string | null {
   try {
     return storage.getItem(FX_KEY);
   } catch {
@@ -56,7 +59,7 @@ export function loadFxIntensity(storage: Storage = globalThis.localStorage): str
   }
 }
 
-export function saveFxIntensity(value: string, storage: Storage = globalThis.localStorage): void {
+export function saveFxIntensity(value: string, storage: StorageLike = getClientStorage()): void {
   try {
     storage.setItem(FX_KEY, value);
   } catch {

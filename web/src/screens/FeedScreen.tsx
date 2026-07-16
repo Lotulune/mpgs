@@ -1,7 +1,9 @@
 // Feed screen: section tabs live in the shell; this renders one section's list
 // with loading / empty / error / stale / offline states.
 
+import { useEffect } from "react";
 import type { FeedSection } from "../api/types";
+import { feedbackQueue } from "../app/runtime";
 import { formatAgo, isStale, SECTION_META } from "../app/format";
 import { useFeed } from "../app/useFeed";
 import { GameCard } from "./GameCard";
@@ -15,6 +17,8 @@ export function FeedScreen({
 }) {
   const feed = useFeed(section);
   const meta = SECTION_META[section];
+
+  useEffect(() => feedbackQueue.subscribeRankingChanged(feed.reload), [feed.reload]);
 
   return (
     <section aria-label={meta.label}>

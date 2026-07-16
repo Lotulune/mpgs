@@ -2,6 +2,7 @@
 // settings screen only PUTs when something actually differs.
 
 import type { StorageLike, UserPreferences } from "../api/types";
+import { getClientStorage } from "../api/storage";
 
 const PENDING_PREFERENCES_KEY = "mpgs.preferences.pending.v1";
 
@@ -14,7 +15,7 @@ interface PreferencesApi {
 
 export const PLATFORM_OPTIONS: { id: string; label: string }[] = [
   { id: "windows", label: "Windows" },
-  { id: "mac", label: "macOS" },
+  { id: "macos", label: "macOS" },
   { id: "linux", label: "Linux" },
 ];
 
@@ -93,7 +94,7 @@ export function toggleMember(list: string[], id: string): string[] {
 /** Persist a preference edit before attempting network I/O. */
 export function queuePreferencePatch(
   patch: PendingPreferencesPatch,
-  storage: StorageLike = globalThis.localStorage,
+  storage: StorageLike = getClientStorage(),
 ): boolean {
   try {
     storage.setItem(PENDING_PREFERENCES_KEY, JSON.stringify(patch));
@@ -104,7 +105,7 @@ export function queuePreferencePatch(
 }
 
 export function hasPendingPreferencePatch(
-  storage: StorageLike = globalThis.localStorage,
+  storage: StorageLike = getClientStorage(),
 ): boolean {
   try {
     return storage.getItem(PENDING_PREFERENCES_KEY) !== null;
@@ -128,7 +129,7 @@ function loadPendingPreferencePatch(storage: StorageLike): PendingPreferencesPat
 
 export function applyPendingPreferencePatch(
   preferences: UserPreferences,
-  storage: StorageLike = globalThis.localStorage,
+  storage: StorageLike = getClientStorage(),
 ): UserPreferences {
   const patch = loadPendingPreferencePatch(storage);
   return patch ? { ...preferences, ...patch, version: preferences.version } : preferences;
@@ -137,7 +138,7 @@ export function applyPendingPreferencePatch(
 /** Merge the locally queued edit onto the latest server version, then clear it. */
 export async function flushPendingPreferencePatch(
   api: PreferencesApi,
-  storage: StorageLike = globalThis.localStorage,
+  storage: StorageLike = getClientStorage(),
 ): Promise<UserPreferences | null> {
   const patch = loadPendingPreferencePatch(storage);
   if (!patch) return null;

@@ -785,6 +785,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn natural_language_fallback_interprets_constraints_and_returns_candidates() {
+        let app = test_app();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/recommendations/natural-language")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"query":"3 people, one hour, casual, replayable, dedicated server","limit":6}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["ai_status"], "fallback");
+        assert_eq!(json["interpreted"]["party_size"], 3);
+        assert_eq!(json["interpreted"]["session_minutes_max"], 60);
+        assert_eq!(json["interpreted"]["self_hosting_willingness"], 1.0);
+        assert_eq!(json["interpreted"]["selected_section"], "classic_legacy");
+        let items = json["items"].as_array().unwrap();
+        assert!((3..=10).contains(&items.len()));
+        assert!(
+            items
+                .iter()
+                .all(|item| !item["reasons"].as_array().unwrap().is_empty())
+        );
+    }
+
+    #[tokio::test]
+    async fn calendar_can_switch_between_recent_and_upcoming() {
+        let app = test_app();
+        let recent = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/calendar?state=recent")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(recent.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(recent.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(
+            json["dated_items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|item| item["release_state"] == "released" && item["early_data"].is_boolean())
+        );
+
+        let upcoming = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/calendar?state=upcoming")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(upcoming.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
     async fn conditional_requests_and_invalid_inputs_are_handled() {
         let app = test_app();
         let first = app
@@ -892,6 +965,7 @@ mod tests {
             "/v1/session/refresh",
             "/v1/preferences",
             "/v1/feeds/{section}",
+            "/v1/recommendations/natural-language",
             "/v1/calendar",
             "/v1/search",
             "/v1/games/{app_id}",

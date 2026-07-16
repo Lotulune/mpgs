@@ -1,14 +1,18 @@
-// Calendar: upcoming releases grouped by month, plus undated items. GET /v1/calendar.
+// Release calendar: recent/upcoming periods, early-data context and app-type filters.
 
 import { useEffect, useMemo, useState } from "react";
 import { ApiError } from "../api/client";
-import type { CalendarItem, CalendarResponse } from "../api/types";
+import type { CalendarItem, CalendarPeriod, CalendarResponse } from "../api/types";
 import { apiClient } from "../app/runtime";
 import {
+  appTypeLabel,
+  confidenceLabel,
   dayLabel,
   defaultWindow,
+  earlyDataLabel,
   groupByMonth,
   precisionLabel,
+  recentWindow,
 } from "../app/calendar";
 import { formatAgo, isStale, releaseStateLabel } from "../app/format";
 
@@ -19,6 +23,21 @@ interface CalendarState {
   fromOfflineCache: boolean;
 }
 
+type CalendarTypeFilter = "all" | "game" | "demo" | "playtest";
+
+const TYPE_FILTER_LABELS: Record<CalendarTypeFilter, string> = {
+  all: "全部",
+  game: "正式游戏",
+  demo: "Demo",
+  playtest: "Playtest",
+};
+
+function matchesType(item: CalendarItem, typeFilter: CalendarTypeFilter): boolean {
+  if (typeFilter === "all") return true;
+  if (typeFilter === "game") return !["demo", "playtest"].includes(item.app_type);
+  return item.app_type === typeFilter;
+}
+
 function CalendarRow({
   item,
   onOpenGame,
@@ -26,22 +45,39 @@ function CalendarRow({
   item: CalendarItem;
   onOpenGame: (appId: number) => void;
 }) {
+  const earlyLabel = earlyDataLabel(item.early_data, item.review_total);
   return (
     <button type="button" className="cal-row" onClick={() => onOpenGame(item.app_id)}>
       <span className="cal-day">{dayLabel(item.release_date)}</span>
       <span className="cal-name">{item.canonical_name}</span>
       <span className="cal-tags">
+        <span className="chip accent">{appTypeLabel(item.app_type)}</span>
         <span className="chip">{releaseStateLabel(item.release_state)}</span>
         {item.is_early_access && <span className="chip warn">抢先体验</span>}
+        {earlyLabel && <span className="chip warn">{earlyLabel}</span>}
         {precisionLabel(item.release_date_precision) && (
           <span className="chip">{precisionLabel(item.release_date_precision)}</span>
         )}
+        <span
+          className={
+            item.current_data_confidence !== null && item.current_data_confidence < 0.5
+              ? "chip warn"
+              : "chip"
+          }
+        >
+          {confidenceLabel(item.current_data_confidence)}
+        </span>
+        <span className="cal-source">
+          来源更新于 {formatAgo(item.source_modified_at_ms ?? item.updated_at_ms)}
+        </span>
       </span>
     </button>
   );
 }
 
 export function CalendarScreen({ onOpenGame }: { onOpenGame: (appId: number) => void }) {
+  const [period, setPeriod] = useState<CalendarPeriod>("upcoming");
+  const [typeFilter, setTypeFilter] = useState<CalendarTypeFilter>("all");
   const [state, setState] = useState<CalendarState>({
     data: null,
     loading: true,
@@ -51,10 +87,11 @@ export function CalendarScreen({ onOpenGame }: { onOpenGame: (appId: number) => 
 
   useEffect(() => {
     let cancelled = false;
-    const { from, to } = defaultWindow(Date.now(), 6);
+    const { from, to } =
+      period === "upcoming" ? defaultWindow(Date.now(), 6) : recentWindow(Date.now(), 6);
     setState((prev) => ({ ...prev, loading: true, error: null }));
     apiClient
-      .calendar(from, to)
+      .calendar(from, to, period)
       .then((result) => {
         if (cancelled) return;
         setState({
@@ -79,15 +116,52 @@ export function CalendarScreen({ onOpenGame }: { onOpenGame: (appId: number) => 
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [period]);
 
-  const months = useMemo(() => groupByMonth(state.data?.dated_items ?? []), [state.data]);
-  const undated = state.data?.undated_items ?? [];
+  const dated = useMemo(
+    () =>
+      (state.data?.dated_items ?? []).filter((item) => matchesType(item, typeFilter)),
+    [state.data, typeFilter],
+  );
+  const months = useMemo(() => groupByMonth(dated), [dated]);
+  const undated = (state.data?.undated_items ?? []).filter((item) =>
+    matchesType(item, typeFilter),
+  );
 
   return (
     <section aria-label="发售日历">
       <div className="statusline">
-        <span>未来半年的发售与 Demo</span>
+        <div className="seg" aria-label="日历时间范围">
+          <button
+            type="button"
+            className="btn small"
+            aria-pressed={period === "upcoming"}
+            onClick={() => setPeriod("upcoming")}
+          >
+            即将发售
+          </button>
+          <button
+            type="button"
+            className="btn small"
+            aria-pressed={period === "recent"}
+            onClick={() => setPeriod("recent")}
+          >
+            近期发售
+          </button>
+        </div>
+        <div className="seg" aria-label="条目类型筛选">
+          {(Object.keys(TYPE_FILTER_LABELS) as CalendarTypeFilter[]).map((type) => (
+            <button
+              key={type}
+              type="button"
+              className="btn small"
+              aria-pressed={typeFilter === type}
+              onClick={() => setTypeFilter(type)}
+            >
+              {TYPE_FILTER_LABELS[type]}
+            </button>
+          ))}
+        </div>
         {state.data && (
           <span className={isStale(state.data.data_updated_at_ms) ? "chip warn" : "chip"}>
             数据更新于 {formatAgo(state.data.data_updated_at_ms)}
@@ -116,7 +190,7 @@ export function CalendarScreen({ onOpenGame }: { onOpenGame: (appId: number) => 
       {!state.loading && !state.error && months.length === 0 && undated.length === 0 && (
         <div className="state-box">
           <span className="big">∅</span>
-          <span>当前窗口没有已知的发售条目。</span>
+          <span>当前时间与类型筛选下没有已知的发售条目。</span>
         </div>
       )}
 

@@ -2,7 +2,7 @@
 //
 // Responsibilities:
 // - anonymous session bootstrap + refresh-on-401 (single-flight)
-// - ETag revalidation with a localStorage snapshot cache (offline browsing)
+// - ETag revalidation with a durable client snapshot cache (offline browsing)
 // - stable error envelope parsing -> ApiError
 // - x-device-id header for rate limiting fairness
 //
@@ -10,6 +10,7 @@
 
 import type {
   CalendarResponse,
+  CalendarPeriod,
   ErrorEnvelope,
   EvidenceResponse,
   FeedbackRecord,
@@ -18,12 +19,14 @@ import type {
   FeedSection,
   GameDetail,
   MetaResponse,
+  NaturalLanguageRecommendationResponse,
   PlayIntentResult,
   SearchResponse,
   SessionTokens,
   StorageLike,
   UserPreferences,
 } from "./types";
+import { getClientStorage } from "./storage";
 
 const SESSION_KEY = "mpgs.session.v1";
 const DEVICE_KEY = "mpgs.device.v1";
@@ -104,7 +107,7 @@ export class ApiClient {
   constructor(options: ApiClientOptions = {}) {
     this.baseUrl = (options.baseUrl ?? "").replace(/\/$/, "");
     this.fetchFn = options.fetchFn ?? fetch.bind(globalThis);
-    this.storage = options.storage ?? globalThis.localStorage;
+    this.storage = options.storage ?? getClientStorage();
     this.now = options.now ?? Date.now;
     this.session = this.loadSession();
   }
@@ -405,10 +408,14 @@ export class ApiClient {
     return { data, fetchedAtMs: this.now(), fromOfflineCache: false };
   }
 
-  calendar(fromDay: string, toDay: string): Promise<CachedResult<CalendarResponse>> {
-    const params = new URLSearchParams({ from: fromDay, to: toDay });
+  calendar(
+    fromDay: string,
+    toDay: string,
+    period: CalendarPeriod = "upcoming",
+  ): Promise<CachedResult<CalendarResponse>> {
+    const params = new URLSearchParams({ from: fromDay, to: toDay, state: period });
     return this.cachedGet<CalendarResponse>(
-      `calendar:${fromDay}:${toDay}`,
+      `calendar:${period}:${fromDay}:${toDay}`,
       `/v1/calendar?${params}`,
       false,
     );
@@ -417,6 +424,17 @@ export class ApiClient {
   async search(q: string, limit = 20): Promise<SearchResponse> {
     const params = new URLSearchParams({ q, limit: String(limit) });
     return this.rawJson<SearchResponse>("GET", `/v1/search?${params}`, { auth: false });
+  }
+
+  async naturalLanguageRecommendations(
+    query: string,
+    limit = 6,
+  ): Promise<NaturalLanguageRecommendationResponse> {
+    return this.rawJson<NaturalLanguageRecommendationResponse>(
+      "POST",
+      "/v1/recommendations/natural-language",
+      { auth: true, body: { query, limit } },
+    );
   }
 
   game(appId: number): Promise<CachedResult<GameDetail>> {

@@ -38,15 +38,31 @@ pnpm --filter mpgs-web dev     # http://localhost:5173，/v1 代理到 127.0.0.1
 pnpm --filter mpgs-web typecheck
 pnpm --filter mpgs-web test
 pnpm --filter mpgs-web build
+# 仓库根：M4 API 级验收（含临时 demo 服务端）
+#   .\scripts\m4_acceptance.ps1
+# 或：pnpm m4:accept
+# 对已有服务会写入会话/偏好/反馈，必须显式授权：
+#   .\scripts\m4_acceptance.ps1 -BaseUrl http://127.0.0.1:8080 -AllowExistingServerWrites
 ```
 
 ## Tauri 桌面（可选）
 
 ```powershell
-# 需要先安装 Tauri CLI：pnpm add -D @tauri-apps/cli -w
+# 仓库根已声明 @tauri-apps/cli；首次：pnpm install
 pnpm --filter mpgs-web build
-cargo tauri dev --config apps/desktop/src-tauri/tauri.conf.json
+pnpm exec tauri dev --config apps/desktop/src-tauri/tauri.conf.json
+# 安装包（Windows x64，未签名）：
+pnpm exec tauri build --config apps/desktop/src-tauri/tauri.conf.json --ci --no-sign -b nsis
+pnpm exec tauri build --config apps/desktop/src-tauri/tauri.conf.json --ci --no-sign -b msi
+# 产物：
+#   apps/desktop/src-tauri/target/release/mpgs-desktop.exe
+#   apps/desktop/src-tauri/target/release/bundle/nsis/MPGS_0.1.0_x64-setup.exe
+#   apps/desktop/src-tauri/target/release/bundle/msi/MPGS_0.1.0_x64_en-US.msi
 ```
+
+`tauri.conf.json` 的 bundle 目标为跨平台 `all`；CI 在原生 runner 上分别用 `--bundles deb`、
+`--bundles nsis`、`--bundles app` 做 Linux、Windows、macOS 冒烟。构建成功不等于安装后 GUI
+验收，最终 M4 证据要求见 `docs/M4_ACCEPTANCE.md`。
 
 打包构建默认把 API 基址设为 `http://127.0.0.1:8080`，服务端 CORS 白名单已包含
 `http://tauri.localhost` / `tauri://localhost`（Windows/其他平台的 webview 源）。

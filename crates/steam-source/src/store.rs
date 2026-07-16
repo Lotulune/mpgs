@@ -9,25 +9,67 @@ use serde_json::Value;
 use crate::error::SourceError;
 use crate::proposal::{
     AppRelationProposal, AppTypeProposal, RelationTypeProposal, ReleaseStateProposal,
-    SourceStability, StoreDetailsProposal,
+    SourceStability, StoreDetailsProposal, StorePriceProposal,
 };
 use crate::raw::RawResponse;
 
-pub const ADAPTER_VERSION: &str = "store-appdetails-0.1.0";
+pub const ADAPTER_VERSION: &str = "store-appdetails-0.2.0";
 pub const SOURCE_NAME: &str = "steam_store_appdetails";
+/// Default storefront region for price snapshots (ISO country, lower-case query).
+pub const DEFAULT_STORE_COUNTRY: &str = "cn";
+pub const DEFAULT_STORE_LANGUAGE: &str = "schinese";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoreDetailsRequest {
     pub app_id: u32,
+    /// Two-letter Steam store country code controlling price_overview currency.
+    pub country_code: String,
+    /// Steam locale used for localized store text.
+    pub language: String,
 }
 
 impl StoreDetailsRequest {
     pub fn new(app_id: u32) -> Self {
-        Self { app_id }
+        Self {
+            app_id,
+            country_code: DEFAULT_STORE_COUNTRY.into(),
+            language: DEFAULT_STORE_LANGUAGE.into(),
+        }
+    }
+
+    pub fn with_locale(
+        app_id: u32,
+        country_code: impl Into<String>,
+        language: impl Into<String>,
+    ) -> Result<Self, SourceError> {
+        let country_code = country_code.into().trim().to_ascii_lowercase();
+        let language = language.into().trim().to_ascii_lowercase();
+        if country_code.len() != 2 || !country_code.bytes().all(|b| b.is_ascii_alphabetic()) {
+            return Err(SourceError::Config {
+                message: "store country must be a two-letter ISO code".into(),
+            });
+        }
+        if language.is_empty()
+            || !language
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+        {
+            return Err(SourceError::Config {
+                message: "store language must be a non-empty Steam locale".into(),
+            });
+        }
+        Ok(Self {
+            app_id,
+            country_code,
+            language,
+        })
     }
 
     pub fn path_and_query(&self) -> String {
-        format!("/api/appdetails?appids={}&l=english", self.app_id)
+        format!(
+            "/api/appdetails?appids={}&l={}&cc={}",
+            self.app_id, self.language, self.country_code
+        )
     }
 }
 
@@ -69,6 +111,23 @@ struct AppDetailsData {
     demos: Option<Vec<DemoDto>>,
     #[serde(default)]
     fullgame: Option<FullGameDto>,
+    #[serde(default)]
+    price_overview: Option<PriceOverviewDto>,
+    #[serde(default)]
+    packages: Option<Vec<i64>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PriceOverviewDto {
+    #[serde(default)]
+    currency: Option<String>,
+    #[serde(default)]
+    initial: Option<i64>,
+    #[serde(default)]
+    #[serde(rename = "final")]
+    final_price: Option<i64>,
+    #[serde(default)]
+    discount_percent: Option<i32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -85,7 +144,7 @@ impl PlatformsDto {
     fn normalized(self) -> Vec<String> {
         [
             ("windows", self.windows),
-            ("macos", self.mac),
+            ("mac", self.mac),
             ("linux", self.linux),
         ]
         .into_iter()
@@ -223,6 +282,17 @@ pub fn parse_store_details(
         .supported_languages
         .as_deref()
         .map(normalize_supported_languages);
+    let package_id = data
+        .packages
+        .as_ref()
+        .and_then(|packages| packages.first())
+        .map(|id| id.to_string());
+    let price = normalize_price(
+        data.is_free,
+        data.price_overview,
+        &request.country_code,
+        package_id,
+    );
 
     let details = StoreDetailsProposal {
         app_id,
@@ -236,6 +306,7 @@ pub fn parse_store_details(
         is_free: data.is_free,
         platforms,
         supported_languages,
+        price,
         coming_soon,
         categories,
         genres,
@@ -278,6 +349,62 @@ pub fn parse_store_details(
     }
 
     Ok(StoreDetailsParseResult { details, relations })
+}
+
+fn normalize_price(
+    is_free: Option<bool>,
+    overview: Option<PriceOverviewDto>,
+    country_code: &str,
+    package_id: Option<String>,
+) -> Option<StorePriceProposal> {
+    let country = country_code.trim().to_ascii_uppercase();
+    if country.is_empty() {
+        return None;
+    }
+    if is_free == Some(true) {
+        let currency = currency_for_country(&country)?;
+        return Some(StorePriceProposal {
+            country_code: country,
+            currency: currency.into(),
+            initial_price_minor: Some(0),
+            final_price_minor: Some(0),
+            discount_percent: Some(0),
+            is_purchasable: Some(true),
+            package_id,
+        });
+    }
+    if let Some(overview) = overview {
+        let currency = overview
+            .currency
+            .map(|value| value.trim().to_ascii_uppercase())
+            .filter(|value| !value.is_empty())?;
+        return Some(StorePriceProposal {
+            country_code: country,
+            currency,
+            initial_price_minor: overview.initial,
+            final_price_minor: overview.final_price,
+            discount_percent: overview.discount_percent,
+            is_purchasable: Some(true),
+            package_id,
+        });
+    }
+    // No currency was returned. Persisting a guessed USD marker here would make
+    // regional budget filters silently consume invalid data.
+    None
+}
+
+fn currency_for_country(country: &str) -> Option<&'static str> {
+    match country {
+        "CN" => Some("CNY"),
+        "US" => Some("USD"),
+        "GB" => Some("GBP"),
+        "JP" => Some("JPY"),
+        "KR" => Some("KRW"),
+        "CA" => Some("CAD"),
+        "AU" => Some("AUD"),
+        "DE" | "ES" | "FR" | "IT" | "NL" | "PT" => Some("EUR"),
+        _ => None,
+    }
 }
 
 fn normalize_supported_languages(raw: &str) -> Vec<String> {
@@ -478,7 +605,7 @@ mod tests {
 
     #[test]
     fn parses_released_game_with_demo_relation() {
-        let request = StoreDetailsRequest::new(892970);
+        let request = StoreDetailsRequest::with_locale(892970, "US", "english").unwrap();
         let result = parse_store_details(&request, &fixture("game")).unwrap();
         assert_eq!(result.details.app_id, 892970);
         assert_eq!(result.details.release_state, ReleaseStateProposal::Released);
@@ -489,9 +616,55 @@ mod tests {
         );
         assert_eq!(result.details.stability, SourceStability::ApprovedVolatile);
         assert!(!result.details.multiplayer_category_hints.is_empty());
+        let price = result.details.price.expect("price_overview");
+        assert_eq!(price.country_code, "US");
+        assert_eq!(price.currency, "USD");
+        assert_eq!(price.initial_price_minor, Some(1999));
+        assert_eq!(price.final_price_minor, Some(999));
+        assert_eq!(price.discount_percent, Some(50));
+        assert_eq!(price.package_id.as_deref(), Some("123456"));
         assert!(result.relations.iter().any(|r| {
             matches!(r.relation_type, RelationTypeProposal::DemoOf) && r.target_app_id == 892970
         }));
+    }
+
+    #[test]
+    fn free_game_synthesizes_zero_price_snapshot() {
+        let request = StoreDetailsRequest::new(570);
+        let raw = RawResponse::validate(
+            200,
+            br#"{"570":{"success":true,"data":{"type":"game","name":"Dota 2","steam_appid":570,"is_free":true}}}"#
+                .to_vec(),
+            Some("application/json".into()),
+            1024,
+        )
+        .unwrap();
+        let result = parse_store_details(&request, &raw).unwrap();
+        let price = result.details.price.expect("free price");
+        assert_eq!(price.final_price_minor, Some(0));
+        assert_eq!(price.currency, "CNY");
+        assert_eq!(price.is_purchasable, Some(true));
+    }
+
+    #[test]
+    fn missing_price_overview_does_not_invent_a_currency() {
+        let request = StoreDetailsRequest::new(42);
+        let raw = RawResponse::validate(
+            200,
+            br#"{"42":{"success":true,"data":{"type":"game","name":"Soon","steam_appid":42,"is_free":false}}}"#
+                .to_vec(),
+            Some("application/json".into()),
+            1024,
+        )
+        .unwrap();
+        let result = parse_store_details(&request, &raw).unwrap();
+        assert_eq!(result.details.price, None);
+    }
+
+    #[test]
+    fn request_includes_country_for_price_region() {
+        let request = StoreDetailsRequest::new(1);
+        assert!(request.path_and_query().contains("cc=cn"));
     }
 
     #[test]
@@ -544,11 +717,22 @@ mod tests {
     }
 
     #[test]
-    fn request_forces_stable_english_date_text() {
+    fn request_uses_china_region_matching_default_cny_preferences() {
         assert_eq!(
             StoreDetailsRequest::new(42).path_and_query(),
-            "/api/appdetails?appids=42&l=english"
+            "/api/appdetails?appids=42&l=schinese&cc=cn"
         );
+    }
+
+    #[test]
+    fn request_locale_is_configurable_and_validated() {
+        let request = StoreDetailsRequest::with_locale(42, "US", "english").unwrap();
+        assert_eq!(
+            request.path_and_query(),
+            "/api/appdetails?appids=42&l=english&cc=us"
+        );
+        assert!(StoreDetailsRequest::with_locale(42, "USA", "english").is_err());
+        assert!(StoreDetailsRequest::with_locale(42, "US", "../bad").is_err());
     }
 
     #[test]
@@ -582,5 +766,18 @@ mod tests {
             result.details.supported_languages,
             Some(vec!["schinese".into(), "english".into(), "japanese".into()])
         );
+    }
+
+    #[test]
+    fn normalizes_macos_to_the_client_platform_identifier() {
+        let raw = RawResponse::validate(
+            200,
+            br#"{"42":{"success":true,"data":{"steam_appid":42,"type":"game","platforms":{"windows":false,"mac":true,"linux":false}}}}"#.to_vec(),
+            Some("application/json".into()),
+            4096,
+        )
+        .unwrap();
+        let result = parse_store_details(&StoreDetailsRequest::new(42), &raw).unwrap();
+        assert_eq!(result.details.platforms, Some(vec!["mac".into()]));
     }
 }

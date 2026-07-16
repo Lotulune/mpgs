@@ -7,6 +7,13 @@
       "steam_appid": 892970,
       "is_free": false,
       "short_description": "A brutal exploration and survival game for 1-10 players.",
+      "packages": [123456],
+      "price_overview": {
+        "currency": "USD",
+        "initial": 1999,
+        "final": 999,
+        "discount_percent": 50
+      },
       "developers": ["Iron Gate AB"],
       "publishers": ["Coffee Stain Publishing"],
       "categories": [

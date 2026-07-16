@@ -43,7 +43,7 @@ pub fn hard_filter(
         return false;
     }
 
-    if known_list_mismatch(&prefs.platforms, &availability.platforms)
+    if platform_list_mismatch(&prefs.platforms, &availability.platforms)
         || known_list_mismatch(&prefs.languages, &availability.languages)
     {
         return false;
@@ -80,6 +80,22 @@ fn known_list_mismatch(required: &[String], available: &[String]) -> bool {
                 .iter()
                 .any(|available| required.eq_ignore_ascii_case(available))
         })
+}
+
+fn platform_list_mismatch(required: &[String], available: &[String]) -> bool {
+    !required.is_empty()
+        && !available.is_empty()
+        && !required.iter().any(|required| {
+            available
+                .iter()
+                .any(|available| platform_value_matches(required, available))
+        })
+}
+
+fn platform_value_matches(required: &str, available: &str) -> bool {
+    required.eq_ignore_ascii_case(available)
+        || (matches!(required.to_ascii_lowercase().as_str(), "mac" | "macos")
+            && matches!(available.to_ascii_lowercase().as_str(), "mac" | "macos"))
 }
 
 /// Mutate ranking signals with preference-derived personal_fit and group_size adjustments.
@@ -138,7 +154,7 @@ pub fn apply_personalization(
                 availability
                     .platforms
                     .iter()
-                    .any(|available| required.eq_ignore_ascii_case(available))
+                    .any(|available| platform_value_matches(required, available))
             })
             .count();
         signals.multiplayer.cross_platform_fit =
@@ -149,15 +165,16 @@ pub fn apply_personalization(
 fn availability_fit(prefs: &UserPreferences, availability: &CandidateAvailability) -> f64 {
     let mut total = 0.0;
     let mut known = 0_u8;
-    for (required, available) in [
-        (&prefs.platforms, &availability.platforms),
-        (&prefs.languages, &availability.languages),
-    ] {
-        if !required.is_empty() && !available.is_empty() {
-            known += 1;
-            if !known_list_mismatch(required, available) {
-                total += 1.0;
-            }
+    if !prefs.platforms.is_empty() && !availability.platforms.is_empty() {
+        known += 1;
+        if !platform_list_mismatch(&prefs.platforms, &availability.platforms) {
+            total += 1.0;
+        }
+    }
+    if !prefs.languages.is_empty() && !availability.languages.is_empty() {
+        known += 1;
+        if !known_list_mismatch(&prefs.languages, &availability.languages) {
+            total += 1.0;
         }
     }
     if let (Some(candidate_min), Some(candidate_max)) = (

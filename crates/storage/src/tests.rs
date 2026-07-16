@@ -724,7 +724,11 @@ fn fixture_pipeline_into_storage() {
         1024 * 1024,
     )
     .unwrap();
-    let details = parse_store_details(&StoreDetailsRequest::new(892970), &store).unwrap();
+    let details = parse_store_details(
+        &StoreDetailsRequest::with_locale(892970, "US", "english").unwrap(),
+        &store,
+    )
+    .unwrap();
     repo.ingest_store_details(&details.details, &details.relations)
         .unwrap();
 
@@ -733,6 +737,18 @@ fn fixture_pipeline_into_storage() {
     assert_eq!(app.release_state, "released");
     assert_eq!(app.release_date.as_deref(), Some("2021-02-02"));
     assert_eq!(app.release_date_raw.as_deref(), Some("2 Feb, 2021"));
+    let price_count: i64 = repo
+        .database()
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM price_snapshots WHERE app_id = 892970 AND currency = 'USD'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+        })
+        .unwrap();
+    assert_eq!(price_count, 1);
 
     clock.advance_ms(1);
     let without_release_date = RawResponse::validate(
@@ -871,7 +887,7 @@ fn store_search_candidates_are_auditable_without_fabricated_profiles() {
     let enriched = repo.m3_catalog_coverage().unwrap();
     assert_eq!(enriched.normalized_multiplayer_candidates, 2);
     assert_eq!(enriched.recommendation_ready_profiles, 1);
-    assert_eq!(enriched.trusted_familiar_profiles, 1);
+    assert_eq!(enriched.trusted_familiar_profiles, 0);
 
     let linked_documents = repo
         .database()
@@ -885,6 +901,135 @@ fn store_search_candidates_are_auditable_without_fabricated_profiles() {
         })
         .unwrap();
     assert_eq!(linked_documents, 2);
+
+    let targets = repo.list_enrichment_targets(10).unwrap();
+    assert_eq!(targets.len(), 2);
+    assert!(targets.iter().all(|t| t.needs_store_details));
+    assert!(targets.iter().all(|t| t.needs_reviews));
+    assert!(targets.iter().all(|t| t.needs_ccu));
+    assert!(targets.iter().all(|t| t.needs_price));
+
+    let rotated = repo
+        .list_enrichment_targets_after(2, Some(548430), "CN")
+        .unwrap();
+    assert_eq!(rotated[0].app_id, 632360);
+    assert_eq!(rotated[1].app_id, 548430);
+}
+
+#[test]
+fn golden_profile_import_raises_recommendation_ready_coverage() {
+    use mpgs_steam_source::GoldenSet;
+
+    let (repo, _) = repo_with_clock(6_000);
+    let page = StoreSearchPage {
+        candidates: vec![StoreSearchCandidate {
+            app_id: 892970,
+            name: "Valheim".into(),
+        }],
+        start: 0,
+        result_count: 1,
+        total_count: 1,
+        content_hash: "fixture-hash".into(),
+    };
+    assert_eq!(repo.ingest_store_search_page(&page).unwrap(), 1);
+    assert_eq!(
+        repo.m3_catalog_coverage()
+            .unwrap()
+            .recommendation_ready_profiles,
+        0
+    );
+
+    let set = GoldenSet::load_embedded().unwrap();
+    let valheim = set
+        .games
+        .iter()
+        .find(|game| game.app_id == 892970)
+        .expect("fixture golden set includes Valheim");
+    assert!(repo.import_golden_multiplayer_profile(valheim).unwrap());
+    assert!(!repo.import_golden_multiplayer_profile(valheim).unwrap());
+    let coverage = repo.m3_catalog_coverage().unwrap();
+    assert_eq!(coverage.recommendation_ready_profiles, 1);
+    assert!(coverage.trusted_familiar_profiles >= 1);
+    let profile = repo.get_profile(892970).unwrap().unwrap();
+    assert!(profile.dominant_mode.is_some() || profile.online_coop.is_some());
+    let provenance = repo
+        .database()
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM source_documents
+                 WHERE source = 'human_golden' AND entity_type = 'golden_game'
+                   AND entity_key LIKE 'golden-0.1.0:%'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(Into::into)
+        })
+        .unwrap();
+    assert_eq!(provenance, 1);
+}
+
+#[test]
+fn enrichment_targets_refresh_dynamic_dimensions_by_age() {
+    use crate::repo::{CCU_REFRESH_INTERVAL_MS, PRICE_REFRESH_INTERVAL_MS};
+
+    let day_ms = 24 * 60 * 60 * 1_000;
+    let (repo, clock) = repo_with_clock(10 * day_ms);
+    let page = StoreSearchPage {
+        candidates: vec![StoreSearchCandidate {
+            app_id: 892970,
+            name: "Valheim".into(),
+        }],
+        start: 0,
+        result_count: 1,
+        total_count: 1,
+        content_hash: "fixture-hash".into(),
+    };
+    repo.ingest_store_search_page(&page).unwrap();
+
+    let store = RawResponse::validate(
+        200,
+        br#"{"892970":{"success":true,"data":{"steam_appid":892970,"type":"game","name":"Valheim","is_free":true,"platforms":{"windows":true},"supported_languages":"English, Simplified Chinese"}}}"#.to_vec(),
+        Some("application/json".into()),
+        4096,
+    )
+    .unwrap();
+    let details = parse_store_details(&StoreDetailsRequest::new(892970), &store).unwrap();
+    repo.ingest_store_details(&details.details, &details.relations)
+        .unwrap();
+
+    let reviews = RawResponse::validate(
+        200,
+        include_bytes!("../../steam-source/fixtures/reviews_summary.json").to_vec(),
+        None,
+        1024 * 1024,
+    )
+    .unwrap();
+    repo.ingest_review(
+        &parse_review_summary(&ReviewSummaryRequest::summary_only(892970), &reviews).unwrap(),
+    )
+    .unwrap();
+    let ccu = RawResponse::validate(
+        200,
+        include_bytes!("../../steam-source/fixtures/ccu_ok.json").to_vec(),
+        None,
+        1024 * 1024,
+    )
+    .unwrap();
+    repo.ingest_ccu(&parse_ccu(&CcuRequest::new(892970), &ccu).unwrap())
+        .unwrap();
+
+    assert!(repo.list_enrichment_targets(10).unwrap().is_empty());
+    clock.advance_ms(CCU_REFRESH_INTERVAL_MS + 1);
+    let ccu_due = repo.list_enrichment_targets(10).unwrap();
+    assert_eq!(ccu_due.len(), 1);
+    assert!(ccu_due[0].needs_ccu);
+    assert!(!ccu_due[0].needs_reviews);
+    assert!(!ccu_due[0].needs_price);
+
+    clock.advance_ms(PRICE_REFRESH_INTERVAL_MS - CCU_REFRESH_INTERVAL_MS);
+    let daily_due = repo.list_enrichment_targets(10).unwrap();
+    assert!(daily_due[0].needs_reviews);
+    assert!(daily_due[0].needs_price);
 }
 
 #[test]

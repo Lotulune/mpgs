@@ -9,14 +9,18 @@ use crate::ingest;
 use crate::jobs;
 use crate::models::{
     AppRecord, CreateOverrideRequest, CurationOverride, EffectiveFeatureValue, EnqueueJob,
-    JobRecord, M3CatalogCoverage, MultiplayerProfile,
+    EnrichmentTarget, JobRecord, M3CatalogCoverage, MultiplayerProfile,
 };
 use crate::quality::{self, QualityFinding};
 use mpgs_steam_source::{
-    AppCatalogProposal, AppRelationProposal, CcuProposal, ReviewSummaryProposal,
+    AppCatalogProposal, AppRelationProposal, CcuProposal, GoldenGame, ReviewSummaryProposal,
     StoreDetailsProposal, StoreSearchPage,
 };
 use std::path::Path;
+
+pub const REVIEW_REFRESH_INTERVAL_MS: i64 = 24 * 60 * 60 * 1_000;
+pub const CCU_REFRESH_INTERVAL_MS: i64 = 6 * 60 * 60 * 1_000;
+pub const PRICE_REFRESH_INTERVAL_MS: i64 = 24 * 60 * 60 * 1_000;
 
 #[derive(Clone)]
 pub struct Repository {
@@ -158,6 +162,127 @@ impl Repository {
         self.db.with_conn(catalog::count_apps)
     }
 
+    /// Multiplayer candidates due for enrichment in the default China storefront.
+    pub fn list_enrichment_targets(&self, limit: u32) -> StorageResult<Vec<EnrichmentTarget>> {
+        self.list_enrichment_targets_after(limit, None, "CN")
+    }
+
+    /// Select due targets after a rotating app-id cursor, wrapping at the end.
+    /// Dynamic snapshots become due again after their refresh interval.
+    pub fn list_enrichment_targets_after(
+        &self,
+        limit: u32,
+        after_app_id: Option<u32>,
+        country_code: &str,
+    ) -> StorageResult<Vec<EnrichmentTarget>> {
+        let limit = i64::from(limit.max(1));
+        let now = self.db.now_ms();
+        let review_cutoff = now.saturating_sub(REVIEW_REFRESH_INTERVAL_MS);
+        let ccu_cutoff = now.saturating_sub(CCU_REFRESH_INTERVAL_MS);
+        let price_cutoff = now.saturating_sub(PRICE_REFRESH_INTERVAL_MS);
+        let after_app_id = i64::from(after_app_id.unwrap_or(0));
+        let country_code = country_code.trim().to_ascii_uppercase();
+        self.db.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                "WITH candidates AS (
+                     SELECT a.app_id
+                     FROM apps a
+                     WHERE a.app_type IN ('game', 'demo', 'playtest')
+                       AND (
+                           EXISTS (
+                               SELECT 1 FROM feature_evidence e
+                               WHERE e.app_id = a.app_id
+                                 AND e.feature_name = 'category_hint'
+                                 AND e.is_active = 1
+                                 AND e.confidence >= 0.3
+                           )
+                           OR EXISTS (
+                               SELECT 1 FROM multiplayer_profiles profile
+                               WHERE profile.app_id = a.app_id
+                                 AND (
+                                     profile.dominant_mode IS NOT NULL
+                                     OR profile.private_session IS NOT NULL
+                                     OR profile.online_coop IS NOT NULL
+                                     OR profile.self_hosted_server IS NOT NULL
+                                     OR profile.drop_in_out IS NOT NULL
+                                     OR profile.crossplay IS NOT NULL
+                                     OR profile.recommended_max_players IS NOT NULL
+                                 )
+                           )
+                       )
+                 ), due AS (
+                     SELECT
+                         candidates.app_id,
+                         CASE WHEN COALESCE(v.platforms_json, '[]') = '[]'
+                                    OR COALESCE(v.languages_json, '[]') = '[]'
+                              THEN 1 ELSE 0 END AS needs_store_details,
+                         CASE WHEN NOT EXISTS (
+                             SELECT 1 FROM review_snapshots review
+                             WHERE review.app_id = candidates.app_id
+                               AND review.captured_at_ms >= ?2
+                         ) THEN 1 ELSE 0 END AS needs_reviews,
+                         CASE WHEN NOT EXISTS (
+                             SELECT 1 FROM player_snapshots player
+                             WHERE player.app_id = candidates.app_id
+                               AND player.captured_at_ms >= ?3
+                         ) THEN 1 ELSE 0 END AS needs_ccu,
+                         CASE WHEN NOT EXISTS (
+                             SELECT 1 FROM price_snapshots price
+                             WHERE price.app_id = candidates.app_id
+                               AND price.country_code = ?5
+                               AND price.final_price_minor IS NOT NULL
+                               AND price.captured_at_ms >= ?4
+                         ) THEN 1 ELSE 0 END AS needs_price
+                     FROM candidates
+                     LEFT JOIN app_availability v ON v.app_id = candidates.app_id
+                 )
+                 SELECT
+                     app_id, needs_store_details, needs_reviews, needs_ccu, needs_price
+                 FROM due
+                 WHERE needs_store_details = 1 OR needs_reviews = 1
+                    OR needs_ccu = 1 OR needs_price = 1
+                 ORDER BY
+                     CASE WHEN app_id > ?6 THEN 0 ELSE 1 END,
+                     app_id ASC
+                 LIMIT ?1",
+            )?;
+            let rows = stmt.query_map(
+                rusqlite::params![
+                    limit,
+                    review_cutoff,
+                    ccu_cutoff,
+                    price_cutoff,
+                    country_code,
+                    after_app_id
+                ],
+                |row| {
+                    Ok(EnrichmentTarget {
+                        app_id: row.get::<_, i64>(0)? as u32,
+                        needs_store_details: row.get::<_, i64>(1)? != 0,
+                        needs_reviews: row.get::<_, i64>(2)? != 0,
+                        needs_ccu: row.get::<_, i64>(3)? != 0,
+                        needs_price: row.get::<_, i64>(4)? != 0,
+                    })
+                },
+            )?;
+            let mut targets = Vec::new();
+            for row in rows {
+                targets.push(row?);
+            }
+            Ok(targets)
+        })
+    }
+
+    pub fn import_golden_multiplayer_profile(&self, game: &GoldenGame) -> StorageResult<bool> {
+        let now = self.db.now_ms();
+        self.db.with_conn_mut(|conn| {
+            let tx = conn.transaction()?;
+            let applied = ingest::import_golden_multiplayer_profile(&tx, game, now)?;
+            tx.commit()?;
+            Ok(applied)
+        })
+    }
+
     pub fn m3_catalog_coverage(&self) -> StorageResult<M3CatalogCoverage> {
         self.db.with_conn(|conn| {
             conn.query_row(
@@ -206,7 +331,13 @@ impl Repository {
                          OR profile.crossplay IS NOT NULL
                          OR profile.recommended_max_players IS NOT NULL
                      THEN 1 ELSE 0 END), 0),
-                     COALESCE(SUM(CASE WHEN profile.profile_confidence >= 0.7 AND (
+                     COALESCE(SUM(CASE WHEN profile.profile_confidence >= 0.8 AND EXISTS (
+                         SELECT 1 FROM feature_evidence trusted
+                         WHERE trusted.app_id = candidates.app_id
+                           AND trusted.source_type = 'human_golden'
+                           AND trusted.confidence >= 0.8
+                           AND trusted.is_active = 1
+                     ) AND (
                          profile.dominant_mode IS NOT NULL
                          OR profile.private_session = 1
                          OR profile.online_coop = 1
@@ -220,6 +351,7 @@ impl Repository {
                      COALESCE(SUM(CASE WHEN EXISTS (
                          SELECT 1 FROM price_snapshots price
                          WHERE price.app_id = candidates.app_id
+                           AND price.final_price_minor IS NOT NULL
                      ) THEN 1 ELSE 0 END), 0),
                      COALESCE(SUM(CASE WHEN EXISTS (
                          SELECT 1 FROM review_snapshots review
@@ -228,6 +360,8 @@ impl Repository {
                      COALESCE(SUM(CASE WHEN EXISTS (
                          SELECT 1 FROM player_snapshots player
                          WHERE player.app_id = candidates.app_id
+                           AND player.player_count IS NOT NULL
+                           AND player.result_code = 1
                      ) THEN 1 ELSE 0 END), 0)
                  FROM candidates
                  LEFT JOIN multiplayer_profiles profile ON profile.app_id = candidates.app_id
@@ -512,9 +646,10 @@ impl Repository {
         &self,
         from: &str,
         to: &str,
+        state: &str,
     ) -> StorageResult<(Vec<AppRecord>, Vec<AppRecord>)> {
         self.db
-            .with_conn(|conn| crate::query::list_calendar(conn, from, to))
+            .with_conn(|conn| crate::query::list_calendar(conn, from, to, state))
     }
 
     pub fn data_updated_at_ms(&self) -> StorageResult<i64> {

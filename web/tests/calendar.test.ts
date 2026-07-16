@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
 import type { CalendarItem } from "../src/api/types";
 import {
+  appTypeLabel,
+  confidenceLabel,
   dayLabel,
   defaultWindow,
+  earlyDataLabel,
   groupByMonth,
   monthLabel,
   precisionLabel,
+  recentWindow,
   toDayString,
 } from "../src/app/calendar";
 
@@ -20,6 +24,8 @@ function item(appId: number, releaseDate: string | null): CalendarItem {
     release_date_precision: releaseDate ? "day" : "unknown",
     is_early_access: null,
     current_data_confidence: null,
+    review_total: null,
+    early_data: false,
     source_modified_at_ms: null,
     created_at_ms: 0,
     updated_at_ms: 0,
@@ -57,6 +63,17 @@ describe("calendar helpers", () => {
     expect(precisionLabel("weird")).toBe("weird");
   });
 
+  it("labels app types and data confidence honestly", () => {
+    expect(appTypeLabel("demo")).toBe("Demo");
+    expect(appTypeLabel("playtest")).toBe("Playtest");
+    expect(appTypeLabel("game")).toBe("正式游戏");
+    expect(confidenceLabel(null)).toBe("置信度未知");
+    expect(confidenceLabel(0.42)).toBe("低置信 42%");
+    expect(confidenceLabel(0.82)).toBe("高置信 82%");
+    expect(earlyDataLabel(true, 42)).toBe("早期数据 · 42 条评价");
+    expect(earlyDataLabel(false, 42)).toBeNull();
+  });
+
   it("builds a UTC day window clamped to one year", () => {
     const now = Date.UTC(2026, 6, 15); // 2026-07-15
     expect(toDayString(new Date(now))).toBe("2026-07-15");
@@ -65,5 +82,6 @@ describe("calendar helpers", () => {
     expect(w.to).toBe("2027-01-15");
     const clamped = defaultWindow(now, 48);
     expect(clamped.to).toBe("2027-07-15"); // clamped to +12 months
+    expect(recentWindow(now, 6)).toEqual({ from: "2026-01-15", to: "2026-07-15" });
   });
 });

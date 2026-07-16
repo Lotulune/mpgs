@@ -25,23 +25,32 @@ pub use app_list::{
     ADAPTER_VERSION as APP_LIST_ADAPTER_VERSION, AppListPage, AppListRequest, apply_page_to_cursor,
     collect_pages, parse_app_list_page,
 };
-pub use ccu::{ADAPTER_VERSION as CCU_ADAPTER_VERSION, CcuRequest, CcuSampleTier, parse_ccu};
+pub use ccu::{
+    ADAPTER_VERSION as CCU_ADAPTER_VERSION, CcuRequest, CcuSampleTier,
+    SOURCE_NAME as CCU_SOURCE_NAME, parse_ccu,
+};
 pub use cursor::AppListCursor;
 pub use error::SourceError;
-pub use golden::{GOLDEN_SET_VERSION, GoldenGame, GoldenSet};
+pub use golden::{
+    DominantModeLabel, GOLDEN_SET_VERSION, GoldenGame, GoldenMultiplayerLabels, GoldenSet,
+    ReleaseStateLabel,
+};
 pub use hash::{content_hash, parameter_hash};
 pub use proposal::{
     AppCatalogProposal, AppRelationProposal, AppTypeProposal, CcuProposal, RelationTypeProposal,
     ReleaseStateProposal, ReviewSummaryProposal, SourceStability, StoreDetailsProposal,
+    StorePriceProposal,
 };
 pub use rate_limit::{DailyBudget, TokenBucket};
 pub use raw::RawResponse;
 pub use reviews::{
-    ADAPTER_VERSION as REVIEWS_ADAPTER_VERSION, ReviewSummaryRequest, parse_review_summary,
+    ADAPTER_VERSION as REVIEWS_ADAPTER_VERSION, ReviewSummaryRequest,
+    SOURCE_NAME as REVIEWS_SOURCE_NAME, parse_review_summary,
 };
 pub use store::{
-    ADAPTER_VERSION as STORE_ADAPTER_VERSION, STORE_APPDETAILS_FEASIBILITY,
-    StoreDetailsParseResult, StoreDetailsRequest, parse_store_details,
+    ADAPTER_VERSION as STORE_ADAPTER_VERSION, DEFAULT_STORE_COUNTRY, DEFAULT_STORE_LANGUAGE,
+    SOURCE_NAME as STORE_SOURCE_NAME, STORE_APPDETAILS_FEASIBILITY, StoreDetailsParseResult,
+    StoreDetailsRequest, parse_store_details,
 };
 pub use store_search::{
     ADAPTER_VERSION as STORE_SEARCH_ADAPTER_VERSION, SOURCE_NAME as STORE_SEARCH_SOURCE_NAME,

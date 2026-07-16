@@ -163,4 +163,26 @@ describe("FeedbackQueue", () => {
     expect(undoAttempts).toBe(2);
     expect(queue.pendingCount()).toBe(0);
   });
+
+  it("notifies ranking consumers after server-acknowledged feedback and undo", async () => {
+    const storage = new MemoryStorage();
+    const { fetchFn } = makeFetchStub({
+      "POST /v1/session/anonymous": () => jsonResponse(sessionBody()),
+      "POST /v1/feedback": () => feedbackRecord(10, 1, "like"),
+      "POST /v1/feedback/10/undo": () =>
+        jsonResponse({ feedback_id: 10, app_id: 1, type: "like", created_at_ms: 1 }),
+    });
+    const queue = new FeedbackQueue(new ApiClient({ baseUrl: "http://x", fetchFn, storage }), storage);
+    let changes = 0;
+    queue.subscribeRankingChanged(() => {
+      changes += 1;
+    });
+
+    const entry = queue.submit(1, "like");
+    await queue.flush();
+    expect(changes).toBe(1);
+
+    await queue.undo(entry.localId);
+    expect(changes).toBe(2);
+  });
 });

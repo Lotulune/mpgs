@@ -115,3 +115,26 @@ pub struct M3CatalogCoverage {
     pub with_reviews: i64,
     pub with_ccu: i64,
 }
+
+/// Multiplayer catalog row still missing automated enrichment dimensions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnrichmentTarget {
+    pub app_id: u32,
+    pub needs_store_details: bool,
+    pub needs_reviews: bool,
+    pub needs_ccu: bool,
+    pub needs_price: bool,
+}
+
+impl EnrichmentTarget {
+    pub fn needs_any(self) -> bool {
+        self.needs_store_details || self.needs_reviews || self.needs_ccu || self.needs_price
+    }
+
+    pub fn missing_count(self) -> u8 {
+        u8::from(self.needs_store_details)
+            + u8::from(self.needs_reviews)
+            + u8::from(self.needs_ccu)
+            + u8::from(self.needs_price)
+    }
+}

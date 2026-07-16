@@ -139,11 +139,15 @@ flowchart LR
 - 首个垂直切片（主题优先）：`web/`（Vite + React + TS，pnpm workspace）+ `apps/desktop/src-tauri/`（Tauri 2 壳，独立 Cargo workspace，不入根 workspace）。
 - 界面：首次主题选择 + 偏好引导、四分区推荐流（原因/风险/分数/人数、游标加载更多）、游戏详情（联机画像/可用性/评价/证据/Steam 跳转）、反馈闭环（乐观 UI + 离线队列 + 撤销）。加载/空/错误/过期/离线态按主题定制。
 - 五主题：复古电子、极简白线、MC 方块、Steam 商店、樱枫和风；各带独立设计 token 皮肤与特效模块（环境动画 + 点击反馈 + `like/dismiss/confirm/error` 语义动作）。单 rAF 有界粒子池，隐藏暂停，尊重 `prefers-reduced-motion`，可切全/低/关；贴图运行时程序化生成，无第三方素材。
-- 客户端缓存：类型化 API 客户端含匿名会话自举与 401 刷新、`x-device-id`、ETag `If-None-Match` + localStorage 快照缓存（离线浏览）、与缓存分离的离线反馈队列（幂等键 + 撤销 + 重放）。
+- 客户端缓存：类型化 API 客户端含匿名会话自举与 401 刷新、`x-device-id`、ETag `If-None-Match` 快照缓存（离线浏览）、与缓存分离的离线反馈队列（幂等键 + 撤销 + 重放）。Tauri 使用应用私有目录中的 SQLite 持久化客户端状态，并迁移旧构建的 `localStorage` 数据；纯浏览器开发环境继续使用 `localStorage`。
 - 搜索/日历/设置（第二批切片，2026-07-15）：防抖名称搜索（`GET /v1/search`）；发售日历（`GET /v1/calendar`，按月分组 + 日期未定分区 + Demo 过滤）；设置（偏好编辑含乐观版本处理与 `version_conflict` 重试、主题/特效强度、清缓存保留未同步反馈、同步状态）。外壳导航扩展为四分区 + 搜索/日历/设置 + 详情返回来源列表。
 - 服务端：新增 CORS 白名单层（零新依赖手写中间件，默认覆盖 Tauri webview 源，预检短路），含 preflight/echo/拒绝三项测试。
 - 前端测试（vitest）：粒子池边界、五主题特效完整性、API 会话刷新/ETag/离线回退/清缓存、反馈队列离线重放与撤销、格式化未知值、日历分组、偏好变更检测、防抖。
-- 待办（M4 尚未完成）：Tauri 打包冒烟（本机 WebView 工具链）、PRD 三流程端到端与断网演练的实测记录、真实候选数据富化（发布门禁）。
+- 验收门禁（2026-07-16 加固）：[`scripts/m4_acceptance.ps1`](../scripts/m4_acceptance.ps1) + [`docs/M4_ACCEPTANCE.md`](M4_ACCEPTANCE.md) 严格检查每条推荐理由、反馈与撤销、非空搜索、日历早期数据字段、ETag `304`、指定离线契约测试和构建；失败也生成带 Git/版本/SHA-256 的最新报告。旧版 `21/21` 结果作废。
+- 跨平台门禁：CI 新增 Web test/build 以及 Linux DEB、Windows NSIS、macOS APP 的 Tauri 原生构建矩阵。只有对应 CI 实际成功后才能记录平台通过。
+- 原生 E2E：Windows/Linux `tauri-driver` 套件已覆盖 SQLite 跨进程重启、PRD 7.1/7.2/7.3、反馈刷新、真实断服务离线快照和 1024×640 / 1280×800 截图。2026-07-16 Windows 本机在匹配的 WebView2/EdgeDriver `150.0.4078.65` 上实际运行 `7/7` 通过，证据见 [`M4_DESKTOP_E2E_RUN.md`](M4_DESKTOP_E2E_RUN.md)；Linux 仍须 CI 实际验证。macOS 仅能做原生 APP/启动冒烟。
+- 待办（M4 正式关闭前）：Linux 原生 E2E 成功记录、安装器安装后启动证据、Linux/Windows/macOS 原生 bundle 结果和 macOS 启动记录。目标尺寸 Windows 截图、最小权限和无服务端 Key 复核已通过。退出条件不延期、不缩减。
+- 真实候选自动富化（2026-07-16 本地审计）：`m3-real.db` 候选 2091、平台/评价/CCU 2091、语言 2090、有效价格 2081；ready 画像 50、trusted 画像 14（黄金集）。历史 `US/USD` 快照需继续刷新为默认 `CN/schinese` 区域数据；深度联机画像扩量与典型局时长仍为发布门禁。
 
 后续阶段功能——游玩意愿投票（2026-07-15 已实现）：
 

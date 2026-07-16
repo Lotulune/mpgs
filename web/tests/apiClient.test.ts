@@ -192,3 +192,30 @@ describe("ApiClient ETag cache", () => {
     expect(after.fromOfflineCache).toBe(false);
   });
 });
+
+describe("ApiClient natural-language recommendations", () => {
+  it("posts the query and exposes deterministic fallback metadata", async () => {
+    const storage = new MemoryStorage();
+    const { fetchFn, calls } = makeFetchStub({
+      "POST /v1/session/anonymous": () => jsonResponse(sessionBody()),
+      "POST /v1/recommendations/natural-language": () =>
+        jsonResponse({
+          query: "4 人合作",
+          interpreted: { party_size: 4, session_minutes_max: null, coop_competitive: 0.2 },
+          items: [],
+          ai_status: "fallback",
+          fallback_reason: "AI unavailable",
+          algorithm_version: "rules-0.1.0",
+          data_updated_at_ms: 1,
+        }),
+    });
+    const client = new ApiClient({ baseUrl: "http://x", fetchFn, storage });
+
+    const response = await client.naturalLanguageRecommendations("4 人合作");
+
+    expect(response.ai_status).toBe("fallback");
+    const request = calls.find((call) => call.url.endsWith("/v1/recommendations/natural-language"));
+    expect(request?.body).toEqual({ query: "4 人合作", limit: 6 });
+    expect(request?.headers.authorization).toBe("Bearer access-1");
+  });
+});

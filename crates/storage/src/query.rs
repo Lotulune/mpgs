@@ -420,6 +420,7 @@ pub fn list_calendar(
     conn: &Connection,
     from_date: &str,
     to_date: &str,
+    state: &str,
 ) -> StorageResult<(Vec<AppRecord>, Vec<AppRecord>)> {
     if !crate::util::is_iso_day(from_date) || !crate::util::is_iso_day(to_date) {
         return Err(StorageError::validation(
@@ -429,6 +430,11 @@ pub fn list_calendar(
     if from_date > to_date {
         return Err(StorageError::validation(
             "calendar from date must not be after to date",
+        ));
+    }
+    if !matches!(state, "upcoming" | "recent") {
+        return Err(StorageError::validation(
+            "calendar state must be upcoming or recent",
         ));
     }
     let from_day = crate::util::iso_day_to_unix_days(from_date).expect("validated above");
@@ -445,11 +451,16 @@ pub fn list_calendar(
                 release_date_raw, release_date_precision, is_early_access,
                 current_data_confidence, source_modified_at_ms, created_at_ms, updated_at_ms
          FROM apps
-         WHERE release_state IN ('upcoming', 'coming_soon')
-           AND (release_date IS NULL OR (release_date >= ?1 AND release_date <= ?2))
+         WHERE (
+               (?3 = 'upcoming' AND release_state IN ('upcoming', 'coming_soon')
+                   AND (release_date IS NULL OR (release_date >= ?1 AND release_date <= ?2)))
+               OR
+               (?3 = 'recent' AND release_state = 'released'
+                   AND release_date >= ?1 AND release_date <= ?2)
+         )
          ORDER BY release_date IS NULL, release_date, canonical_name",
     )?;
-    let rows = stmt.query_map(params![from_date, to_date], |row| {
+    let rows = stmt.query_map(params![from_date, to_date, state], |row| {
         Ok(AppRecord {
             app_id: row.get::<_, i64>(0)? as u32,
             app_type: row.get(1)?,

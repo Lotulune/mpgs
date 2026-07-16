@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "dev.mpgs.desktop",
   "build": {
-    "beforeDevCommand": "pnpm --filter mpgs-web dev",
+    "beforeDevCommand": "pnpm --dir ../../.. --filter mpgs-web dev",
     "devUrl": "http://localhost:5173",
-    "beforeBuildCommand": "pnpm --filter mpgs-web build",
+    "beforeBuildCommand": "pnpm --dir ../../.. --filter mpgs-web build",
     "frontendDist": "../../../web/dist"
   },
   "app": {
@@ -26,7 +26,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["msi", "nsis"],
-    "icon": ["icons/icon.ico"]
+    "targets": "all",
+    "icon": ["icons/icon.png", "icons/icon.ico"]
   }
 }

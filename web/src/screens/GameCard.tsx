@@ -47,7 +47,7 @@ export function GameCard({
       label: "撤销",
       run: () => {
         void feedbackQueue.undo(entry.localId).catch(() => {
-          toast.show("撤销失败，请稍后再试");
+            toast.show("撤销失败，请稍后再试");
         });
       },
     });
@@ -110,7 +110,7 @@ export function GameCard({
                 const entry = active;
                 fireAction("dismiss", event.currentTarget);
                 void feedbackQueue.undo(entry.localId).catch(() => {
-                  toast.show("撤销失败，请稍后再试");
+                    toast.show("撤销失败，请稍后再试");
                 });
               }}
             >

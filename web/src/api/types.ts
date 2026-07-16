@@ -104,6 +104,8 @@ export interface CalendarItem {
   release_date_precision: string | null;
   is_early_access: boolean | null;
   current_data_confidence: number | null;
+  review_total: number | null;
+  early_data: boolean;
   source_modified_at_ms: number | null;
   created_at_ms: number;
   updated_at_ms: number;
@@ -115,6 +117,8 @@ export interface CalendarResponse {
   data_updated_at_ms: number;
 }
 
+export type CalendarPeriod = "upcoming" | "recent";
+
 export interface SearchItem {
   app_id: number;
   name: string;
@@ -125,6 +129,21 @@ export interface SearchItem {
 export interface SearchResponse {
   items: SearchItem[];
   algorithm_version: string;
+}
+
+export interface NaturalLanguageRecommendationResponse {
+  query: string;
+  interpreted: {
+    party_size: number | null;
+    session_minutes_max: number | null;
+    coop_competitive: number | null;
+    self_hosting_willingness?: number | null;
+  };
+  items: FeedItem[];
+  ai_status: "ai" | "fallback";
+  fallback_reason: string | null;
+  algorithm_version: string;
+  data_updated_at_ms: number;
 }
 
 export interface GameDetail {
@@ -199,7 +218,7 @@ export interface ErrorEnvelope {
   };
 }
 
-/** Minimal storage surface (satisfied by localStorage and test doubles). */
+/** Minimal synchronous surface used by the hydrated SQLite mirror and test doubles. */
 export interface StorageLike {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;

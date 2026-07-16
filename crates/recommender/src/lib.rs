@@ -367,4 +367,21 @@ mod tests {
         let unknown = rank_feed(FeedSection::ClassicLegacy, &[base], &prefs, None);
         assert_eq!(unknown.items.len(), 1, "unknown facts must remain eligible");
     }
+
+    #[test]
+    fn legacy_macos_platform_alias_matches_canonical_mac_preference() {
+        let prefs = UserPreferences {
+            platforms: vec!["mac".into()],
+            ..Default::default()
+        };
+        let candidate = RankingInput {
+            availability: CandidateAvailability {
+                platforms: vec!["macos".into()],
+                ..Default::default()
+            },
+            ..ranking(548430, cooperative_signals())
+        };
+        let ranked = rank_feed(FeedSection::ClassicLegacy, &[candidate], &prefs, None);
+        assert_eq!(ranked.items.len(), 1);
+    }
 }

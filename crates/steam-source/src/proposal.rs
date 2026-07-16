@@ -132,6 +132,18 @@ pub struct AppRelationProposal {
     pub adapter_version: &'static str,
 }
 
+/// Normalized store price snapshot proposed by appdetails.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StorePriceProposal {
+    pub country_code: String,
+    pub currency: String,
+    pub initial_price_minor: Option<i64>,
+    pub final_price_minor: Option<i64>,
+    pub discount_percent: Option<i32>,
+    pub is_purchasable: Option<bool>,
+    pub package_id: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StoreDetailsProposal {
     pub app_id: SteamAppId,
@@ -145,6 +157,7 @@ pub struct StoreDetailsProposal {
     pub is_free: Option<bool>,
     pub platforms: Option<Vec<String>>,
     pub supported_languages: Option<Vec<String>>,
+    pub price: Option<StorePriceProposal>,
     pub coming_soon: Option<bool>,
     pub categories: Vec<String>,
     pub genres: Vec<String>,

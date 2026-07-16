@@ -3,6 +3,7 @@
 // drop unsynced user feedback (DEVELOPMENT.md §11).
 
 import { ApiClient, ApiError, newIdempotencyKey } from "./client";
+import { getClientStorage } from "./storage";
 import type { FeedbackRecord, FeedbackType, StorageLike } from "./types";
 
 const QUEUE_KEY = "mpgs.feedback.v1";
@@ -48,10 +49,11 @@ export class FeedbackQueue {
   private readonly storage: StorageLike;
   private entries: PendingFeedback[] = [];
   private listeners = new Set<FeedbackListener>();
+  private rankingListeners = new Set<() => void>();
   /** In-flight flush; concurrent callers await the same promise. */
   private flushPromise: Promise<void> | null = null;
 
-  constructor(client: ApiClient, storage: StorageLike = globalThis.localStorage) {
+  constructor(client: ApiClient, storage: StorageLike = getClientStorage()) {
     this.client = client;
     this.storage = storage;
     this.load();
@@ -84,6 +86,16 @@ export class FeedbackQueue {
     this.listeners.add(listener);
     listener(this.snapshot());
     return () => this.listeners.delete(listener);
+  }
+
+  /** Fires only after a feedback or undo mutation is acknowledged by the server. */
+  subscribeRankingChanged(listener: () => void): () => void {
+    this.rankingListeners.add(listener);
+    return () => this.rankingListeners.delete(listener);
+  }
+
+  private notifyRankingChanged(): void {
+    for (const listener of this.rankingListeners) listener();
   }
 
   snapshot(): PendingFeedback[] {
@@ -135,6 +147,7 @@ export class FeedbackQueue {
     try {
       await this.client.undoFeedback(entry.feedbackId);
       entry.syncError = null;
+      this.notifyRankingChanged();
     } catch (error) {
       if (!isRetryable(error)) {
         entry.undone = false;
@@ -181,6 +194,7 @@ export class FeedbackQueue {
           entry.feedbackId = record.feedback_id;
           if (entry.cancelled) entry.undone = true;
           entry.syncError = entry.undone ? "undo_pending" : null;
+          if (!entry.cancelled) this.notifyRankingChanged();
         } catch (error) {
           if (isRetryable(error)) {
             entry.syncError = error instanceof ApiError ? error.code : "unknown";
@@ -195,6 +209,7 @@ export class FeedbackQueue {
         try {
           await this.client.undoFeedback(entry.feedbackId);
           entry.syncError = null;
+          this.notifyRankingChanged();
         } catch (error) {
           if (isRetryable(error)) {
             entry.syncError = "undo_pending";

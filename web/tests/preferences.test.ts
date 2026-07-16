@@ -5,6 +5,7 @@ import {
   editablePreferencePatch,
   flushPendingPreferencePatch,
   hasPendingPreferencePatch,
+  PLATFORM_OPTIONS,
   preferencesChanged,
   queuePreferencePatch,
   toggleMember,
@@ -20,6 +21,10 @@ function memoryStorage() {
 }
 
 describe("preference helpers", () => {
+  it("uses the normalized macOS platform identifier", () => {
+    expect(PLATFORM_OPTIONS.find((option) => option.label === "macOS")?.id).toBe("macos");
+  });
+
   it("reports no change for an identical copy", () => {
     const base = defaultPreferences();
     expect(preferencesChanged(base, { ...base })).toBe(false);
