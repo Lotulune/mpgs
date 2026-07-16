@@ -1637,7 +1637,11 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["api_version"], "v1");
         assert_eq!(json["service_version"], env!("CARGO_PKG_VERSION"));
-        assert!(json["algorithm_version"].as_str().is_some_and(|v| !v.is_empty()));
+        assert!(
+            json["algorithm_version"]
+                .as_str()
+                .is_some_and(|v| !v.is_empty())
+        );
         assert!(json["schema_version"].as_i64().is_some_and(|v| v > 0));
         assert!(json["build_git_sha"].as_str().is_some());
         assert!(json["data_updated_at_ms"].as_i64().is_some());
@@ -1712,7 +1716,11 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["ai_status"], "fallback");
-        assert!(json["items"].as_array().is_some_and(|items| !items.is_empty()));
+        assert!(
+            json["items"]
+                .as_array()
+                .is_some_and(|items| !items.is_empty())
+        );
     }
 
     #[tokio::test]

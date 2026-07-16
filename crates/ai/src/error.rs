@@ -25,20 +25,19 @@ pub enum AiError {
 
 impl AiError {
     pub fn is_retryable(&self) -> bool {
-        matches!(
-            self,
-            Self::Timeout | Self::RateLimited | Self::Transport(_)
-        )
+        matches!(self, Self::Timeout | Self::RateLimited | Self::Transport(_))
     }
 
     pub fn fallback_reason(&self) -> &'static str {
         match self {
-            Self::Disabled => "AI provider is not configured; deterministic recommendations are shown",
-            Self::Timeout => "AI provider timed out; deterministic recommendations are shown",
-            Self::RateLimited => "AI provider rate limited; deterministic recommendations are shown",
-            Self::BudgetExhausted => {
-                "AI budget exhausted; deterministic recommendations are shown"
+            Self::Disabled => {
+                "AI provider is not configured; deterministic recommendations are shown"
             }
+            Self::Timeout => "AI provider timed out; deterministic recommendations are shown",
+            Self::RateLimited => {
+                "AI provider rate limited; deterministic recommendations are shown"
+            }
+            Self::BudgetExhausted => "AI budget exhausted; deterministic recommendations are shown",
             Self::CircuitOpen => {
                 "AI provider temporarily unavailable; deterministic recommendations are shown"
             }

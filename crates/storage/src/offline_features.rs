@@ -5,7 +5,7 @@
 //! unknowns stay marked for review rather than invented.
 
 use rusqlite::params;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::error::{StorageError, StorageResult};
@@ -180,10 +180,7 @@ impl Repository {
         })
     }
 
-    pub fn latest_accepted_offline_features(
-        &self,
-        app_id: u32,
-    ) -> StorageResult<Option<Value>> {
+    pub fn latest_accepted_offline_features(&self, app_id: u32) -> StorageResult<Option<Value>> {
         self.db.with_conn(|conn| {
             conn.query_row(
                 "SELECT accepted_json FROM ai_analyses

@@ -77,7 +77,6 @@ pub fn reciprocal_rank_fusion(ranked_lists: &[Vec<u32>], k: u32) -> Vec<(u32, f6
     items
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -105,7 +104,8 @@ mod tests {
     fn rrf_prefers_shared_top() {
         let fused = reciprocal_rank_fusion(&[vec![1, 2, 3], vec![2, 1, 4]], 60);
         // 1 and 2 appear in both lists at top ranks and outrank tail ids.
-        let top_two: std::collections::HashSet<u32> = fused.iter().take(2).map(|(id, _)| *id).collect();
+        let top_two: std::collections::HashSet<u32> =
+            fused.iter().take(2).map(|(id, _)| *id).collect();
         assert!(top_two.contains(&1) && top_two.contains(&2));
         assert!(fused[0].1 >= fused.last().unwrap().1);
         assert!(fused.iter().find(|(id, _)| *id == 3).unwrap().1 < fused[0].1);
