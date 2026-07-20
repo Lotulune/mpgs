@@ -16,9 +16,13 @@ function exactButton(text) {
 
 async function clickTab(label) {
   const tab = await $(`//button[@role='tab' and contains(normalize-space(.),${JSON.stringify(label)})]`);
-  await tab.waitForDisplayed();
+  // CI window chrome can leave tabs off-screen; wait for DOM presence then scroll.
+  await tab.waitForExist({ timeout: 20_000 });
+  await tab.scrollIntoView({ block: "center", inline: "center" });
+  await tab.waitForDisplayed({ timeout: 20_000 });
   await tab.click();
   await browser.waitUntil(async () => (await tab.getAttribute("aria-selected")) === "true", {
+    timeout: 20_000,
     timeoutMsg: `expected ${label} tab to become selected`,
   });
 }
@@ -112,10 +116,18 @@ describe("M4 native desktop journey", () => {
   it("uses the explicit natural-language fallback flow", async () => {
     await clickTab("描述推荐");
     const input = await $("#nl-input");
+    await input.waitForDisplayed({ timeout: 20_000 });
     await input.setValue("4 人合作，单局一小时以内，不要太竞技");
     await (await exactButton("推荐")).click();
     // AI is disabled in E2E seed mode — UI surfaces deterministic fallback chips.
-    await expectVisibleText("确定性回退");
+    // Accept either chip label used across M4/M8 copy.
+    await browser.waitUntil(
+      async () => {
+        const text = await $("body").getText();
+        return text.includes("确定性回退") || text.includes("规则解析模式");
+      },
+      { timeout: 30_000, timeoutMsg: "expected deterministic NL fallback chip" },
+    );
     await waitForFeed();
     await expectVisibleText("当前由确定性规则理解输入");
   });

@@ -104,7 +104,7 @@ export function NaturalLanguageScreen({ onOpenGame }: { onOpenGame: (appId: numb
             {result.ai_status === "cached" && <span className="chip accent">AI 缓存命中</span>}
             {result.ai_status === "fallback" && (
               <span className="chip warn" title={result.fallback_reason ?? undefined}>
-                确定性回退
+                规则解析模式
               </span>
             )}
             {result.ai_status === "disabled" && (
