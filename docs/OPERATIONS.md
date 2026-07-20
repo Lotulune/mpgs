@@ -125,7 +125,17 @@ docker login ghcr.io
 
 `deploy/update.sh` 在源码目录是 Git checkout 时只允许 fast-forward 拉取；压缩包部署则跳过源码更新、直接拉镜像。它使用 `docker compose pull` 与 `up --no-build`，随后运行数据库完整性和 HTTP 健康检查。运行时密钥只保存在 `deploy/mpgs.env`，不得放入 `deploy/.env`、GitHub workflow 或镜像标签。
 
-自动更新还需在 GitHub 配置仓库变量 `MPGS_AUTO_DEPLOY=true`，并设置 Secrets：`MPGS_VPS_HOST`、`MPGS_VPS_USER`、`MPGS_VPS_SSH_KEY`、`MPGS_VPS_KNOWN_HOSTS`。未配置变量时 workflow 只发布镜像，不会连接 VPS。
+VPS 使用仓库提供的 systemd 单元主动检查更新，无需向 GitHub 上传 VPS SSH 私钥。当前部署目录为 `/home/ubuntu/mpgs/src`；如果目录或运行用户不同，先修改 `deploy/mpgs-update.service`。安装后会立即执行一次，并在每次任务结束 5 分钟后再次检查：
+
+```bash
+sudo install -m 0644 deploy/mpgs-update.service deploy/mpgs-update.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now mpgs-update.timer
+sudo systemctl start mpgs-update.service
+systemctl status mpgs-update.timer --no-pager
+```
+
+定时器只拉取 GHCR 镜像清单；镜像未变化时 Compose 不重建容器。失败记录在 `journalctl -u mpgs-update.service`，下一周期会自动重试。
 
 ### 3.6 密钥轮换
 

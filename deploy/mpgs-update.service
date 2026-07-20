@@ -1,0 +1,13 @@
+[Unit]
+Description=Pull and deploy the latest MPGS container images
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/mpgs/src
+ExecStart=/home/ubuntu/mpgs/src/deploy/update.sh
+TimeoutStartSec=10min
+

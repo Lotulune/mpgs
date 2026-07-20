@@ -1,0 +1,14 @@
+[Unit]
+Description=Check for MPGS container image updates every five minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=5min
+RandomizedDelaySec=30s
+AccuracySec=15s
+Persistent=true
+Unit=mpgs-update.service
+
+[Install]
+WantedBy=timers.target
+
