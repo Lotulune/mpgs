@@ -95,6 +95,11 @@ export function NaturalLanguageScreen({ onOpenGame }: { onOpenGame: (appId: numb
       {result && !error && (
         <>
           <div className="statusline">
+            {result.ai_status === "pending" && (
+              <span className="chip accent" title={result.fallback_reason ?? undefined}>
+                AI 增强中
+              </span>
+            )}
             {result.ai_status === "used" && <span className="chip accent">AI 已增强</span>}
             {result.ai_status === "cached" && <span className="chip accent">AI 缓存命中</span>}
             {result.ai_status === "fallback" && (
@@ -126,7 +131,9 @@ export function NaturalLanguageScreen({ onOpenGame }: { onOpenGame: (appId: numb
               数据更新于 {formatAgo(result.data_updated_at_ms)}
             </span>
           </div>
-          {(result.ai_status === "fallback" || result.ai_status === "disabled") && (
+          {(result.ai_status === "fallback" ||
+            result.ai_status === "disabled" ||
+            result.ai_status === "pending") && (
             <p className="cal-note">
               {result.fallback_reason ??
                 "当前由确定性规则理解输入；无法识别的条件不会被伪造成已理解。"}

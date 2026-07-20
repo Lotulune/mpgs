@@ -31,9 +31,9 @@ pub mod users;
 pub mod util;
 
 pub use ai_m8::{
-    AUTHORITY_FIELDS, CompleteProgressiveAnalysis, FieldProposal, InsertFieldProposal,
-    InsertProgressiveAnalysis, InsertWebDiscoveryEvidence, ProgressiveAnalysis,
-    WebDiscoveryEvidence,
+    AUTHORITY_FIELDS, CompleteProgressiveAnalysis, FieldProposal, GameAiSummaryRow,
+    InsertFieldProposal, InsertProgressiveAnalysis, InsertWebDiscoveryEvidence,
+    ProgressiveAnalysis, UpsertGameAiSummary, WebDiscoveryEvidence,
 };
 pub use clock::{Clock, FakeClock, SystemClock};
 pub use db::Database;

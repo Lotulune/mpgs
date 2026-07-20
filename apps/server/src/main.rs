@@ -1156,7 +1156,105 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["fact_matrix"].as_array().unwrap().len(), 2);
         assert!(json["explanation"].is_null());
-        assert_eq!(json["ai_status"], "fallback");
+        // Without a configured provider the matrix still returns and AI is disabled.
+        assert!(matches!(
+            json["ai_status"].as_str(),
+            Some("disabled" | "fallback")
+        ));
+    }
+
+    #[tokio::test]
+    async fn m8_group_advice_returns_deterministic_compromise() {
+        let app = test_app();
+        let feed = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/feeds/classic_legacy?limit=3")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let feed_body = axum::body::to_bytes(feed.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let feed_json: serde_json::Value = serde_json::from_slice(&feed_body).unwrap();
+        let items = feed_json["items"].as_array().unwrap();
+        if items.len() < 2 {
+            return;
+        }
+        let ids: Vec<u64> = items
+            .iter()
+            .take(3)
+            .filter_map(|item| item["app_id"].as_u64())
+            .collect();
+        let body = serde_json::json!({
+            "party_size": 3,
+            "platforms": ["windows"],
+            "candidate_app_ids": ids,
+            "vote_counts": [{ "app_id": ids[0], "votes": 5 }, { "app_id": ids[1], "votes": 1 }]
+        });
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/ai/group-advice")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["advice"]["primary_app_id"], ids[0]);
+        assert!(matches!(
+            json["ai_status"].as_str(),
+            Some("fallback" | "disabled" | "used")
+        ));
+    }
+
+    #[tokio::test]
+    async fn m8_game_ai_summary_returns_rule_fallback() {
+        let app = test_app();
+        let feed = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/feeds/classic_legacy?limit=1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let feed_body = axum::body::to_bytes(feed.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let feed_json: serde_json::Value = serde_json::from_slice(&feed_body).unwrap();
+        let app_id = feed_json["items"][0]["app_id"].as_u64().unwrap();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/v1/games/{app_id}/ai-summary"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(matches!(
+            json["ai_status"].as_str(),
+            Some("fallback" | "cached")
+        ));
+        assert!(json["summary"]["who_it_fits"]["text"].as_str().is_some());
     }
 
     #[tokio::test]

@@ -11,10 +11,15 @@ use axum::{
 };
 use image::{DynamicImage, ImageFormat, imageops::FilterType};
 use mpgs_ai::{
-    AiError, AiGateway, AiPolicy, AiRankResult, AiStatus, AiTaskType, CandidateEvidence,
-    DEFAULT_ROUTE_VERSION, EmbeddingInput, EmbeddingProvider, OpenAiCompatProvider,
-    RANK_PROMPT_VERSION, StructuredRequest, TaskRouter, rank_analysis_schema,
-    rank_analysis_system_prompt, validate_rank_result, wrap_untrusted_data_block,
+    AiError, AiGateway, AiPolicy, AiRankResult, AiStatus, AiTaskType, AppVoteCount,
+    CandidateEvidence, COMPARE_PROMPT_VERSION, DEFAULT_ROUTE_VERSION, EmbeddingInput,
+    EmbeddingProvider, GroupAdviceRequest as AiGroupAdviceRequest, OpenAiCompatProvider,
+    RANK_PROMPT_VERSION, RuleIntentBaseline, SUMMARY_PROMPT_VERSION, StructuredRequest, TaskRouter,
+    compare_schema, compare_system_prompt, deterministic_group_advice, group_advice_schema,
+    group_advice_system_prompt, intent_parse_schema, intent_parse_system_prompt,
+    merge_intent_with_rules, parse_compare_explanation, parse_group_advice, parse_structured_intent,
+    rank_analysis_schema, rank_analysis_system_prompt, rule_game_summary, validate_rank_result,
+    wrap_untrusted_data_block,
 };
 use mpgs_domain::{FeedSection, FeedbackType, RecommendationConfig, UserPreferences};
 use mpgs_recommender::{
@@ -258,6 +263,12 @@ struct NaturalLanguageRequest {
     query: String,
     limit: Option<i64>,
     custom_ai: Option<TransientCustomAiRequest>,
+    /// When true, return deterministic base results without waiting for rank AI.
+    #[serde(default)]
+    r#async: Option<bool>,
+    /// Multi-turn structured intent delta only (no full chat transcript).
+    #[serde(default)]
+    intent_delta: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -605,7 +616,12 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/ai/search", post(ai_search))
         .route("/v1/ai/analyses/{analysis_id}", get(get_ai_analysis))
         .route("/v1/ai/compare", post(ai_compare))
+        .route("/v1/ai/group-advice", post(ai_group_advice))
         .route("/v1/games/{app_id}/ai-summary", get(get_game_ai_summary))
+        .route(
+            "/admin/v1/bootstrap",
+            get(get_bootstrap_status).post(start_bootstrap),
+        )
         .route("/v1/calendar", get(get_calendar))
         .route("/v1/search", get(search_games))
         .route("/v1/games/{app_id}", get(get_game))
@@ -2814,6 +2830,18 @@ struct NaturalLanguageInterpretation {
     platforms: Vec<String>,
     demo_only: bool,
     selected_section: FeedSection,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_price_minor: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    currency: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    modes_preferred: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    modes_excluded: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    hard_constraints: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    intent_confidence: Option<f64>,
 }
 
 #[utoipa::path(
@@ -2836,6 +2864,8 @@ async fn natural_language_recommendations(
         query: raw_query,
         limit,
         custom_ai,
+        r#async: async_mode,
+        intent_delta,
     } = body;
     let query = raw_query.trim().to_owned();
     if query.len() < 3 || query.len() > 500 {
@@ -2855,12 +2885,39 @@ async fn natural_language_recommendations(
             None,
         );
     }
+    let skip_rank_ai = async_mode.unwrap_or(false);
 
     let account_user_id = match state.repo.as_ref() {
         Some(repo) => optional_account_user_id(repo, &headers).await,
         None => None,
     };
-    let interpreted = interpret_natural_language(&query);
+    let mut interpreted = interpret_natural_language(&query);
+    // Optional multi-turn structured delta (never full chat history).
+    if let Some(delta) = intent_delta {
+        apply_intent_delta(&mut interpreted, &delta);
+    }
+
+    // Resolve AI early so intent_parse can refine soft preferences before ranking.
+    let resolved_ai_early = match &custom_ai {
+        Some(_) => None, // custom credentials are applied after feed for rank only
+        None => Some(account_ai_gateway(&state, account_user_id.as_deref()).await),
+    };
+    let early_router = resolved_ai_early.as_ref().and_then(|resolved| {
+        if resolved.gateway.provider_name() == state.ai.provider_name()
+            && state.task_router.is_available()
+        {
+            Some(state.task_router.as_ref())
+        } else {
+            None
+        }
+    });
+    if let Some(router) = early_router {
+        let gateway = &resolved_ai_early.as_ref().unwrap().gateway;
+        if let Some(merged) = try_ai_intent_parse(router, gateway, &query, &interpreted).await {
+            apply_structured_intent(&mut interpreted, &merged);
+        }
+    }
+
     let feed_query = FeedQuery {
         // Rank and validate the required Top 20, then truncate the public response.
         limit: Some(20),
@@ -2873,8 +2930,8 @@ async fn natural_language_recommendations(
         languages: None,
         session_minutes_min: None,
         session_minutes_max: interpreted.session_minutes_max,
-        max_price_minor: None,
-        currency: None,
+        max_price_minor: interpreted.max_price_minor,
+        currency: interpreted.currency.clone(),
         demo_only: Some(interpreted.demo_only),
         sort: None,
         order: None,
@@ -3019,7 +3076,24 @@ async fn natural_language_recommendations(
                 && state.task_router.is_available())
             .then_some(state.task_router.as_ref())
         });
-    let (ai_status, fallback_reason, ai_summary, ai_summary_evidence_ids) =
+
+    let (ai_status, fallback_reason, ai_summary, ai_summary_evidence_ids) = if skip_rank_ai {
+        if resolved_ai.gateway.is_available() || task_router.is_some_and(|r| r.is_available()) {
+            (
+                AiStatus::Pending,
+                Some("base ranking returned; AI enhancement is pending".into()),
+                None,
+                Vec::new(),
+            )
+        } else {
+            (
+                AiStatus::Fallback,
+                Some(mpgs_ai::AiError::Disabled.fallback_reason().to_owned()),
+                None,
+                Vec::new(),
+            )
+        }
+    } else {
         enhance_natural_language_with_ai(
             &resolved_ai.gateway,
             task_router,
@@ -3029,7 +3103,8 @@ async fn natural_language_recommendations(
             &mut items,
             resolved_ai.builtin_quota.as_ref(),
         )
-        .await;
+        .await
+    };
     items.truncate(output_limit as usize);
     Json(json!({
         "query": query,
@@ -3720,11 +3795,13 @@ async fn ai_search(
         );
     }
 
-    // Reuse the existing natural-language path for deterministic base results.
+    // Progressive search: base ranking first without waiting for rank AI.
     let nl_body = NaturalLanguageRequest {
         query: query.clone(),
         limit: Some(i64::from(output_limit)),
         custom_ai: None,
+        r#async: Some(body.r#async),
+        intent_delta: None,
     };
     let nl_response =
         natural_language_recommendations(State(state.clone()), headers.clone(), Json(nl_body))
@@ -3946,11 +4023,92 @@ async fn ai_compare(
         }));
     }
 
+    let mut allowed_evidence = HashSet::new();
+    for row in &matrix {
+        if let Some(id) = row.get("app_id").and_then(|v| v.as_u64()) {
+            allowed_evidence.insert(format!("app:{id}:identity"));
+            allowed_evidence.insert(format!("app:{id}:profile"));
+        }
+    }
+    let allowed_ids: Vec<u32> = matrix
+        .iter()
+        .filter_map(|row| row.get("app_id").and_then(|v| v.as_u64()).map(|v| v as u32))
+        .collect();
+
+    let (explanation, ai_status, fallback_reason, model) =
+        if state.task_router.is_available() || state.ai.is_available() {
+            let data_prompt = format!(
+                "{}\n\n{}",
+                wrap_untrusted_data_block(
+                    "fact_matrix_json",
+                    &serde_json::to_string(&matrix).unwrap_or_else(|_| "[]".into()),
+                    12_000
+                ),
+                wrap_untrusted_data_block(
+                    "allowed_columns",
+                    r#"["party_size","platforms","price","multiplayer_mode","service_dependency","content_pacing","review_quality","data_updated_at"]"#,
+                    500
+                )
+            );
+            let request = StructuredRequest {
+                task: AiTaskType::CompareGames,
+                system_prompt: compare_system_prompt().to_owned(),
+                data_prompt,
+                json_schema_name: "compare_games".into(),
+                json_schema: compare_schema(),
+                max_output_tokens: 1_800,
+                temperature: 0.2,
+                model: None,
+                protocol: None,
+            };
+            let completion = if state.task_router.is_available() {
+                state
+                    .task_router
+                    .structured_completion(request)
+                    .await
+                    .map(|r| r.response)
+            } else {
+                state.ai.structured_completion(request).await
+            };
+            match completion {
+                Ok(response) => {
+                    match parse_compare_explanation(
+                        &response.content,
+                        &allowed_ids,
+                        &allowed_evidence,
+                    ) {
+                        Ok(expl) => (Some(expl), AiStatus::Used, None, Some(response.model)),
+                        Err(error) => (
+                            None,
+                            AiStatus::Fallback,
+                            Some(safe_ai_failure_reason(&error)),
+                            Some(response.model),
+                        ),
+                    }
+                }
+                Err(error) => (
+                    None,
+                    AiStatus::Fallback,
+                    Some(safe_ai_failure_reason(&error)),
+                    None,
+                ),
+            }
+        } else {
+            (
+                None,
+                AiStatus::Disabled,
+                Some(AiError::Disabled.fallback_reason().to_owned()),
+                None,
+            )
+        };
+
     Json(json!({
         "fact_matrix": matrix,
-        "ai_status": "fallback",
-        "explanation": null,
-        "fallback_reason": "compare explanation uses the fact matrix until the compare_games route is online",
+        "ai_status": ai_status.as_str(),
+        "explanation": explanation,
+        "fallback_reason": fallback_reason,
+        "model": model,
+        "prompt_version": COMPARE_PROMPT_VERSION,
         "columns": [
             "party_size",
             "platforms",
@@ -3985,11 +4143,11 @@ async fn get_game_ai_summary(
             None,
         );
     };
-    // Offline summaries are filled by M8.3 batch jobs. Until then return an
-    // honest empty payload rather than inventing content.
-    let exists = match storage_result(repo, move |repo| repo.get_app(app_id)).await {
-        Ok(Some(_)) => true,
-        Ok(None) => false,
+    let app = match storage_result(repo, move |repo| repo.get_app(app_id)).await {
+        Ok(Some(app)) => app,
+        Ok(None) => {
+            return error_response(StatusCode::NOT_FOUND, "not_found", "game not found", None);
+        }
         Err(_) => {
             return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -3999,25 +4157,300 @@ async fn get_game_ai_summary(
             );
         }
     };
-    if !exists {
-        return error_response(StatusCode::NOT_FOUND, "not_found", "game not found", None);
+    let now_ms = chrono_like_now_ms();
+    if let Ok(Some(row)) = storage_result(repo, move |repo| {
+        repo.get_game_ai_summary(app_id, SUMMARY_PROMPT_VERSION, now_ms)
+    })
+    .await
+    {
+        let summary: serde_json::Value =
+            serde_json::from_str(&row.summary_json).unwrap_or(json!({}));
+        return Json(json!({
+            "app_id": app_id,
+            "ai_status": "cached",
+            "summary": summary,
+            "sections": summary,
+            "review_status": row.review_status,
+            "model": row.model,
+            "prompt_version": row.prompt_version,
+            "updated_at_ms": row.updated_at_ms,
+            "expires_at_ms": row.expires_at_ms,
+            "fallback_reason": null
+        }))
+        .into_response();
     }
+
+    let profile = storage_result(repo, move |repo| repo.get_profile(app_id))
+        .await
+        .ok()
+        .flatten();
+    let evidence = vec![
+        format!("app:{app_id}:identity"),
+        format!("app:{app_id}:profile"),
+    ];
+    let summary = rule_game_summary(
+        &app.canonical_name,
+        profile.as_ref().and_then(|p| p.recommended_min_players),
+        profile.as_ref().and_then(|p| p.recommended_max_players),
+        profile.as_ref().and_then(|p| p.private_session),
+        profile.as_ref().and_then(|p| p.self_hosted_server),
+        &evidence,
+    );
+    let summary_json = serde_json::to_string(&summary).unwrap_or_else(|_| "{}".into());
+    let evidence_json = serde_json::to_string(&evidence).unwrap_or_else(|_| "[]".into());
+    let _ = storage_result(repo, {
+        let summary_json = summary_json.clone();
+        let evidence_json = evidence_json.clone();
+        move |repo| {
+            repo.upsert_game_ai_summary(&mpgs_storage::UpsertGameAiSummary {
+                app_id,
+                input_hash: format!("rule:{app_id}"),
+                prompt_version: SUMMARY_PROMPT_VERSION.into(),
+                summary_json,
+                evidence_ids_json: evidence_json,
+                review_status: "pending_review".into(),
+                model: Some("rule".into()),
+                created_at_ms: now_ms,
+                expires_at_ms: now_ms.saturating_add(7 * 24 * 60 * 60 * 1000),
+            })
+        }
+    })
+    .await;
+
     Json(json!({
         "app_id": app_id,
-        "ai_status": "disabled",
-        "summary": null,
-        "sections": {
-            "who_it_fits": null,
-            "how_to_play": null,
-            "multiplayer_dependency": null,
-            "review_strengths": null,
-            "common_issues": null,
-            "unknowns": null
-        },
-        "updated_at_ms": null,
-        "fallback_reason": "offline game summaries are not generated yet"
+        "ai_status": "fallback",
+        "summary": summary,
+        "sections": summary,
+        "review_status": "pending_review",
+        "model": "rule",
+        "prompt_version": SUMMARY_PROMPT_VERSION,
+        "updated_at_ms": now_ms,
+        "fallback_reason": "offline model summary unavailable; rule summary returned"
     }))
     .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct GroupAdviceHttpRequest {
+    party_size: Option<u8>,
+    #[serde(default)]
+    platforms: Vec<String>,
+    #[serde(default)]
+    modes_preferred: Vec<String>,
+    #[serde(default)]
+    modes_excluded: Vec<String>,
+    candidate_app_ids: Vec<u32>,
+    #[serde(default)]
+    vote_counts: Vec<AppVoteCount>,
+}
+
+async fn ai_group_advice(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<GroupAdviceHttpRequest>,
+) -> Response {
+    if !(2..=12).contains(&body.candidate_app_ids.len()) {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_argument",
+            "candidate_app_ids must contain 2 to 12 apps",
+            None,
+        );
+    }
+    let mut unique = HashSet::new();
+    for id in &body.candidate_app_ids {
+        if *id == 0 || !unique.insert(*id) {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_argument",
+                "candidate_app_ids must be unique positive AppIDs",
+                None,
+            );
+        }
+    }
+    let request = AiGroupAdviceRequest {
+        party_size: body.party_size,
+        platforms: body.platforms,
+        modes_preferred: body.modes_preferred,
+        modes_excluded: body.modes_excluded,
+        candidate_app_ids: body.candidate_app_ids.clone(),
+        vote_counts: body.vote_counts.clone(),
+    };
+    let mut allowed_evidence = HashSet::new();
+    for app_id in &request.candidate_app_ids {
+        allowed_evidence.insert(format!("vote:aggregate:{app_id}"));
+        allowed_evidence.insert(format!("app:{app_id}:profile"));
+    }
+    let det = deterministic_group_advice(&request.candidate_app_ids, &request.vote_counts);
+    let (advice, ai_status, fallback_reason) =
+        if state.task_router.is_available() || state.ai.is_available() {
+            let data_prompt = wrap_untrusted_data_block(
+                "group_aggregate_json",
+                &serde_json::to_string(&request).unwrap_or_else(|_| "{}".into()),
+                6_000,
+            );
+            let structured = StructuredRequest {
+                task: AiTaskType::GroupAdvice,
+                system_prompt: group_advice_system_prompt().to_owned(),
+                data_prompt,
+                json_schema_name: "group_advice".into(),
+                json_schema: group_advice_schema(),
+                max_output_tokens: 1_200,
+                temperature: 0.2,
+                model: None,
+                protocol: None,
+            };
+            let completion = if state.task_router.is_available() {
+                state
+                    .task_router
+                    .structured_completion(structured)
+                    .await
+                    .map(|r| r.response)
+            } else {
+                state.ai.structured_completion(structured).await
+            };
+            match completion {
+                Ok(response) => {
+                    match parse_group_advice(
+                        &response.content,
+                        &request.candidate_app_ids,
+                        &allowed_evidence,
+                    ) {
+                        Ok(parsed) => (Some(parsed), AiStatus::Used, None),
+                        Err(error) => (det, AiStatus::Fallback, Some(safe_ai_failure_reason(&error))),
+                    }
+                }
+                Err(error) => (det, AiStatus::Fallback, Some(safe_ai_failure_reason(&error))),
+            }
+        } else {
+            (
+                det,
+                AiStatus::Fallback,
+                Some(AiError::Disabled.fallback_reason().to_owned()),
+            )
+        };
+
+    Json(json!({
+        "advice": advice,
+        "ai_status": ai_status.as_str(),
+        "fallback_reason": fallback_reason,
+        "prompt_version": mpgs_ai::GROUP_ADVICE_PROMPT_VERSION
+    }))
+    .into_response()
+}
+
+async fn get_bootstrap_status(State(state): State<Arc<AppState>>) -> Response {
+    let Some(repo) = state.repo.as_ref() else {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "storage_unavailable",
+            "database is not configured",
+            None,
+        );
+    };
+    let raw = storage_result(repo, |repo| repo.get_bootstrap_state("first_start"))
+        .await
+        .ok()
+        .flatten();
+    let value = raw
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .unwrap_or_else(|| {
+            json!({
+                "mode": "normal",
+                "priority_target": 300,
+                "priority_remaining": null,
+                "store_only": false
+            })
+        });
+    Json(json!({ "bootstrap": value })).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct BootstrapStartRequest {
+    #[serde(default)]
+    mode: Option<String>,
+    #[serde(default)]
+    priority_target: Option<u32>,
+}
+
+async fn start_bootstrap(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<BootstrapStartRequest>,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return *response;
+    }
+    let Some(repo) = state.repo.as_ref() else {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "storage_unavailable",
+            "database is not configured",
+            None,
+        );
+    };
+    let mode = body.mode.unwrap_or_else(|| "store_only".into());
+    if mode != "store_only" && mode != "normal" {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_argument",
+            "mode must be store_only or normal",
+            None,
+        );
+    }
+    let priority_target = body.priority_target.unwrap_or(300).clamp(1, 5_000);
+    let targets = storage_result(repo, move |repo| {
+        repo.list_enrichment_targets_after_filtered(
+            priority_target,
+            None,
+            "CN",
+            "schinese",
+            mpgs_storage::EnrichmentNeedFilter {
+                store: true,
+                reviews: false,
+                review_excerpts: false,
+                ccu: false,
+                price: false,
+            },
+        )
+    })
+    .await
+    .unwrap_or_default();
+    let mut enqueued = 0_u32;
+    for target in &targets {
+        let app_id = target.app_id;
+        let name = storage_result(repo, move |repo| repo.get_app(app_id))
+            .await
+            .ok()
+            .flatten()
+            .map(|a| a.canonical_name)
+            .unwrap_or_else(|| format!("app-{app_id}"));
+        let missing = vec!["store_details".into()];
+        if storage_result(repo, {
+            let name = name.clone();
+            let missing = missing.clone();
+            move |repo| repo.enqueue_web_discovery(app_id, &name, &missing)
+        })
+        .await
+        .is_ok()
+        {
+            enqueued = enqueued.saturating_add(1);
+        }
+    }
+    let payload = json!({
+        "mode": mode,
+        "store_only": mode == "store_only",
+        "priority_target": priority_target,
+        "priority_remaining": priority_target.saturating_sub(enqueued),
+        "web_discovery_enqueued": enqueued,
+        "started_at_ms": chrono_like_now_ms()
+    });
+    let payload_text = payload.to_string();
+    let _ = storage_result(repo, move |repo| {
+        repo.put_bootstrap_state("first_start", &payload_text)
+    })
+    .await;
+    Json(json!({ "bootstrap": payload })).into_response()
 }
 
 fn chrono_like_now_ms() -> i64 {
@@ -4095,7 +4528,139 @@ fn interpret_natural_language(query: &str) -> NaturalLanguageInterpretation {
         platforms,
         demo_only,
         selected_section,
+        max_price_minor: None,
+        currency: None,
+        modes_preferred: Vec::new(),
+        modes_excluded: Vec::new(),
+        hard_constraints: Vec::new(),
+        intent_confidence: None,
     }
+}
+
+fn apply_intent_delta(interpreted: &mut NaturalLanguageInterpretation, delta: &serde_json::Value) {
+    if let Some(size) = delta.get("party_size").and_then(|v| v.as_u64())
+        && (1..=64).contains(&size)
+    {
+        interpreted.party_size = Some(size as u8);
+        push_hard(&mut interpreted.hard_constraints, "party_size");
+    }
+    if let Some(max) = delta
+        .pointer("/session_minutes/max")
+        .and_then(|v| v.as_u64())
+    {
+        interpreted.session_minutes_max = u32::try_from(max).ok();
+        push_hard(&mut interpreted.hard_constraints, "session_minutes");
+    }
+    if let Some(platforms) = delta.get("platforms").and_then(|v| v.as_array()) {
+        let mut next = Vec::new();
+        for p in platforms {
+            if let Some(s) = p.as_str() {
+                match s {
+                    "windows" | "macos" | "linux" | "steamdeck" => next.push(s.to_owned()),
+                    _ => {}
+                }
+            }
+        }
+        if !next.is_empty() {
+            interpreted.platforms = next;
+            push_hard(&mut interpreted.hard_constraints, "platforms");
+        }
+    }
+    if let Some(budget) = delta.pointer("/budget/max_each").and_then(|v| v.as_i64())
+        && budget >= 0
+    {
+        interpreted.max_price_minor = Some(budget);
+        interpreted.currency = delta
+            .pointer("/budget/currency")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned)
+            .or_else(|| Some("CNY".into()));
+        push_hard(&mut interpreted.hard_constraints, "budget");
+    }
+}
+
+fn apply_structured_intent(
+    interpreted: &mut NaturalLanguageInterpretation,
+    intent: &mpgs_ai::StructuredIntent,
+) {
+    if (intent.is_hard("party_size") || interpreted.party_size.is_none())
+        && let Some(size) = intent.party_size
+    {
+        interpreted.party_size = Some(size);
+    }
+    if (intent.is_hard("platforms") || interpreted.platforms.is_empty())
+        && !intent.platforms.is_empty()
+    {
+        interpreted.platforms = intent.platforms.clone();
+    }
+    if let Some(session) = &intent.session_minutes
+        && (intent.is_hard("session_minutes") || interpreted.session_minutes_max.is_none())
+        && let Some(max) = session.max
+    {
+        interpreted.session_minutes_max = Some(max);
+    }
+    if let Some(budget) = &intent.budget
+        && intent.is_hard("budget")
+    {
+        interpreted.max_price_minor = budget.max_each;
+        interpreted.currency = budget.currency.clone();
+    }
+    if intent.self_hosting.as_deref() == Some("required") {
+        interpreted.self_hosting_willingness = Some(1.0);
+    }
+    if intent.demo_required == Some(true) {
+        interpreted.demo_only = true;
+    }
+    interpreted.modes_preferred = intent.modes_preferred.clone();
+    interpreted.modes_excluded = intent.modes_excluded.clone();
+    interpreted.hard_constraints = intent.hard_constraints.clone();
+    interpreted.intent_confidence = Some(intent.confidence);
+}
+
+fn push_hard(list: &mut Vec<String>, field: &str) {
+    if !list.iter().any(|f| f == field) {
+        list.push(field.to_owned());
+    }
+}
+
+async fn try_ai_intent_parse(
+    router: &TaskRouter,
+    gateway: &AiGateway,
+    query: &str,
+    rules: &NaturalLanguageInterpretation,
+) -> Option<mpgs_ai::StructuredIntent> {
+    if !router.is_available() && !gateway.is_available() {
+        return None;
+    }
+    let baseline = RuleIntentBaseline {
+        party_size: rules.party_size,
+        platforms: rules.platforms.clone(),
+        session_minutes_max: rules.session_minutes_max,
+        demo_required: rules.demo_only,
+        self_hosting_required: rules
+            .self_hosting_willingness
+            .is_some_and(|v| v >= 0.5),
+        coop_competitive: rules.coop_competitive,
+    };
+    let data_prompt = wrap_untrusted_data_block("user_query", query, 500);
+    let request = StructuredRequest {
+        task: AiTaskType::IntentParse,
+        system_prompt: intent_parse_system_prompt().to_owned(),
+        data_prompt,
+        json_schema_name: "intent_parse".into(),
+        json_schema: intent_parse_schema(),
+        max_output_tokens: 512,
+        temperature: 0.0,
+        model: None,
+        protocol: None,
+    };
+    let response = if router.is_available() {
+        router.structured_completion(request).await.ok()?.response
+    } else {
+        gateway.structured_completion(request).await.ok()?
+    };
+    let ai = parse_structured_intent(&response.content).ok()?;
+    Some(merge_intent_with_rules(ai, &baseline))
 }
 
 fn contains_any(haystack: &str, needles: &[&str]) -> bool {

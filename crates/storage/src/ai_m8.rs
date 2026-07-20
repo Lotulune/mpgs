@@ -390,6 +390,141 @@ pub fn get_bootstrap_state(conn: &Connection, key: &str) -> StorageResult<Option
     Ok(value)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GameAiSummaryRow {
+    pub app_id: u32,
+    pub input_hash: String,
+    pub prompt_version: String,
+    pub summary_json: String,
+    pub evidence_ids_json: String,
+    pub review_status: String,
+    pub model: Option<String>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+    pub expires_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpsertGameAiSummary {
+    pub app_id: u32,
+    pub input_hash: String,
+    pub prompt_version: String,
+    pub summary_json: String,
+    pub evidence_ids_json: String,
+    pub review_status: String,
+    pub model: Option<String>,
+    pub created_at_ms: i64,
+    pub expires_at_ms: i64,
+}
+
+pub fn upsert_game_ai_summary(
+    conn: &Connection,
+    row: &UpsertGameAiSummary,
+) -> StorageResult<()> {
+    match row.review_status.as_str() {
+        "pending_review" | "accepted" | "rejected" => {}
+        _ => {
+            return Err(StorageError::validation(
+                "review_status must be pending_review|accepted|rejected",
+            ));
+        }
+    }
+    serde_json::from_str::<serde_json::Value>(&row.summary_json)
+        .map_err(|_| StorageError::validation("summary_json must be valid JSON"))?;
+    conn.execute(
+        "INSERT INTO game_ai_summaries (
+            app_id, input_hash, prompt_version, summary_json, evidence_ids_json,
+            review_status, model, created_at_ms, updated_at_ms, expires_at_ms
+         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?8,?9)
+         ON CONFLICT(app_id, prompt_version) DO UPDATE SET
+            input_hash = excluded.input_hash,
+            summary_json = excluded.summary_json,
+            evidence_ids_json = excluded.evidence_ids_json,
+            review_status = excluded.review_status,
+            model = excluded.model,
+            updated_at_ms = excluded.updated_at_ms,
+            expires_at_ms = excluded.expires_at_ms",
+        params![
+            i64::from(row.app_id),
+            row.input_hash,
+            row.prompt_version,
+            row.summary_json,
+            row.evidence_ids_json,
+            row.review_status,
+            row.model,
+            row.created_at_ms,
+            row.expires_at_ms,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn get_game_ai_summary(
+    conn: &Connection,
+    app_id: u32,
+    prompt_version: &str,
+    now_ms: i64,
+) -> StorageResult<Option<GameAiSummaryRow>> {
+    conn.query_row(
+        "SELECT app_id, input_hash, prompt_version, summary_json, evidence_ids_json,
+                review_status, model, created_at_ms, updated_at_ms, expires_at_ms
+         FROM game_ai_summaries
+         WHERE app_id = ?1 AND prompt_version = ?2 AND expires_at_ms > ?3",
+        params![i64::from(app_id), prompt_version, now_ms],
+        |row| {
+            Ok(GameAiSummaryRow {
+                app_id: u32::try_from(row.get::<_, i64>(0)?).unwrap_or(0),
+                input_hash: row.get(1)?,
+                prompt_version: row.get(2)?,
+                summary_json: row.get(3)?,
+                evidence_ids_json: row.get(4)?,
+                review_status: row.get(5)?,
+                model: row.get(6)?,
+                created_at_ms: row.get(7)?,
+                updated_at_ms: row.get(8)?,
+                expires_at_ms: row.get(9)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(StorageError::from)
+}
+
+/// Enqueue a web_discovery job with stable idempotency (AI-013).
+pub fn enqueue_web_discovery_job(
+    conn: &Connection,
+    app_id: u32,
+    game_name: &str,
+    missing_features: &[String],
+    now_ms: i64,
+) -> StorageResult<i64> {
+    use crate::jobs::enqueue_job;
+    use crate::models::EnqueueJob;
+
+    let features = missing_features.join(",");
+    let idempotency_key = format!("web_discovery:{app_id}:{features}");
+    let payload = serde_json::json!({
+        "app_id": app_id,
+        "game_name": game_name,
+        "missing_features": missing_features,
+    })
+    .to_string();
+    enqueue_job(
+        conn,
+        &EnqueueJob {
+            source: "web_discovery".into(),
+            task_type: "search_app".into(),
+            entity_key: format!("app:{app_id}"),
+            priority: 40,
+            max_attempts: 5,
+            due_at_ms: now_ms,
+            idempotency_key,
+            payload_json: Some(payload),
+        },
+        now_ms,
+    )
+}
+
 fn validate_analysis_status(status: &str) -> StorageResult<()> {
     match status {
         "pending" | "used" | "cached" | "fallback" | "disabled" => Ok(()),
@@ -519,5 +654,42 @@ mod tests {
         .unwrap();
         let value = repo.get_bootstrap_state("first_start").unwrap().unwrap();
         assert!(value.contains("store_only"));
+    }
+
+    #[test]
+    fn game_ai_summary_round_trip() {
+        let repo = repo();
+        repo.seed_demo_if_empty().unwrap();
+        let now = repo.database().now_ms();
+        repo.upsert_game_ai_summary(&UpsertGameAiSummary {
+            app_id: 548430,
+            input_hash: "ih".into(),
+            prompt_version: "summary-v1".into(),
+            summary_json: r#"{"who_it_fits":{"text":"x","evidence_ids":["e"],"confidence":0.5}}"#
+                .into(),
+            evidence_ids_json: r#"["e"]"#.into(),
+            review_status: "pending_review".into(),
+            model: Some("rule".into()),
+            created_at_ms: now,
+            expires_at_ms: now + 86_400_000,
+        })
+        .unwrap();
+        let loaded = repo
+            .get_game_ai_summary(548430, "summary-v1", now)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.review_status, "pending_review");
+    }
+
+    #[test]
+    fn web_discovery_job_is_idempotent() {
+        let repo = repo();
+        let first = repo
+            .enqueue_web_discovery(1, "Game", &["private_session".into()])
+            .unwrap();
+        let second = repo
+            .enqueue_web_discovery(1, "Game", &["private_session".into()])
+            .unwrap();
+        assert_eq!(first, second);
     }
 }

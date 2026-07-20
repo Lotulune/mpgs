@@ -9,22 +9,48 @@
 
 #![forbid(unsafe_code)]
 
+pub mod compare;
 pub mod error;
 pub mod gateway;
+pub mod group_advice;
 pub mod host_limit;
+pub mod intent;
 pub mod model_registry;
 pub mod openai_compat;
 pub mod provider;
 pub mod route;
 pub mod router;
 pub mod sanitize;
+pub mod summary;
 pub mod types;
 pub mod validate;
 pub mod vector;
+pub mod web_discovery;
 
 pub use error::AiError;
 pub use gateway::{AiGateway, AiPolicy};
 pub use host_limit::{HostLimitConfig, HostLimiter, HostPermit};
+pub use compare::{
+    COMPARE_COLUMNS, COMPARE_PROMPT_VERSION, CompareExplanation, compare_schema,
+    compare_system_prompt, parse_compare_explanation,
+};
+pub use group_advice::{
+    AppVoteCount, GROUP_ADVICE_PROMPT_VERSION, GroupAdviceRequest, GroupAdviceResult,
+    deterministic_group_advice, group_advice_schema, group_advice_system_prompt, parse_group_advice,
+};
+pub use intent::{
+    INTENT_PROMPT_VERSION, RuleIntentBaseline, StructuredIntent, merge_intent_with_rules,
+    parse_structured_intent,
+};
+pub use summary::{
+    SUMMARY_PROMPT_VERSION, GameAiSummary, game_summary_schema, game_summary_system_prompt,
+    parse_game_summary, rule_game_summary,
+};
+pub use web_discovery::{
+    DisabledWebSearchProvider, FakeWebSearchProvider, SourceTier, SourceWhitelist, WebSearchHit,
+    WebSearchProvider, WebSearchQuery, discovery_query_for_app, host_from_url,
+    normalize_search_hits, web_content_hash,
+};
 pub use model_registry::{
     ModelRegistry, apply_canary_result, capabilities_from_model_ids, parse_models_list,
 };

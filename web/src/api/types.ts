@@ -81,7 +81,7 @@ export interface MetaResponse {
   demo_mode: boolean;
 }
 
-export type AiStatus = "used" | "cached" | "fallback" | "disabled";
+export type AiStatus = "pending" | "used" | "cached" | "fallback" | "disabled";
 
 export interface FeedItem {
   app_id: number;
@@ -182,6 +182,11 @@ export interface NaturalLanguageRecommendationResponse {
     session_minutes_max: number | null;
     coop_competitive: number | null;
     self_hosting_willingness?: number | null;
+    platforms?: string[];
+    hard_constraints?: string[];
+    intent_confidence?: number | null;
+    max_price_minor?: number | null;
+    currency?: string | null;
   };
   items: FeedItem[];
   ai_status: AiStatus;
@@ -190,6 +195,7 @@ export interface NaturalLanguageRecommendationResponse {
   fallback_reason: string | null;
   ai_summary?: string | null;
   ai_summary_evidence_ids?: string[];
+  analysis_id?: string;
   algorithm_version: string;
   data_updated_at_ms: number;
 }

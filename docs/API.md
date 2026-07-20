@@ -324,7 +324,7 @@ Embedding 或 AI 意图解析不可用时回退到 FTS 和当前偏好。
 
 ### `POST /v1/ai/compare`
 
-输入 2–4 个候选 `app_ids`，服务端生成事实矩阵；模型解释为可选增强，失败时只返回事实矩阵。
+输入 2–4 个候选 `app_ids`，服务端生成事实矩阵；模型只解释差异，不得使用任意列名。失败时仍返回事实矩阵。
 
 ```json
 { "app_ids": [548430, 632360] }
@@ -332,7 +332,26 @@ Embedding 或 AI 意图解析不可用时回退到 FTS 和当前偏好。
 
 ### `GET /v1/games/{app_id}/ai-summary`
 
-读取离线六段式游戏总结。批任务未生成时返回 `ai_status=disabled` 与空段落，不编造内容。
+读取六段式游戏总结。优先缓存/离线模型结果；否则返回规则摘要（`ai_status=fallback`）并落库待审核。
+
+### `POST /v1/ai/group-advice`
+
+仅接受聚合偏好、候选 AppID 与公开票数，不接受成员隐私字段。AI 失败时使用确定性折中排序。
+
+```json
+{
+  "party_size": 3,
+  "platforms": ["windows"],
+  "candidate_app_ids": [548430, 632360],
+  "vote_counts": [{ "app_id": 548430, "votes": 4 }]
+}
+```
+
+### `GET|POST /admin/v1/bootstrap`
+
+观察/启动首次启动模式（`store_only`、重点候选优先、Web 发现入队）。`POST` 需要管理员 Bearer Token。
+
+自然语言请求可附 `async=true`（基础结果不等待 rank AI）与 `intent_delta`（结构化多轮增量，不传完整聊天原文）。
 
 ## 12. 游戏详情与证据
 

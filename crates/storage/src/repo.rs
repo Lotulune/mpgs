@@ -1387,4 +1387,41 @@ impl Repository {
         self.db
             .with_conn(|conn| crate::ai_m8::get_bootstrap_state(conn, key))
     }
+
+    pub fn upsert_game_ai_summary(
+        &self,
+        row: &crate::ai_m8::UpsertGameAiSummary,
+    ) -> StorageResult<()> {
+        self.db
+            .with_conn_mut(|conn| crate::ai_m8::upsert_game_ai_summary(conn, row))
+    }
+
+    pub fn get_game_ai_summary(
+        &self,
+        app_id: u32,
+        prompt_version: &str,
+        now_ms: i64,
+    ) -> StorageResult<Option<crate::ai_m8::GameAiSummaryRow>> {
+        self.db.with_conn(|conn| {
+            crate::ai_m8::get_game_ai_summary(conn, app_id, prompt_version, now_ms)
+        })
+    }
+
+    pub fn enqueue_web_discovery(
+        &self,
+        app_id: u32,
+        game_name: &str,
+        missing_features: &[String],
+    ) -> StorageResult<i64> {
+        let now = self.db.now_ms();
+        self.db.with_conn_mut(|conn| {
+            crate::ai_m8::enqueue_web_discovery_job(
+                conn,
+                app_id,
+                game_name,
+                missing_features,
+                now,
+            )
+        })
+    }
 }
