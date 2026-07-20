@@ -11,4 +11,3 @@ Unit=mpgs-update.service
 
 [Install]
 WantedBy=timers.target
-
