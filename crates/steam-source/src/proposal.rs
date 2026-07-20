@@ -100,6 +100,38 @@ pub struct ReviewSummaryProposal {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PopularReviewProposal {
+    pub recommendation_id: String,
+    pub author_name: Option<String>,
+    pub author_profile_url: Option<String>,
+    pub language: String,
+    pub review_text: String,
+    pub voted_up: bool,
+    pub votes_up: u32,
+    pub votes_funny: u32,
+    pub comment_count: u32,
+    pub playtime_forever_minutes: Option<u32>,
+    pub playtime_at_review_minutes: Option<u32>,
+    pub created_at_s: i64,
+    pub updated_at_s: i64,
+    pub steam_purchase: bool,
+    pub received_for_free: bool,
+    pub written_during_early_access: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PopularReviewsProposal {
+    pub app_id: SteamAppId,
+    pub language_scope: String,
+    pub reviews: Vec<PopularReviewProposal>,
+    pub parameter_hash: String,
+    pub content_hash: String,
+    pub source: &'static str,
+    pub stability: SourceStability,
+    pub adapter_version: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CcuProposal {
     pub app_id: SteamAppId,
     pub player_count: Option<u32>,
@@ -147,6 +179,10 @@ pub struct StorePriceProposal {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StoreDetailsProposal {
     pub app_id: SteamAppId,
+    /// Store country used for regional price and availability checks.
+    pub country_code: String,
+    /// Store locale used for localized name and summary fields.
+    pub language: String,
     pub name: Option<String>,
     pub app_type: AppTypeProposal,
     pub release_state: ReleaseStateProposal,
@@ -164,6 +200,7 @@ pub struct StoreDetailsProposal {
     pub developers: Vec<String>,
     pub publishers: Vec<String>,
     pub short_description: Option<String>,
+    pub header_image_url: Option<String>,
     pub demo_app_ids: Vec<SteamAppId>,
     pub fullgame_app_id: Option<SteamAppId>,
     pub multiplayer_category_hints: Vec<String>,

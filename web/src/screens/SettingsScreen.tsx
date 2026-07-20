@@ -4,6 +4,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ApiError } from "../api/client";
 import type { UserPreferences } from "../api/types";
+import { requestAccountSignIn } from "../app/auth";
 import { apiClient, feedbackQueue } from "../app/runtime";
 import { useTheme } from "../app/ThemeProvider";
 import { useToast } from "../app/ToastProvider";
@@ -22,6 +23,7 @@ import {
 } from "../app/preferences";
 import { THEME_ORDER, THEMES } from "../theme/registry";
 import type { FxIntensity } from "../fx/types";
+import { AiSettingsScreen } from "./AiSettingsScreen";
 
 const PARTY_CHOICES = [2, 3, 4, 5, 6, 8];
 const BUDGET_CHOICES: { label: string; minor: number | null }[] = [
@@ -80,6 +82,9 @@ export function SettingsScreen() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [pendingPreferences, setPendingPreferences] = useState(hasPendingPreferencePatch);
   const [syncingPreferences, setSyncingPreferences] = useState(false);
+  const [accountAuthenticated, setAccountAuthenticated] = useState(() =>
+    apiClient.isAccountAuthenticated(),
+  );
   const saveBtnRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
@@ -107,6 +112,11 @@ export function SettingsScreen() {
     };
   }, []);
 
+  useEffect(
+    () => apiClient.subscribeAuth(() => setAccountAuthenticated(apiClient.isAccountAuthenticated())),
+    [],
+  );
+
   // When the server prefs never loaded (offline), allow saving anyway so the
   // attempt can create/update once connectivity returns.
   const dirty = base === null ? true : preferencesChanged(base, draft);
@@ -114,6 +124,10 @@ export function SettingsScreen() {
   const patch = (fields: Partial<UserPreferences>) => setDraft((d) => ({ ...d, ...fields }));
 
   const save = async () => {
+    if (!apiClient.isAccountAuthenticated()) {
+      requestAccountSignIn();
+      return;
+    }
     setSaving(true);
     if (!queuePreferencePatch(editablePreferencePatch(draft))) {
       toast.show("无法在本机保存偏好，请检查存储权限后重试。");
@@ -363,6 +377,18 @@ export function SettingsScreen() {
         </div>
         <p className="cal-note">清除缓存不会删除尚未同步的反馈。</p>
       </div>
+
+      {accountAuthenticated ? (
+        <AiSettingsScreen embedded />
+      ) : (
+        <div className="panel" aria-label="AI 设置">
+          <h4>AI 设置</h4>
+          <p className="cal-note">登录后可选择内置 AI、自定义 OpenAI 兼容 API，或关闭 AI。</p>
+          <button type="button" className="btn primary" onClick={requestAccountSignIn}>
+            登录后配置
+          </button>
+        </div>
+      )}
     </section>
   );
 }

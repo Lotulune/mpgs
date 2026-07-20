@@ -1,0 +1,36 @@
+{
+  "success": 1,
+  "query_summary": {"num_reviews": 2, "review_score": 8, "review_score_desc": "特别好评", "total_positive": 100, "total_negative": 10, "total_reviews": 110},
+  "reviews": [
+    {
+      "recommendationid": "r-1",
+      "author": {"personaname": "测试玩家", "profile_url": "https://steamcommunity.com/id/example/", "playtime_forever": 9000, "playtime_at_review": 7200},
+      "language": "schinese",
+      "review": "[h1]很适合和朋友一起玩。[/h1]\n\n\n更新后内容更丰富。",
+      "timestamp_created": 1700000000,
+      "timestamp_updated": 1700000100,
+      "voted_up": true,
+      "votes_up": 321,
+      "votes_funny": 4,
+      "comment_count": 8,
+      "steam_purchase": true,
+      "received_for_free": false,
+      "written_during_early_access": true
+    },
+    {
+      "recommendationid": "r-2",
+      "author": {"personaname": "另一位玩家", "playtime_forever": 180},
+      "language": "schinese",
+      "review": "联机体验不错，但服务器仍可改进。",
+      "timestamp_created": 1700000200,
+      "timestamp_updated": 1700000200,
+      "voted_up": false,
+      "votes_up": 88,
+      "votes_funny": 1,
+      "comment_count": 2,
+      "steam_purchase": true,
+      "received_for_free": false,
+      "written_during_early_access": false
+    }
+  ]
+}

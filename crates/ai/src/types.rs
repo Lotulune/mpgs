@@ -51,6 +51,8 @@ pub struct StructuredResponse {
     pub content: Value,
     pub usage_input: u32,
     pub usage_output: u32,
+    pub prompt_cache_hit_tokens: Option<u32>,
+    pub prompt_cache_miss_tokens: Option<u32>,
     pub latency_ms: u64,
 }
 

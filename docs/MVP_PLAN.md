@@ -207,9 +207,9 @@ flowchart LR
 
 - 可追溯：`/v1/meta` 增加 `schema_version`、`build_git_sha`、`data_updated_at_ms`；`apps/server/build.rs` + `MPGS_BUILD_GIT_SHA`；`scripts/package_server.ps1` 产出 `PROVENANCE.json` 与 `SHA256SUMS.txt`。
 - 服务包：`packaging/linux`（systemd + install.sh）、`packaging/windows`（WinSW XML + install/uninstall）、`packaging/common/mpgs.env.example`；SIGTERM 优雅停机。
-- 测试：server `m6_*`（meta 溯源、soak、AI/管理故障面）；storage 逐级升级路径 + backup/restore 后可继续 migrate。
+- 测试：server `m6_*`（meta/二进制溯源、并发与进程级 soak、AI 超时/禁用、SQLite 锁等待、管理故障面）；storage 逐级升级路径 + backup/restore 后可继续 migrate；2,000 游戏 P95 在 M6 验收中显式运行。
 - 文档：[OPERATIONS](OPERATIONS.md)、[ROLLBACK](ROLLBACK.md)、[KNOWN_LIMITATIONS](KNOWN_LIMITATIONS.md)、[PRIVACY](PRIVACY.md)、[SIGNING_AND_UPDATES](SIGNING_AND_UPDATES.md)、[STEAM_BRAND_REVIEW](STEAM_BRAND_REVIEW.md)、[THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES.md)（`scripts/generate_third_party_licenses.ps1`）。
-- 验收：[`docs/M6_ACCEPTANCE.md`](M6_ACCEPTANCE.md) + [`scripts/m6_acceptance.ps1`](../scripts/m6_acceptance.ps1)；可选 `-Package` 打 release 布局。
+- 验收：[`docs/M6_ACCEPTANCE.md`](M6_ACCEPTANCE.md) + [`scripts/m6_acceptance.ps1`](../scripts/m6_acceptance.ps1)；默认验收必须生成并核验 release 服务包。
 - **仍属人工/授权门禁（不阻塞工程基线）**：代码签名与公证启用、自动更新公钥接入、发布负责人隐私/许可/Steam 品牌签字、公网部署。桌面三平台包继续沿用 M4 CI smoke 证据。
 
 ## 3. 可执行 Backlog

@@ -70,7 +70,7 @@ const SEED: &[SeedGame] = &[
         rec_max: 4,
         reviews: 300_000,
         positive: 290_000,
-        ccu: 12_000,
+        ccu: 900,
         section_hint: "classic_legacy",
     },
     SeedGame {
@@ -86,7 +86,7 @@ const SEED: &[SeedGame] = &[
         rec_max: 4,
         reviews: 200_000,
         positive: 190_000,
-        ccu: 8_000,
+        ccu: 800,
         section_hint: "classic_legacy",
     },
     SeedGame {
@@ -102,7 +102,7 @@ const SEED: &[SeedGame] = &[
         rec_max: 10,
         reviews: 400_000,
         positive: 380_000,
-        ccu: 20_000,
+        ccu: 700,
         section_hint: "classic_legacy",
     },
     SeedGame {
@@ -201,7 +201,30 @@ const SEED: &[SeedGame] = &[
         ccu: 500,
         section_hint: "rolling_recent_sample",
     },
+    SeedGame {
+        app_id: 2500003,
+        name: "Classic Co-op Sample",
+        release_state: "released",
+        release_date: Some("2019-06-01"),
+        dominant_mode: "private_coop",
+        private_session: true,
+        online_coop: true,
+        self_host: false,
+        rec_min: 2,
+        rec_max: 4,
+        reviews: 8_000,
+        positive: 7_200,
+        ccu: 250,
+        section_hint: "classic_legacy",
+    },
 ];
+
+fn seed_capsule_url(app_id: u32) -> Option<String> {
+    // Synthetic examples intentionally keep the letter fallback, while known
+    // Steam apps use the same approved CDN header convention as catalog sync.
+    (app_id < 2_000_000)
+        .then(|| format!("https://cdn.akamai.steamstatic.com/steam/apps/{app_id}/header.jpg"))
+}
 
 /// Seed a minimal multiplayer catalog if apps table is empty.
 pub fn seed_demo_catalog_if_empty(conn: &Connection, now_ms: i64) -> StorageResult<usize> {
@@ -229,6 +252,17 @@ pub fn seed_demo_catalog(conn: &Connection, now_ms: i64) -> StorageResult<usize>
             None,
             now_ms,
         )?;
+        if let Some(capsule_url) = seed_capsule_url(game.app_id) {
+            conn.execute(
+                "INSERT INTO app_media (app_id, capsule_url, source, updated_at_ms)
+                 VALUES (?1, ?2, 'demo_seed', ?3)
+                 ON CONFLICT(app_id) DO UPDATE SET
+                    capsule_url = excluded.capsule_url,
+                    source = excluded.source,
+                    updated_at_ms = excluded.updated_at_ms",
+                params![game.app_id, capsule_url, now_ms],
+            )?;
+        }
         set_profile_text_field(
             conn,
             game.app_id,

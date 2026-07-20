@@ -9,14 +9,21 @@
 // The client never touches server keys; everything here ships inside the desktop bundle.
 
 import type {
+  AccountProfile,
+  AiSettings,
   CalendarResponse,
   CalendarPeriod,
+  CommunityResponse,
+  CommunityFilters,
+  CommunitySort,
   ErrorEnvelope,
   EvidenceResponse,
   FeedbackRecord,
   FeedbackType,
   FeedResponse,
   FeedSection,
+  FeedSort,
+  FeedSortOrder,
   GameDetail,
   MetaResponse,
   NaturalLanguageRecommendationResponse,
@@ -30,10 +37,15 @@ import { getClientStorage } from "./storage";
 
 const SESSION_KEY = "mpgs.session.v1";
 const DEVICE_KEY = "mpgs.device.v1";
-const CACHE_PREFIX = "mpgs.cache.v1:";
+// Bump when cached feed/detail payload shape changes (covers, stats, pagination).
+const CACHE_PREFIX = "mpgs.cache.v2:";
 
 export type ApiErrorCode =
+  | "account_conflict"
+  | "ai_connection_failed"
   | "invalid_argument"
+  | "invalid_avatar"
+  | "merge_choice_required"
   | "unauthenticated"
   | "forbidden"
   | "not_found"
@@ -103,6 +115,7 @@ export class ApiClient {
   private readonly now: () => number;
   private session: SessionTokens | null = null;
   private sessionPromise: Promise<SessionTokens | null> | null = null;
+  private authListeners = new Set<() => void>();
 
   constructor(options: ApiClientOptions = {}) {
     this.baseUrl = (options.baseUrl ?? "").replace(/\/$/, "");
@@ -131,7 +144,7 @@ export class ApiClient {
       if (typeof parsed.access_token !== "string" || typeof parsed.refresh_token !== "string") {
         return null;
       }
-      return parsed;
+      return { ...parsed, account: parsed.account === true };
     } catch {
       return null;
     }
@@ -144,6 +157,12 @@ export class ApiClient {
     } else {
       this.storage.removeItem(SESSION_KEY);
     }
+    for (const listener of this.authListeners) listener();
+  }
+
+  subscribeAuth(listener: () => void): () => void {
+    this.authListeners.add(listener);
+    return () => this.authListeners.delete(listener);
   }
 
   /** Mark the access token expired but keep the refresh token for a refresh. */
@@ -157,14 +176,18 @@ export class ApiClient {
     return this.session !== null;
   }
 
-  /** Current anonymous identity, used to scope persisted user-specific state. */
+  isAccountAuthenticated(): boolean {
+    return this.session?.account === true;
+  }
+
+  /** Current opaque identity, used to scope persisted user-specific state. */
   sessionUserId(): string | null {
     return this.session?.user_id ?? null;
   }
 
   /**
-   * Ensure a usable anonymous session. Refreshes an expired access token via the
-   * refresh token, creating a brand-new anonymous session as a last resort.
+   * Ensure a usable migration or account session. A rejected account refresh
+   * falls back to an anonymous browsing session, never to an account guess.
    * Single-flight: concurrent callers share one bootstrap.
    */
   async ensureSession(): Promise<SessionTokens | null> {
@@ -181,7 +204,8 @@ export class ApiClient {
     const current = this.session;
     if (current && current.refresh_expires_at_ms > this.now() + 30_000) {
       try {
-        const refreshed = await this.rawJson<SessionTokens>("POST", "/v1/session/refresh", {
+        const refreshPath = current.account ? "/v1/auth/refresh" : "/v1/session/refresh";
+        const refreshed = await this.rawJson<SessionTokens>("POST", refreshPath, {
           body: { refresh_token: current.refresh_token },
           auth: false,
         });
@@ -196,7 +220,7 @@ export class ApiClient {
     const fresh = await this.rawJson<SessionTokens>("POST", "/v1/session/anonymous", {
       auth: false,
     });
-    this.saveSession(fresh);
+    this.saveSession({ ...fresh, account: false });
     return fresh;
   }
 
@@ -293,6 +317,70 @@ export class ApiClient {
     return (await response.json()) as T;
   }
 
+  private async accountResponse(
+    method: string,
+    path: string,
+    body?: unknown,
+  ): Promise<Response> {
+    if (!this.isAccountAuthenticated()) {
+      throw new ApiError({
+        code: "unauthenticated",
+        status: 401,
+        message: "sign in to continue",
+      });
+    }
+    const response = await this.rawResponse(method, path, { auth: true, body });
+    if (!response.ok) throw await this.parseError(response);
+    return response;
+  }
+
+  private async accountBinaryResponse(
+    method: string,
+    path: string,
+    body: Blob,
+    contentType?: string,
+  ): Promise<Response> {
+    if (!this.isAccountAuthenticated()) {
+      throw new ApiError({
+        code: "unauthenticated",
+        status: 401,
+        message: "sign in to continue",
+      });
+    }
+    const resolvedType = contentType || contentTypeForBlob(body);
+    const send = async (): Promise<Response> => {
+      const session = await this.ensureSession();
+      if (!session) {
+        throw new ApiError({ code: "unauthenticated", status: 401, message: "sign in to continue" });
+      }
+      try {
+        return await this.fetchFn(`${this.baseUrl}${path}`, {
+          method,
+          headers: {
+            "x-device-id": this.deviceId(),
+            authorization: `Bearer ${session.access_token}`,
+            "content-type": resolvedType,
+          },
+          body,
+        });
+      } catch (cause) {
+        throw new ApiError({
+          code: "network",
+          status: 0,
+          message: cause instanceof Error ? cause.message : "network request failed",
+          offline: true,
+        });
+      }
+    };
+    let response = await send();
+    if (response.status === 401) {
+      this.invalidateAccess();
+      response = await send();
+    }
+    if (!response.ok) throw await this.parseError(response);
+    return response;
+  }
+
   // --- ETag snapshot cache ---
 
   private readCache<T>(key: string): CacheEntry<T> | null {
@@ -381,25 +469,32 @@ export class ApiClient {
     section: FeedSection,
     query: {
       limit?: number;
+      page?: number;
       cursor?: string;
       partySize?: number;
       demoOnly?: boolean;
+      sort?: FeedSort;
+      order?: FeedSortOrder;
     } = {},
   ): Promise<CachedResult<FeedResponse>> {
     const params = new URLSearchParams();
     if (query.limit) params.set("limit", String(query.limit));
+    if (query.page) params.set("page", String(query.page));
     if (query.cursor) params.set("cursor", query.cursor);
     if (query.partySize) params.set("party_size", String(query.partySize));
     if (query.demoOnly) params.set("demo_only", "true");
+    if (query.sort && query.sort !== "recommended") params.set("sort", query.sort);
+    if (query.order) params.set("order", query.order);
     const qs = params.toString();
     const path = `/v1/feeds/${section}${qs ? `?${qs}` : ""}`;
-    // Cursor pages are not cached: only first pages serve as offline snapshots.
-    if (query.cursor) {
+    // Only the first page is cached as an offline snapshot.
+    const isFirstPage = !query.cursor && (query.page === undefined || query.page <= 1);
+    if (!isFirstPage) {
       return this.uncachedGet<FeedResponse>(path, this.hasSession());
     }
-    const cacheKey = `feed:${section}:${query.partySize ?? "p"}:${query.demoOnly ? 1 : 0}:${
-      this.session?.user_id ?? "anon"
-    }`;
+    const cacheKey = `feed:v4:${section}:${query.limit ?? "d"}:${query.partySize ?? "p"}:${
+      query.demoOnly ? 1 : 0
+    }:${query.sort ?? "recommended"}:${query.order ?? "auto"}:${this.session?.user_id ?? "anon"}`;
     return this.cachedGet<FeedResponse>(cacheKey, path, this.hasSession());
   }
 
@@ -429,11 +524,31 @@ export class ApiClient {
   async naturalLanguageRecommendations(
     query: string,
     limit = 6,
+    customAi?: {
+      provider: "openai_compat";
+      baseUrl: string;
+      model: string;
+      apiKey: string;
+    },
   ): Promise<NaturalLanguageRecommendationResponse> {
     return this.rawJson<NaturalLanguageRecommendationResponse>(
       "POST",
       "/v1/recommendations/natural-language",
-      { auth: true, body: { query, limit } },
+      {
+        auth: true,
+        body: {
+          query,
+          limit,
+          custom_ai: customAi
+            ? {
+                provider: customAi.provider,
+                base_url: customAi.baseUrl,
+                model: customAi.model,
+                api_key: customAi.apiKey,
+              }
+            : undefined,
+        },
+      },
     );
   }
 
@@ -457,14 +572,13 @@ export class ApiClient {
   }
 
   async getPreferences(): Promise<UserPreferences> {
-    return this.rawJson<UserPreferences>("GET", "/v1/preferences", { auth: true });
+    const response = await this.accountResponse("GET", "/v1/preferences");
+    return (await response.json()) as UserPreferences;
   }
 
   async putPreferences(prefs: UserPreferences): Promise<UserPreferences> {
-    return this.rawJson<UserPreferences>("PUT", "/v1/preferences", {
-      auth: true,
-      body: prefs,
-    });
+    const response = await this.accountResponse("PUT", "/v1/preferences", prefs);
+    return (await response.json()) as UserPreferences;
   }
 
   async postFeedback(args: {
@@ -473,7 +587,10 @@ export class ApiClient {
     idempotencyKey: string;
     clientCreatedAtMs: number;
   }): Promise<FeedbackRecord> {
-    return this.rawJson<FeedbackRecord>("POST", "/v1/feedback", {
+    if (!this.isAccountAuthenticated()) {
+      throw new ApiError({ code: "unauthenticated", status: 401, message: "sign in to continue" });
+    }
+    const response = await this.rawResponse("POST", "/v1/feedback", {
       auth: true,
       headers: { "idempotency-key": args.idempotencyKey },
       body: {
@@ -482,20 +599,197 @@ export class ApiClient {
         client_created_at_ms: args.clientCreatedAtMs,
       },
     });
+    if (!response.ok) throw await this.parseError(response);
+    return (await response.json()) as FeedbackRecord;
   }
 
   async undoFeedback(feedbackId: number): Promise<FeedbackRecord> {
-    return this.rawJson<FeedbackRecord>("POST", `/v1/feedback/${feedbackId}/undo`, {
-      auth: true,
-    });
+    const response = await this.accountResponse("POST", `/v1/feedback/${feedbackId}/undo`);
+    return (await response.json()) as FeedbackRecord;
   }
 
   async setPlayIntent(appId: number, intent: boolean): Promise<PlayIntentResult> {
-    return this.rawJson<PlayIntentResult>("POST", `/v1/games/${appId}/play-intent`, {
+    const response = await this.accountResponse("POST", `/v1/games/${appId}/play-intent`, { intent });
+    this.clearCachedResponses();
+    return (await response.json()) as PlayIntentResult;
+  }
+
+  async register(args: {
+    username: string;
+    displayName: string;
+    password: string;
+    deviceLabel?: string;
+  }): Promise<SessionTokens> {
+    const session = await this.rawJson<SessionTokens>("POST", "/v1/auth/register", {
       auth: true,
-      body: { intent },
+      body: {
+        username: args.username,
+        display_name: args.displayName,
+        password: args.password,
+        device_label: args.deviceLabel ?? "MPGS web",
+      },
+    });
+    const accountSession = { ...session, account: true };
+    this.saveSession(accountSession);
+    this.clearCachedResponses();
+    return accountSession;
+  }
+
+  async login(args: {
+    username: string;
+    password: string;
+    deviceLabel?: string;
+    mergePreference?: "anonymous" | "account";
+  }): Promise<SessionTokens> {
+    const session = await this.rawJson<SessionTokens>("POST", "/v1/auth/login", {
+      auth: true,
+      body: {
+        username: args.username,
+        password: args.password,
+        device_label: args.deviceLabel ?? "MPGS web",
+        merge_preference: args.mergePreference,
+      },
+    });
+    const accountSession = { ...session, account: true };
+    this.saveSession(accountSession);
+    this.clearCachedResponses();
+    return accountSession;
+  }
+
+  async logout(): Promise<void> {
+    await this.accountResponse("POST", "/v1/auth/logout");
+    this.saveSession(null);
+    this.clearCachedResponses();
+  }
+
+  async logoutAll(): Promise<void> {
+    await this.accountResponse("POST", "/v1/auth/logout-all");
+    this.saveSession(null);
+    this.clearCachedResponses();
+  }
+
+  async changePassword(oldPassword: string, newPassword: string): Promise<void> {
+    await this.accountResponse("PUT", "/v1/auth/password", {
+      old_password: oldPassword,
+      new_password: newPassword,
     });
   }
+
+  async getMe(): Promise<AccountProfile> {
+    const response = await this.accountResponse("GET", "/v1/me");
+    return (await response.json()) as AccountProfile;
+  }
+
+  async updateMe(displayName: string): Promise<AccountProfile> {
+    const response = await this.accountResponse("PATCH", "/v1/me", { display_name: displayName });
+    return (await response.json()) as AccountProfile;
+  }
+
+  async deleteMe(): Promise<void> {
+    await this.accountResponse("DELETE", "/v1/me");
+    this.saveSession(null);
+    this.clearCachedResponses();
+  }
+
+  async uploadAvatar(file: Blob): Promise<AccountProfile> {
+    const response = await this.accountBinaryResponse(
+      "PUT",
+      "/v1/me/avatar",
+      file,
+      contentTypeForBlob(file),
+    );
+    return (await response.json()) as AccountProfile;
+  }
+
+  async deleteAvatar(): Promise<void> {
+    await this.accountResponse("DELETE", "/v1/me/avatar");
+  }
+
+  async getAiSettings(): Promise<AiSettings> {
+    const response = await this.accountResponse("GET", "/v1/me/ai-settings");
+    return (await response.json()) as AiSettings;
+  }
+
+  async putAiSettings(input: {
+    mode: "builtin" | "custom" | "off";
+    provider?: "openai_compat";
+    baseUrl?: string;
+    model?: string;
+    apiKey?: string;
+  }): Promise<AiSettings> {
+    const response = await this.accountResponse("PUT", "/v1/me/ai-settings", {
+      mode: input.mode,
+      provider: input.provider,
+      base_url: input.baseUrl,
+      model: input.model,
+      api_key: input.apiKey,
+    });
+    return (await response.json()) as AiSettings;
+  }
+
+  async testAiSettings(input: {
+    provider: "openai_compat";
+    baseUrl: string;
+    model: string;
+    apiKey?: string;
+  }): Promise<void> {
+    await this.accountResponse("POST", "/v1/me/ai-settings/test", {
+      mode: "custom",
+      provider: input.provider,
+      base_url: input.baseUrl,
+      model: input.model,
+      api_key: input.apiKey,
+    });
+  }
+
+  async deleteCustomAiKey(): Promise<AiSettings> {
+    const response = await this.accountResponse("DELETE", "/v1/me/ai-settings/custom-key");
+    return (await response.json()) as AiSettings;
+  }
+
+  community(
+    sort: CommunitySort,
+    filters: CommunityFilters = {},
+    cursor?: string,
+  ): Promise<CachedResult<CommunityResponse>> {
+    const params = new URLSearchParams({ sort });
+    if (filters.releaseState) params.set("release_state", filters.releaseState);
+    if (filters.demoOnly) params.set("demo_only", "true");
+    if (filters.platform) params.set("platform", filters.platform);
+    if (filters.partySize) params.set("party_size", String(filters.partySize));
+    if (cursor) params.set("cursor", cursor);
+    const path = `/v1/community/play-intents?${params}`;
+    if (cursor) return this.uncachedGet<CommunityResponse>(path, this.isAccountAuthenticated());
+    const filterKey = [
+      filters.releaseState ?? "any",
+      filters.demoOnly ? "demo" : "all",
+      filters.platform ?? "any",
+      filters.partySize ?? "any",
+    ].join(":");
+    return this.cachedGet<CommunityResponse>(
+      `community:${sort}:${filterKey}:${this.isAccountAuthenticated() ? this.session?.user_id ?? "account" : "public"}`,
+      path,
+      this.isAccountAuthenticated(),
+    );
+  }
+}
+
+/** Prefer browser MIME type; fall back to filename extension for empty File.type. */
+export function contentTypeForBlob(file: Blob): string {
+  const typed = file.type?.trim().toLowerCase() ?? "";
+  if (typed.startsWith("image/")) {
+    if (typed === "image/jpg") return "image/jpeg";
+    return typed;
+  }
+  const name =
+    typeof File !== "undefined" && file instanceof File
+      ? file.name.trim().toLowerCase()
+      : "";
+  if (name.endsWith(".jpg") || name.endsWith(".jpeg")) return "image/jpeg";
+  if (name.endsWith(".png")) return "image/png";
+  if (name.endsWith(".webp")) return "image/webp";
+  // Let the server sniff magic bytes for empty/generic types.
+  return typed || "application/octet-stream";
 }
 
 export function newIdempotencyKey(): string {

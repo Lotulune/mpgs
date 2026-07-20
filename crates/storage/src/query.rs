@@ -2,7 +2,7 @@
 
 use mpgs_domain::{
     CandidateAvailability, FeedSection, MultiplayerSignals, RankingSignals, RecommendationConfig,
-    SteamAppId,
+    SteamAppId, friend_fit,
 };
 use rusqlite::{Connection, OptionalExtension, named_params, params, types::Type};
 
@@ -17,6 +17,11 @@ pub struct GameCandidateRow {
     pub app_type: String,
     pub release_state: String,
     pub release_date: Option<String>,
+    pub release_date_raw: Option<String>,
+    pub release_date_precision: Option<String>,
+    pub cover_url: Option<String>,
+    pub cover_updated_at_ms: Option<i64>,
+    pub short_description: Option<String>,
     pub dominant_mode: Option<String>,
     pub private_session: Option<bool>,
     pub online_coop: Option<bool>,
@@ -37,6 +42,23 @@ pub struct GameCandidateRow {
     pub final_price_minor: Option<i64>,
     pub price_currency: Option<String>,
     pub has_demo: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PopularReviewRow {
+    pub recommendation_id: String,
+    pub rank: u8,
+    pub author_name: Option<String>,
+    pub author_profile_url: Option<String>,
+    pub review_text: String,
+    pub voted_up: bool,
+    pub votes_up: u32,
+    pub votes_funny: u32,
+    pub comment_count: u32,
+    pub playtime_forever_minutes: Option<u32>,
+    pub playtime_at_review_minutes: Option<u32>,
+    pub created_at_ms: i64,
+    pub written_during_early_access: bool,
 }
 
 impl GameCandidateRow {
@@ -172,7 +194,21 @@ pub fn list_candidates(
     limit: i64,
 ) -> StorageResult<Vec<GameCandidateRow>> {
     let mut stmt = conn.prepare(
-        "WITH ranked_reviews AS (
+        "WITH release_date_values AS (
+             SELECT app_id, release_date AS value
+             FROM apps WHERE release_date IS NOT NULL
+             UNION ALL
+             SELECT app_id, old_release_date
+             FROM release_events WHERE old_release_date IS NOT NULL
+             UNION ALL
+             SELECT app_id, new_release_date
+             FROM release_events WHERE new_release_date IS NOT NULL
+         ), classification_dates AS (
+             SELECT app_id, MIN(value) AS first_release_date
+             FROM release_date_values
+             WHERE value GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+             GROUP BY app_id
+         ), ranked_reviews AS (
              SELECT app_id, total_reviews, total_positive, wilson_lower,
                     ROW_NUMBER() OVER (
                         PARTITION BY app_id ORDER BY captured_at_ms DESC, language_scope ASC
@@ -195,7 +231,8 @@ pub fn list_candidates(
              SELECT app_id, CAST(AVG(median_approx_ccu) AS INTEGER) AS typical_ccu
              FROM ranked_daily WHERE row_num <= 7 GROUP BY app_id
          )
-         SELECT a.app_id, a.canonical_name, a.app_type, a.release_state, a.release_date,
+         SELECT a.app_id, a.canonical_name, a.app_type, a.release_state,
+                COALESCE(cd.first_release_date, a.release_date),
                 p.dominant_mode, p.private_session, p.online_coop, p.self_hosted_server,
                 p.recommended_min_players, p.recommended_max_players, p.profile_confidence,
                 r.total_reviews, r.total_positive, lp.player_count, r.wilson_lower,
@@ -212,13 +249,17 @@ pub fn list_candidates(
                     SELECT 1 FROM app_relations demo_relation
                     WHERE demo_relation.target_app_id = a.app_id
                       AND demo_relation.relation_type IN ('demo_of', 'playtest_of')
-                ))
+                )),
+                 a.release_date_raw, a.release_date_precision,
+                 media.capsule_url, media.updated_at_ms, NULL
          FROM apps a
+         LEFT JOIN classification_dates cd ON cd.app_id = a.app_id
          LEFT JOIN multiplayer_profiles p ON p.app_id = a.app_id
          LEFT JOIN app_availability v ON v.app_id = a.app_id
          LEFT JOIN latest_reviews r ON r.app_id = a.app_id
          LEFT JOIN latest_players lp ON lp.app_id = a.app_id
          LEFT JOIN daily_typical d ON d.app_id = a.app_id
+         LEFT JOIN app_media media ON media.app_id = a.app_id
          WHERE a.app_type IN ('game', 'demo', 'playtest', 'unknown')
            AND (
                (:section = 'upcoming' AND (
@@ -233,9 +274,10 @@ pub fn list_candidates(
                    ))
                ))
                OR (:section = 'recent_release' AND a.release_state = 'released'
-                   AND a.release_date >= :cutoff AND a.release_date <= :today)
+                   AND COALESCE(cd.first_release_date, a.release_date) >= :cutoff
+                   AND COALESCE(cd.first_release_date, a.release_date) <= :today)
                OR (:section IN ('popular_legacy', 'classic_legacy') AND a.release_state = 'released'
-                   AND a.release_date < :cutoff)
+                   AND COALESCE(cd.first_release_date, a.release_date) < :cutoff)
            )
            AND (
                :section <> 'popular_legacy'
@@ -248,15 +290,11 @@ pub fn list_candidates(
                    END
                )
            )
-           AND (
-               :section <> 'classic_legacy'
-               OR (COALESCE(r.total_reviews, 0) >= :classic_min_reviews
-                   AND COALESCE(r.wilson_lower, 0) >= :classic_min_wilson)
-           )
          ORDER BY
              CASE WHEN :section = 'popular_legacy' THEN COALESCE(d.typical_ccu, lp.player_count, 0) END DESC,
              CASE WHEN :section = 'classic_legacy' THEN COALESCE(r.total_reviews, 0) END DESC,
-             CASE WHEN :section IN ('recent_release', 'upcoming') THEN a.release_date END DESC,
+             CASE WHEN :section IN ('recent_release', 'upcoming')
+                  THEN COALESCE(cd.first_release_date, a.release_date) END DESC,
              a.updated_at_ms DESC
          LIMIT :limit",
     )?;
@@ -270,8 +308,6 @@ pub fn list_candidates(
             ":popular_high_ccu": config.popular_high_ccu,
             ":popular_min_wilson": config.popular_min_wilson,
             ":popular_high_ccu_min_wilson": config.popular_high_ccu_min_wilson,
-            ":classic_min_reviews": config.classic_min_reviews,
-            ":classic_min_wilson": config.classic_min_wilson,
             ":limit": limit,
         },
         map_candidate,
@@ -281,6 +317,63 @@ pub fn list_candidates(
         out.push(row?);
     }
     Ok(out)
+}
+
+/// Shared feed eligibility after source-level candidate selection and before
+/// user-specific hard filters. Keeping it here makes the API and release audit
+/// evaluate the same section rules.
+pub fn section_matches(
+    section: FeedSection,
+    row: &GameCandidateRow,
+    signals: &RankingSignals,
+    cutoff_date: &str,
+    today: &str,
+    config: &RecommendationConfig,
+) -> bool {
+    let friend_score = friend_fit(&signals.multiplayer);
+    let activity = row.typical_ccu_7d.or(row.latest_ccu).unwrap_or(0);
+    let date = row.release_date.as_deref();
+    let popular_quality_floor = if activity >= config.popular_high_ccu {
+        config.popular_high_ccu_min_wilson
+    } else {
+        config.popular_min_wilson
+    };
+    let is_popular_legacy = row.release_state == "released"
+        && date.is_some_and(|value| value < cutoff_date)
+        && activity >= config.popular_min_ccu
+        && row
+            .wilson_lower
+            .is_some_and(|value| value >= popular_quality_floor)
+        && friend_score >= config.popular_min_friend_fit;
+    match section {
+        FeedSection::Upcoming => {
+            // Store-search candidates often only materialize a safe min party size
+            // (recommended_min=2) before full store details fill mode flags. Treat
+            // that conservative signal as enough multiplayer evidence for upcoming.
+            let has_multiplayer_evidence = row.dominant_mode.is_some()
+                || row.private_session == Some(true)
+                || row.online_coop == Some(true)
+                || row.self_hosted_server == Some(true)
+                || row.recommended_min.is_some()
+                || row.recommended_max.is_some()
+                || row.profile_confidence.is_some_and(|value| value >= 0.2);
+            (row.release_state == "upcoming"
+                || row.release_state == "coming_soon"
+                || row.app_type == "demo"
+                || row.app_type == "playtest")
+                && has_multiplayer_evidence
+        }
+        FeedSection::RecentRelease => {
+            row.release_state == "released"
+                && date.is_some_and(|value| value >= cutoff_date && value <= today)
+        }
+        FeedSection::PopularLegacy => is_popular_legacy,
+        FeedSection::ClassicLegacy => {
+            row.release_state == "released"
+                && date.is_some_and(|value| value < cutoff_date)
+                && !is_popular_legacy
+        }
+    }
 }
 
 pub fn search_by_name(
@@ -306,10 +399,13 @@ pub fn search_by_name(
                     SELECT 1 FROM app_relations demo_relation
                     WHERE demo_relation.target_app_id = a.app_id
                       AND demo_relation.relation_type IN ('demo_of', 'playtest_of')
-                ))
+                )),
+                 a.release_date_raw, a.release_date_precision,
+                 media.capsule_url, media.updated_at_ms, NULL
          FROM apps a
          LEFT JOIN multiplayer_profiles p ON p.app_id = a.app_id
          LEFT JOIN app_availability v ON v.app_id = a.app_id
+         LEFT JOIN app_media media ON media.app_id = a.app_id
          WHERE a.canonical_name LIKE ?1 ESCAPE '\\' COLLATE NOCASE
          ORDER BY a.canonical_name
          LIMIT ?2",
@@ -368,16 +464,67 @@ pub fn get_game_detail(conn: &Connection, app_id: u32) -> StorageResult<Option<G
                     SELECT 1 FROM app_relations demo_relation
                     WHERE demo_relation.target_app_id = a.app_id
                       AND demo_relation.relation_type IN ('demo_of', 'playtest_of')
-                ))
-         FROM apps a
-         LEFT JOIN multiplayer_profiles p ON p.app_id = a.app_id
-         LEFT JOIN app_availability v ON v.app_id = a.app_id
-         WHERE a.app_id = ?1",
+                )),
+                 a.release_date_raw, a.release_date_precision,
+                 media.capsule_url, media.updated_at_ms, loc.short_description
+          FROM apps a
+          LEFT JOIN multiplayer_profiles p ON p.app_id = a.app_id
+          LEFT JOIN app_availability v ON v.app_id = a.app_id
+          LEFT JOIN app_media media ON media.app_id = a.app_id
+          LEFT JOIN app_localizations loc ON loc.app_id = a.app_id AND loc.language = (
+              SELECT language FROM app_localizations l2
+              WHERE l2.app_id = a.app_id
+              ORDER BY CASE l2.language
+                  WHEN 'schinese' THEN 0
+                  WHEN 'english' THEN 1
+                  WHEN 'en' THEN 2
+                  ELSE 9
+              END
+              LIMIT 1
+          )
+          WHERE a.app_id = ?1",
         params![app_id],
         map_candidate,
     )
     .optional()
     .map_err(StorageError::from)
+}
+
+pub fn list_popular_reviews(
+    conn: &Connection,
+    app_id: u32,
+) -> StorageResult<Vec<PopularReviewRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT recommendation_id, rank, author_name, author_profile_url, review_text,
+                voted_up, votes_up, votes_funny, comment_count, playtime_forever_minutes,
+                playtime_at_review_minutes, created_at_s, written_during_early_access
+         FROM popular_reviews
+         WHERE app_id = ?1
+         ORDER BY rank ASC
+         LIMIT 10",
+    )?;
+    let rows = stmt.query_map(params![app_id], |row| {
+        Ok(PopularReviewRow {
+            recommendation_id: row.get(0)?,
+            rank: row.get::<_, i64>(1)?.clamp(1, 10) as u8,
+            author_name: row.get(2)?,
+            author_profile_url: row.get(3)?,
+            review_text: row.get(4)?,
+            voted_up: row.get::<_, i64>(5)? != 0,
+            votes_up: row.get::<_, i64>(6)?.max(0) as u32,
+            votes_funny: row.get::<_, i64>(7)?.max(0) as u32,
+            comment_count: row.get::<_, i64>(8)?.max(0) as u32,
+            playtime_forever_minutes: row
+                .get::<_, Option<i64>>(9)?
+                .map(|value| value.max(0) as u32),
+            playtime_at_review_minutes: row
+                .get::<_, Option<i64>>(10)?
+                .map(|value| value.max(0) as u32),
+            created_at_ms: row.get::<_, i64>(11)?.saturating_mul(1_000),
+            written_during_early_access: row.get::<_, i64>(12)? != 0,
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
 pub fn list_evidence(
@@ -497,6 +644,11 @@ fn map_candidate(row: &rusqlite::Row<'_>) -> rusqlite::Result<GameCandidateRow> 
         app_type: row.get(2)?,
         release_state: row.get(3)?,
         release_date: row.get(4)?,
+        release_date_raw: row.get(25)?,
+        release_date_precision: row.get(26)?,
+        cover_url: row.get(27)?,
+        cover_updated_at_ms: row.get(28)?,
+        short_description: row.get(29)?,
         dominant_mode: row.get(5)?,
         private_session: sql_to_opt_bool(row.get(6)?),
         online_coop: sql_to_opt_bool(row.get(7)?),
@@ -549,11 +701,16 @@ pub fn data_updated_at_ms(conn: &Connection) -> StorageResult<i64> {
              UNION ALL SELECT MAX(updated_at_ms) FROM app_availability
              UNION ALL SELECT MAX(captured_at_ms) FROM price_snapshots
              UNION ALL SELECT MAX(captured_at_ms) FROM review_snapshots
+              UNION ALL SELECT MAX(captured_at_ms) FROM popular_reviews
+              UNION ALL SELECT MAX(captured_at_ms) FROM popular_review_refresh_state
+              UNION ALL SELECT MAX(captured_at_ms) FROM store_detail_refresh_state
              UNION ALL SELECT MAX(captured_at_ms) FROM player_snapshots
              UNION ALL SELECT MAX(observed_at_ms) FROM feature_evidence
              UNION ALL SELECT MAX(MAX(created_at_ms, COALESCE(revoked_at_ms, 0))) FROM curation_overrides
-             UNION ALL SELECT MAX(observed_at_ms) FROM release_events
-         )",
+              UNION ALL SELECT MAX(observed_at_ms) FROM release_events
+              UNION ALL SELECT MAX(updated_at_ms) FROM app_media
+              UNION ALL SELECT MAX(updated_at_ms) FROM app_localizations
+          )",
         [],
         |row| row.get(0),
     )?;

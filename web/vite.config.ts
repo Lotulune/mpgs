@@ -11,10 +11,13 @@ const PACKAGED_API_BASES = new Set([
 // can be developed without CORS friction. The packaged Tauri client talks to the
 // server directly (the server keeps an explicit CORS allowlist for that origin).
 export default defineConfig(({ command, mode }) => {
-  const configuredApiBase = loadEnv(mode, process.cwd(), "VITE_").VITE_MPGS_API_BASE?.replace(
+  const env = loadEnv(mode, process.cwd(), "VITE_");
+  const configuredApiBase = env.VITE_MPGS_API_BASE?.replace(
     /\/$/,
     "",
   );
+  const devApiProxyTarget =
+    env.VITE_MPGS_DEV_PROXY_TARGET?.replace(/\/$/, "") ?? "http://127.0.0.1:8080";
   if (command === "build" && configuredApiBase && !PACKAGED_API_BASES.has(configuredApiBase)) {
     throw new Error(
       `VITE_MPGS_API_BASE=${configuredApiBase} is not allowed by the desktop CSP; ` +
@@ -28,9 +31,9 @@ export default defineConfig(({ command, mode }) => {
       port: 5173,
       strictPort: true,
       proxy: {
-        "/v1": { target: "http://127.0.0.1:8080", changeOrigin: true },
-        "/health": { target: "http://127.0.0.1:8080", changeOrigin: true },
-        "/openapi.json": { target: "http://127.0.0.1:8080", changeOrigin: true },
+        "/v1": { target: devApiProxyTarget, changeOrigin: true },
+        "/health": { target: devApiProxyTarget, changeOrigin: true },
+        "/openapi.json": { target: devApiProxyTarget, changeOrigin: true },
       },
     },
     build: {

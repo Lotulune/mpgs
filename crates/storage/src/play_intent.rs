@@ -47,6 +47,14 @@ pub fn set_play_intent(
     now_ms: i64,
 ) -> StorageResult<PlayIntentState> {
     let tx = conn.unchecked_transaction()?;
+    let account_active: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM user_accounts WHERE user_id = ?1 AND status = 'active')",
+        params![user_id],
+        |row| row.get(0),
+    )?;
+    if !account_active {
+        return Err(StorageError::not_found("active account"));
+    }
     if catalog::get_app(&tx, app_id)?.is_none() {
         return Err(StorageError::not_found(format!("game {app_id}")));
     }
@@ -74,7 +82,10 @@ pub fn set_play_intent(
 
 pub fn count_for(conn: &Connection, app_id: u32) -> StorageResult<u32> {
     let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM play_intent_votes WHERE app_id = ?1",
+        "SELECT COUNT(*)
+         FROM play_intent_votes AS vote
+         JOIN user_accounts AS account ON account.user_id = vote.user_id
+         WHERE vote.app_id = ?1 AND account.status = 'active'",
         params![app_id],
         |row| row.get(0),
     )?;
@@ -83,7 +94,10 @@ pub fn count_for(conn: &Connection, app_id: u32) -> StorageResult<u32> {
 
 pub fn has_voted(conn: &Connection, user_id: &str, app_id: u32) -> StorageResult<bool> {
     let exists: bool = conn.query_row(
-        "SELECT COUNT(*) > 0 FROM play_intent_votes WHERE app_id = ?1 AND user_id = ?2",
+        "SELECT COUNT(*) > 0
+         FROM play_intent_votes AS vote
+         JOIN user_accounts AS account ON account.user_id = vote.user_id
+         WHERE vote.app_id = ?1 AND vote.user_id = ?2 AND account.status = 'active'",
         params![app_id, user_id],
         |row| row.get(0),
     )?;
@@ -92,8 +106,13 @@ pub fn has_voted(conn: &Connection, user_id: &str, app_id: u32) -> StorageResult
 
 /// All non-zero vote counts keyed by app id (for feed ranking + display).
 pub fn all_counts(conn: &Connection) -> StorageResult<HashMap<u32, u32>> {
-    let mut stmt =
-        conn.prepare("SELECT app_id, COUNT(*) FROM play_intent_votes GROUP BY app_id")?;
+    let mut stmt = conn.prepare(
+        "SELECT vote.app_id, COUNT(*)
+         FROM play_intent_votes AS vote
+         JOIN user_accounts AS account ON account.user_id = vote.user_id
+         WHERE account.status = 'active'
+         GROUP BY vote.app_id",
+    )?;
     let rows = stmt.query_map([], |row| {
         Ok((row.get::<_, i64>(0)? as u32, row.get::<_, i64>(1)? as u32))
     })?;
@@ -107,7 +126,12 @@ pub fn all_counts(conn: &Connection) -> StorageResult<HashMap<u32, u32>> {
 
 /// The set of apps a user has voted for (for the `voted` flag in feeds).
 pub fn user_votes(conn: &Connection, user_id: &str) -> StorageResult<HashSet<u32>> {
-    let mut stmt = conn.prepare("SELECT app_id FROM play_intent_votes WHERE user_id = ?1")?;
+    let mut stmt = conn.prepare(
+        "SELECT vote.app_id
+         FROM play_intent_votes AS vote
+         JOIN user_accounts AS account ON account.user_id = vote.user_id
+         WHERE vote.user_id = ?1 AND account.status = 'active'",
+    )?;
     let rows = stmt.query_map(params![user_id], |row| Ok(row.get::<_, i64>(0)? as u32))?;
     let mut set = HashSet::new();
     for row in rows {
@@ -155,9 +179,15 @@ pub fn game_snapshot(
 ) -> StorageResult<PlayIntentGameSnapshot> {
     conn.query_row(
         "SELECT state.revision,
-                (SELECT COUNT(*) FROM play_intent_votes WHERE app_id = ?1),
+                (SELECT COUNT(*)
+                 FROM play_intent_votes AS vote
+                 JOIN user_accounts AS account ON account.user_id = vote.user_id
+                 WHERE vote.app_id = ?1 AND account.status = 'active'),
                 CASE WHEN ?2 IS NULL THEN 0 ELSE EXISTS (
-                    SELECT 1 FROM play_intent_votes WHERE app_id = ?1 AND user_id = ?2
+                    SELECT 1
+                    FROM play_intent_votes AS vote
+                    JOIN user_accounts AS account ON account.user_id = vote.user_id
+                    WHERE vote.app_id = ?1 AND vote.user_id = ?2 AND account.status = 'active'
                 ) END
          FROM play_intent_state AS state WHERE state.singleton = 1",
         params![app_id, user_id],
@@ -177,8 +207,8 @@ pub fn game_snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::accounts::{RegisterAccount, register_account};
     use crate::db::Database;
-    use crate::users::create_anonymous_session;
 
     fn setup() -> (Database, String) {
         let db = Database::open_in_memory().unwrap();
@@ -192,10 +222,22 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        let session = db
-            .with_conn_mut(|conn| create_anonymous_session(conn, 0))
+        let account = db
+            .with_conn_mut(|conn| {
+                register_account(
+                    conn,
+                    &RegisterAccount {
+                        username: "primary".into(),
+                        display_name: "Primary".into(),
+                        password: "primary-password-long".into(),
+                        device_label: "test".into(),
+                    },
+                    None,
+                    0,
+                )
+            })
             .unwrap();
-        (db, session.user_id)
+        (db, account.user_id)
     }
 
     #[test]
@@ -221,7 +263,19 @@ mod tests {
     fn counts_and_user_votes_aggregate() {
         let (db, user) = setup();
         let other = db
-            .with_conn_mut(|conn| create_anonymous_session(conn, 5))
+            .with_conn_mut(|conn| {
+                register_account(
+                    conn,
+                    &RegisterAccount {
+                        username: "other".into(),
+                        display_name: "Other".into(),
+                        password: "other-password-long".into(),
+                        device_label: "test".into(),
+                    },
+                    None,
+                    5,
+                )
+            })
             .unwrap()
             .user_id;
         db.with_conn_mut(|conn| {

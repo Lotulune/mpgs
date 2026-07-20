@@ -3,7 +3,8 @@
 
 import { useEffect, useState } from "react";
 import type { PlayIntentSummary } from "../api/types";
-import { playIntentStore } from "../app/runtime";
+import { requestAccountSignIn } from "../app/auth";
+import { apiClient, playIntentStore } from "../app/runtime";
 import { useTheme } from "../app/ThemeProvider";
 
 export function VoteButton({
@@ -31,10 +32,14 @@ export function VoteButton({
       type="button"
       className={`vote-btn${voted ? " voted" : ""}${size === "large" ? " large" : ""}`}
       aria-pressed={voted}
-      aria-label={voted ? "取消想玩" : "标记想玩"}
+      aria-label={voted ? `取消想玩，共 ${count} 人想玩` : `标记想玩，共 ${count} 人想玩`}
       title="越多人想玩，越靠前"
       onClick={(event) => {
         event.stopPropagation();
+        if (!apiClient.isAccountAuthenticated()) {
+          requestAccountSignIn();
+          return;
+        }
         playIntentStore.toggle(appId, base.voted);
         fireAction(voted ? "dismiss" : "like", event.currentTarget);
       }}

@@ -28,7 +28,7 @@ const DEFAULT_ALLOWED_ORIGINS: &[&str] = &[
     "http://localhost:5173",
 ];
 
-const ALLOW_METHODS: &str = "GET, POST, PUT, OPTIONS";
+const ALLOW_METHODS: &str = "GET, POST, PUT, PATCH, DELETE, OPTIONS";
 const ALLOW_HEADERS: &str =
     "authorization, content-type, idempotency-key, if-none-match, x-device-id, x-request-id";
 const EXPOSE_HEADERS: &str =

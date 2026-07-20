@@ -11,6 +11,22 @@ pub const SOURCE_NAME: &str = "steam_userstats_current_players";
 
 /// Steam result code for success in GetNumberOfCurrentPlayers.
 pub const RESULT_OK: i32 = 1;
+/// Synthetic local result used when the official endpoint returns HTTP 404.
+pub const RESULT_HTTP_NOT_FOUND: i32 = 404;
+
+pub fn http_not_found_proposal(app_id: u32) -> CcuProposal {
+    CcuProposal {
+        app_id,
+        player_count: None,
+        result_code: RESULT_HTTP_NOT_FOUND,
+        content_hash: format!("http-404:{app_id}"),
+        source: SOURCE_NAME,
+        stability: SourceStability::OfficialStable,
+        adapter_version: ADAPTER_VERSION,
+        offline_players_excluded: true,
+        missing_reason: Some("endpoint_http_not_found"),
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CcuRequest {
@@ -142,5 +158,13 @@ mod tests {
     fn sample_tiers_document_focus_vs_long_tail() {
         assert_eq!(CcuSampleTier::Focus.suggested_interval_secs(), 1800);
         assert_eq!(CcuSampleTier::LongTail.suggested_interval_secs(), 21600);
+    }
+
+    #[test]
+    fn http_not_found_is_a_missing_snapshot_not_zero_players() {
+        let proposal = http_not_found_proposal(42);
+        assert_eq!(proposal.player_count, None);
+        assert_eq!(proposal.result_code, RESULT_HTTP_NOT_FOUND);
+        assert_eq!(proposal.missing_reason, Some("endpoint_http_not_found"));
     }
 }

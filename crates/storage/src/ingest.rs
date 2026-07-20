@@ -1,11 +1,14 @@
+use std::collections::BTreeMap;
+
 use rusqlite::params;
 use rusqlite::{Connection, OptionalExtension};
 
 use mpgs_steam_source::{
-    AppCatalogProposal, AppRelationProposal, AppTypeProposal, CcuProposal, DominantModeLabel,
-    GOLDEN_SET_VERSION, GoldenGame, RelationTypeProposal, ReleaseStateProposal,
-    ReviewSummaryProposal, STORE_SEARCH_ADAPTER_VERSION, STORE_SEARCH_SOURCE_NAME,
-    StoreDetailsProposal, StoreSearchPage, content_hash,
+    APP_LIST_ADAPTER_VERSION, APP_LIST_SOURCE_NAME, AppCatalogProposal, AppListPage,
+    AppListRequest, AppRelationProposal, AppTypeProposal, CcuProposal, DominantModeLabel,
+    GOLDEN_SET_VERSION, GoldenGame, PopularReviewsProposal, RelationTypeProposal,
+    ReleaseStateProposal, ReviewSummaryProposal, STORE_SEARCH_ADAPTER_VERSION,
+    STORE_SEARCH_SOURCE_NAME, StoreDetailsProposal, StoreSearchPage, content_hash,
 };
 
 use crate::catalog::{self, upsert_app, upsert_relation};
@@ -33,7 +36,55 @@ pub fn ingest_app_catalog(
         source_modified,
         now_ms,
     )?;
+    // Steam's canonical per-app header image is served from an approved CDN and
+    // is stable enough to use as the card capsule fallback when a richer media
+    // field is absent from the store response.
+    let capsule_url = format!(
+        "https://cdn.akamai.steamstatic.com/steam/apps/{}/header.jpg",
+        proposal.app_id
+    );
+    conn.execute(
+        "INSERT INTO app_media (app_id, capsule_url, source, updated_at_ms)
+         VALUES (?1, ?2, 'steam_catalog', ?3)
+         ON CONFLICT(app_id) DO UPDATE SET
+             capsule_url = excluded.capsule_url,
+             source = excluded.source,
+             updated_at_ms = excluded.updated_at_ms",
+        params![proposal.app_id, capsule_url, now_ms],
+    )?;
     Ok(())
+}
+
+/// Persist one official `IStoreService/GetAppList` page and its audit record
+/// in the same transaction. The request never contains the API key, so the
+/// stored entity key is safe to expose through operations tooling.
+pub fn ingest_app_list_page(
+    conn: &Connection,
+    request: &AppListRequest,
+    page: &AppListPage,
+    now_ms: i64,
+) -> StorageResult<usize> {
+    conn.execute(
+        "INSERT INTO source_documents (
+            source, entity_type, entity_key, content_type, content_hash,
+            content_text, fetched_at_ms, parse_version
+         ) VALUES (?1, 'app_list_page', ?2, 'application/json', ?3, NULL, ?4, ?5)",
+        params![
+            APP_LIST_SOURCE_NAME,
+            format!(
+                "last_appid={};if_modified_since={}",
+                request.last_appid, request.if_modified_since
+            ),
+            page.content_hash,
+            now_ms,
+            APP_LIST_ADAPTER_VERSION,
+        ],
+    )?;
+
+    for proposal in &page.proposals {
+        ingest_app_catalog(conn, proposal, now_ms)?;
+    }
+    Ok(page.proposals.len())
 }
 
 pub fn ingest_review_summary(
@@ -71,6 +122,74 @@ pub fn ingest_review_summary(
             },
             proposal.parameter_hash,
             proposal.content_hash,
+            proposal.source,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn ingest_popular_reviews(
+    conn: &Connection,
+    proposal: &PopularReviewsProposal,
+    now_ms: i64,
+) -> StorageResult<()> {
+    catalog::ensure_app_stub(
+        conn,
+        proposal.app_id,
+        &format!("app-{}", proposal.app_id),
+        now_ms,
+    )?;
+    conn.execute(
+        "DELETE FROM popular_reviews WHERE app_id = ?1",
+        params![proposal.app_id],
+    )?;
+    for (index, review) in proposal.reviews.iter().take(10).enumerate() {
+        conn.execute(
+            "INSERT INTO popular_reviews (
+                app_id, recommendation_id, rank, language, author_name, author_profile_url,
+                review_text, voted_up, votes_up, votes_funny, comment_count,
+                playtime_forever_minutes, playtime_at_review_minutes, created_at_s, updated_at_s,
+                steam_purchase, received_for_free, written_during_early_access,
+                parameter_hash, content_hash, source, captured_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+                       ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
+            params![
+                proposal.app_id,
+                review.recommendation_id,
+                (index + 1) as i64,
+                review.language,
+                review.author_name,
+                review.author_profile_url,
+                review.review_text,
+                i64::from(review.voted_up),
+                review.votes_up,
+                review.votes_funny,
+                review.comment_count,
+                review.playtime_forever_minutes,
+                review.playtime_at_review_minutes,
+                review.created_at_s,
+                review.updated_at_s,
+                i64::from(review.steam_purchase),
+                i64::from(review.received_for_free),
+                i64::from(review.written_during_early_access),
+                proposal.parameter_hash,
+                proposal.content_hash,
+                proposal.source,
+                now_ms,
+            ],
+        )?;
+    }
+    conn.execute(
+        "INSERT INTO popular_review_refresh_state(app_id, captured_at_ms, result_count, source)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(app_id) DO UPDATE SET
+             captured_at_ms = excluded.captured_at_ms,
+             result_count = excluded.result_count,
+             source = excluded.source",
+        params![
+            proposal.app_id,
+            now_ms,
+            proposal.reviews.len().min(10) as i64,
             proposal.source,
         ],
     )?;
@@ -142,6 +261,42 @@ pub fn ingest_store_details(
         None,
         now_ms,
     )?;
+    conn.execute(
+        "INSERT INTO store_detail_refresh_state(
+             app_id, country_code, language, captured_at_ms, status, source
+         ) VALUES (?1, ?2, ?3, ?4, 'succeeded', ?5)
+         ON CONFLICT(app_id, country_code, language) DO UPDATE SET
+             captured_at_ms = excluded.captured_at_ms,
+             status = excluded.status,
+             source = excluded.source",
+        params![
+            details.app_id,
+            details.country_code.trim().to_ascii_uppercase(),
+            details.language.trim().to_ascii_lowercase(),
+            now_ms,
+            details.source
+        ],
+    )?;
+    catalog::upsert_app_localization(
+        conn,
+        details.app_id,
+        &details.language,
+        details.name.as_deref(),
+        details.short_description.as_deref(),
+        details.source,
+        now_ms,
+    )?;
+    if let Some(header_image_url) = details.header_image_url.as_deref() {
+        conn.execute(
+            "INSERT INTO app_media (app_id, capsule_url, source, updated_at_ms)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(app_id) DO UPDATE SET
+                 capsule_url = excluded.capsule_url,
+                 source = excluded.source,
+                 updated_at_ms = excluded.updated_at_ms",
+            params![details.app_id, header_image_url, details.source, now_ms],
+        )?;
+    }
     // Store adapters distinguish an explicit unknown date from a temporarily absent field.
     if details.release_date_observed {
         conn.execute(
@@ -188,7 +343,11 @@ pub fn ingest_store_details(
         )?;
     }
 
-    if let Some(platforms) = &details.platforms {
+    if let Some(platforms) = details
+        .platforms
+        .as_ref()
+        .filter(|values| !values.is_empty())
+    {
         insert_feature_evidence(
             conn,
             details.app_id,
@@ -200,7 +359,11 @@ pub fn ingest_store_details(
             now_ms,
         )?;
     }
-    if let Some(languages) = &details.supported_languages {
+    if let Some(languages) = details
+        .supported_languages
+        .as_ref()
+        .filter(|values| !values.is_empty())
+    {
         insert_feature_evidence(
             conn,
             details.app_id,
@@ -215,12 +378,18 @@ pub fn ingest_store_details(
     let platforms = if has_active_override(conn, details.app_id, "platforms")? {
         None
     } else {
-        details.platforms.as_deref()
+        details
+            .platforms
+            .as_deref()
+            .filter(|values| !values.is_empty())
     };
     let languages = if has_active_override(conn, details.app_id, "languages")? {
         None
     } else {
-        details.supported_languages.as_deref()
+        details
+            .supported_languages
+            .as_deref()
+            .filter(|values| !values.is_empty())
     };
     catalog::upsert_app_availability(
         conn,
@@ -244,19 +413,27 @@ pub fn ingest_store_details(
         )?;
     }
 
-    // Category multiplayer hints become low-confidence evidence only.
-    for hint in &details.multiplayer_category_hints {
+    // Store all category hints as one atomic observation. Writing one row per
+    // label would deactivate the previous label because evidence replacement
+    // is scoped by (app, feature, source_type).
+    if !details.multiplayer_category_hints.is_empty() {
         insert_feature_evidence(
             conn,
             details.app_id,
             "category_hint",
-            &serde_json::json!(hint),
+            &serde_json::json!(details.multiplayer_category_hints),
             "store_category",
             details.source,
             0.3,
             now_ms,
         )?;
     }
+    materialize_store_category_profile(
+        conn,
+        details.app_id,
+        &details.multiplayer_category_hints,
+        now_ms,
+    )?;
 
     if let Some(price) = &details.price {
         conn.execute(
@@ -284,6 +461,178 @@ pub fn ingest_store_details(
         )?;
     }
     Ok(())
+}
+
+const STORE_CATEGORY_PROFILE_CONFIDENCE: f64 = 0.3;
+
+fn materialize_store_category_profile(
+    conn: &Connection,
+    app_id: u32,
+    hints: &[String],
+    now_ms: i64,
+) -> StorageResult<bool> {
+    let labels: Vec<String> = hints
+        .iter()
+        .map(|hint| hint.trim().to_ascii_lowercase())
+        .filter(|hint| !hint.is_empty())
+        .collect();
+    if labels.is_empty() {
+        return Ok(false);
+    }
+    let has_coop = labels
+        .iter()
+        .any(|label| label.contains("co-op") || label.contains("coop"));
+    let has_online_coop = labels.iter().any(|label| label == "online co-op");
+    let has_pvp = labels.iter().any(|label| label.contains("pvp"));
+    let has_crossplay = labels
+        .iter()
+        .any(|label| label == "cross-platform multiplayer");
+    let mode = match (has_coop, has_pvp) {
+        (true, true) => Some("mixed"),
+        (true, false) => Some("coop"),
+        (false, true) => Some("pvp"),
+        (false, false) => None,
+    };
+    let source_ref = format!("steam_store_categories:{}", hints.join("|"));
+
+    conn.execute(
+        "INSERT INTO multiplayer_profiles (app_id, computed_at_ms)
+         VALUES (?1, ?2) ON CONFLICT(app_id) DO NOTHING",
+        params![app_id, now_ms],
+    )?;
+    let mut applied = false;
+
+    for (feature, column, value) in [
+        ("online_coop", "online_coop", has_online_coop),
+        ("crossplay", "crossplay", has_crossplay),
+    ] {
+        if !value {
+            continue;
+        }
+        insert_feature_evidence(
+            conn,
+            app_id,
+            feature,
+            &serde_json::json!(true),
+            "steam_store_profile_derived",
+            &source_ref,
+            STORE_CATEGORY_PROFILE_CONFIDENCE,
+            now_ms,
+        )?;
+        if !has_active_override(conn, app_id, feature)? {
+            let sql = format!(
+                "UPDATE multiplayer_profiles SET {column} = 1, computed_at_ms = ?1
+                 WHERE app_id = ?2 AND (
+                     {column} IS NULL
+                     OR ({column} <> 1 AND COALESCE(profile_confidence, 0) <= ?3)
+                 )"
+            );
+            applied |= conn.execute(
+                &sql,
+                params![now_ms, app_id, STORE_CATEGORY_PROFILE_CONFIDENCE],
+            )? > 0;
+        }
+    }
+
+    if let Some(mode) = mode {
+        insert_feature_evidence(
+            conn,
+            app_id,
+            "dominant_mode",
+            &serde_json::json!(mode),
+            "steam_store_profile_derived",
+            &source_ref,
+            STORE_CATEGORY_PROFILE_CONFIDENCE,
+            now_ms,
+        )?;
+        if !has_active_override(conn, app_id, "dominant_mode")? {
+            applied |= conn.execute(
+                "UPDATE multiplayer_profiles
+                 SET dominant_mode = ?1, computed_at_ms = ?2
+                 WHERE app_id = ?3
+                   AND (
+                       dominant_mode IS NULL
+                       OR (dominant_mode <> ?1 AND COALESCE(profile_confidence, 0) <= ?4)
+                   )",
+                params![mode, now_ms, app_id, STORE_CATEGORY_PROFILE_CONFIDENCE],
+            )? > 0;
+        }
+    }
+
+    insert_feature_evidence(
+        conn,
+        app_id,
+        "recommended_min_players",
+        &serde_json::json!(2),
+        "steam_store_profile_derived",
+        &source_ref,
+        STORE_CATEGORY_PROFILE_CONFIDENCE,
+        now_ms,
+    )?;
+    applied |= conn.execute(
+        "UPDATE multiplayer_profiles
+         SET recommended_min_players = 2, computed_at_ms = ?1
+         WHERE app_id = ?2 AND recommended_min_players IS NULL",
+        params![now_ms, app_id],
+    )? > 0;
+    conn.execute(
+        "UPDATE multiplayer_profiles
+         SET profile_confidence = MAX(COALESCE(profile_confidence, 0), ?1), computed_at_ms = ?2
+         WHERE app_id = ?3",
+        params![STORE_CATEGORY_PROFILE_CONFIDENCE, now_ms, app_id],
+    )?;
+    Ok(applied)
+}
+
+pub fn materialize_store_category_profiles(conn: &Connection, now_ms: i64) -> StorageResult<usize> {
+    let mut stmt = conn.prepare(
+        "SELECT app_id, value_json, source_type FROM feature_evidence
+         WHERE feature_name = 'category_hint'
+           AND source_type IN ('store_category', 'store_search_category')
+           AND is_active = 1
+         ORDER BY app_id, evidence_id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)? as u32,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    let mut grouped: BTreeMap<u32, Vec<String>> = BTreeMap::new();
+    for row in rows {
+        let (app_id, value_json, source_type) = row?;
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&value_json) {
+            match value {
+                serde_json::Value::String(label) => {
+                    grouped.entry(app_id).or_default().push(label);
+                }
+                serde_json::Value::Array(labels) => {
+                    grouped.entry(app_id).or_default().extend(
+                        labels
+                            .into_iter()
+                            .filter_map(|label| label.as_str().map(str::to_owned)),
+                    );
+                }
+                _ if source_type == "store_search_category" => {
+                    grouped
+                        .entry(app_id)
+                        .or_default()
+                        .push("Multi-player".into());
+                }
+                _ => {}
+            }
+        }
+    }
+    drop(stmt);
+
+    let mut applied = 0_usize;
+    for (app_id, hints) in grouped {
+        if materialize_store_category_profile(conn, app_id, &hints, now_ms)? {
+            applied += 1;
+        }
+    }
+    Ok(applied)
 }
 
 pub fn ingest_store_search_page(

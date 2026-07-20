@@ -16,6 +16,8 @@ edition = "2024"
 rust-version = "1.97"
 
 [workspace.dependencies]
+aes-gcm = "0.10"
+argon2 = "0.5"
 axum = "0.8"
 getrandom = "0.4"
 rusqlite = { version = "0.32", features = ["bundled", "backup"] }

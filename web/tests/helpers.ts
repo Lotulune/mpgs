@@ -81,8 +81,16 @@ export function sessionBody(overrides: Partial<SessionTokens> = {}): SessionToke
     access_token: "access-1",
     refresh_token: "refresh-1",
     user_id: "u_test",
+    account: true,
     expires_at_ms: Date.now() + 3_600_000,
     refresh_expires_at_ms: Date.now() + 30 * 24 * 3_600_000,
     ...overrides,
   };
+}
+
+export function seedAccountSession(
+  storage: StorageLike,
+  overrides: Partial<SessionTokens> = {},
+): void {
+  storage.setItem("mpgs.session.v1", JSON.stringify(sessionBody({ account: true, ...overrides })));
 }

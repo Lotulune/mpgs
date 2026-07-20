@@ -228,7 +228,7 @@ impl RateLimiter {
     }
 
     fn classify(&self, method: &Method, path: &str) -> Option<(Bucket, u32)> {
-        if path.starts_with("/v1/session/") {
+        if path.starts_with("/v1/session/") || path.starts_with("/v1/auth/") {
             return Some((Bucket::Session, self.config.session_per_minute));
         }
         if path == "/v1/search" {
@@ -397,6 +397,18 @@ mod tests {
         assert_eq!(
             trusted.client_ip(&request),
             Some(IpAddr::from([203, 0, 113, 10]))
+        );
+    }
+
+    #[test]
+    fn account_auth_routes_use_the_strict_session_bucket() {
+        let limiter = RateLimiter::new(RateLimitConfig::default());
+        assert_eq!(
+            limiter.classify(&Method::POST, "/v1/auth/login"),
+            Some((
+                Bucket::Session,
+                RateLimitConfig::default().session_per_minute
+            ))
         );
     }
 }

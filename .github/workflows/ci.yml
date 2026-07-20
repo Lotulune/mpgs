@@ -17,6 +17,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: "1"
+  MPGS_BUILD_GIT_SHA: ${{ github.sha }}
 
 jobs:
   web:
@@ -35,7 +36,7 @@ jobs:
       - name: Enable pnpm
         run: |
           corepack enable
-          corepack prepare pnpm@10.13.1 --activate
+          corepack prepare pnpm@9.15.9 --activate
 
       - name: Install web dependencies
         run: pnpm install --frozen-lockfile
@@ -77,22 +78,18 @@ jobs:
           - name: Linux x64
             runner: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            executable_suffix: ""
             artifact: mpgs-linux-x64
           - name: Linux ARM64
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-            executable_suffix: ""
             artifact: mpgs-linux-arm64
           - name: Windows x64
             runner: windows-latest
             target: x86_64-pc-windows-msvc
-            executable_suffix: .exe
             artifact: mpgs-windows-x64
           - name: Windows ARM64
             runner: windows-11-arm
             target: aarch64-pc-windows-msvc
-            executable_suffix: .exe
             artifact: mpgs-windows-arm64
     steps:
       - name: Check out repository
@@ -104,13 +101,15 @@ jobs:
       - name: Build release binaries
         run: cargo +1.97.0 build --workspace --release --locked --target ${{ matrix.target }}
 
-      - name: Upload release binaries
+      - name: Build traceable server package
+        shell: pwsh
+        run: ./scripts/package_server.ps1 -OutDir dist -Target ${{ matrix.target }} -SkipBuild
+
+      - name: Upload traceable server package
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ matrix.artifact }}
-          path: |
-            target/${{ matrix.target }}/release/mpgs-server${{ matrix.executable_suffix }}
-            target/${{ matrix.target }}/release/mpgs-dbtool${{ matrix.executable_suffix }}
+          path: dist/mpgs-server-*/
           if-no-files-found: error
           retention-days: 14
 
@@ -152,7 +151,7 @@ jobs:
       - name: Enable pnpm
         run: |
           corepack enable
-          corepack prepare pnpm@10.13.1 --activate
+          corepack prepare pnpm@9.15.9 --activate
 
       - name: Install workspace dependencies
         run: pnpm install --frozen-lockfile
@@ -210,7 +209,7 @@ jobs:
       - name: Enable pnpm
         run: |
           corepack enable
-          corepack prepare pnpm@10.13.1 --activate
+          corepack prepare pnpm@9.15.9 --activate
 
       - name: Install workspace dependencies
         run: pnpm install --frozen-lockfile

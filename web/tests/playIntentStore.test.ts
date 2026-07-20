@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { ApiClient } from "../src/api/client";
 import { PlayIntentStore } from "../src/api/playIntentStore";
-import { jsonResponse, makeFetchStub, MemoryStorage, sessionBody } from "./helpers";
+import { jsonResponse, makeFetchStub, MemoryStorage, seedAccountSession, sessionBody } from "./helpers";
+
+function accountClient(storage: MemoryStorage, fetchFn: typeof fetch) {
+  if (!storage.getItem("mpgs.session.v1")) seedAccountSession(storage);
+  return new ApiClient({ baseUrl: "http://x", fetchFn, storage });
+}
 
 function makeClient(storage: MemoryStorage, online: () => boolean) {
   const { fetchFn, calls } = makeFetchStub({
@@ -12,7 +17,7 @@ function makeClient(storage: MemoryStorage, online: () => boolean) {
       return jsonResponse({ app_id: 10, count: intent ? 1 : 0, voted: intent });
     },
   });
-  const client = new ApiClient({ baseUrl: "http://x", fetchFn, storage });
+  const client = accountClient(storage, fetchFn);
   return { client, calls };
 }
 
@@ -68,7 +73,7 @@ describe("PlayIntentStore", () => {
       "POST /v1/games/10/play-intent": () =>
         jsonResponse({ error: { code: "not_found", message: "x" } }, { status: 404 }),
     });
-    const client = new ApiClient({ baseUrl: "http://x", fetchFn, storage });
+    const client = accountClient(storage, fetchFn);
     const store = new PlayIntentStore(client, storage);
     store.toggle(10, false);
     await store.flush();
@@ -99,7 +104,7 @@ describe("PlayIntentStore", () => {
         return jsonResponse({ app_id: 10, count: intent ? 1 : 0, voted: intent });
       },
     });
-    const store = new PlayIntentStore(new ApiClient({ baseUrl: "http://x", fetchFn, storage }), storage);
+    const store = new PlayIntentStore(accountClient(storage, fetchFn), storage);
     store.toggle(10, false);
     await started;
     store.toggle(10, false);

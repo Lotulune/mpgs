@@ -13,11 +13,10 @@
 
 .EXAMPLE
   .\scripts\m6_acceptance.ps1
-  .\scripts\m6_acceptance.ps1 -Package
 #>
 param(
-    [switch]$Package,
-    [switch]$KeepArtifacts
+    [switch]$KeepArtifacts,
+    [ValidateRange(1, 3600)][int]$SoakSeconds = 10
 )
 
 $ErrorActionPreference = 'Stop'
@@ -32,6 +31,7 @@ $gitSha = (& git -C $repoRoot rev-parse HEAD 2>$null | Select-Object -First 1)
 $gitDirty = [bool](& git -C $repoRoot status --porcelain 2>$null | Select-Object -First 1)
 $scriptSha256 = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant()
 $packagePath = ''
+$packageBuilt = $false
 
 function Write-Step([string]$Name) {
     Write-Host ""
@@ -49,6 +49,24 @@ function Add-Result([string]$Id, [bool]$Ok, [string]$Detail) {
 
 function Test-RepoFile([string]$Rel) {
     return Test-Path -LiteralPath (Join-Path $repoRoot $Rel)
+}
+
+function Test-PackageChecksums([string]$PackageRoot, [string]$SumsPath) {
+    $root = [System.IO.Path]::GetFullPath($PackageRoot).TrimEnd('\', '/')
+    $count = 0
+    foreach ($line in Get-Content -LiteralPath $SumsPath) {
+        if ($line -notmatch '^([0-9a-f]{64})  (.+)$') { return $false }
+        $expected = $Matches[1]
+        $candidate = [System.IO.Path]::GetFullPath((Join-Path $root $Matches[2]))
+        if (-not $candidate.StartsWith($root + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $false
+        }
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { return $false }
+        $actual = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($actual -ne $expected) { return $false }
+        $count++
+    }
+    return $count -gt 0
 }
 
 function Invoke-Json {
@@ -129,7 +147,7 @@ function Write-Report([string]$Path, [bool]$Passed) {
         "- Git commit: ``$gitSha``"
         "- Git worktree dirty: ``$gitDirty``"
         "- Acceptance script SHA-256: ``$scriptSha256``"
-        "- Package built: ``$Package``"
+        "- Package built: ``$packageBuilt``"
         "- Package path: ``$packagePath``"
         "- Passed: $(($results | Where-Object ok).Count) / $($results.Count)"
         ''
@@ -184,8 +202,11 @@ try {
     & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot 'scripts\generate_third_party_licenses.ps1')
     if ($LASTEXITCODE -ne 0) { throw "generate_third_party_licenses failed: $LASTEXITCODE" }
     $lic = Join-Path $repoRoot 'docs\THIRD_PARTY_LICENSES.md'
-    $licOk = (Test-Path -LiteralPath $lic) -and ((Get-Item -LiteralPath $lic).Length -gt 200)
-    Add-Result 'licenses.generated' $licOk "THIRD_PARTY_LICENSES.md bytes=$((Get-Item $lic).Length)"
+    $licDiff = [string](& git -C $repoRoot diff --name-only -- docs/THIRD_PARTY_LICENSES.md)
+    $licOk = (Test-Path -LiteralPath $lic) -and
+        ((Get-Item -LiteralPath $lic).Length -gt 200) -and
+        [string]::IsNullOrWhiteSpace($licDiff)
+    Add-Result 'licenses.generated' $licOk "bytes=$((Get-Item $lic).Length) regenerated_diff=$licDiff"
 
     Write-Step 'unit / integration gates'
     Push-Location $repoRoot
@@ -199,6 +220,10 @@ try {
         cargo test -p mpgs-server --locked --quiet -- m6_
         if ($LASTEXITCODE -ne 0) { throw "server m6 tests failed: $LASTEXITCODE" }
         Add-Result 'unit.server_m6' $true 'meta provenance + soak + fault tests passed'
+
+        cargo test -p mpgs-server --locked --quiet two_thousand_game_feed_meets_local_p95_gate -- --ignored
+        if ($LASTEXITCODE -ne 0) { throw "server P95 gate failed: $LASTEXITCODE" }
+        Add-Result 'performance.feed_p95' $true '2,000-game uncached + ETag P95 gate passed'
     } finally {
         Pop-Location
     }
@@ -209,7 +234,6 @@ try {
         $env:MPGS_BUILD_GIT_SHA = $gitSha
         cargo build -p mpgs-server -p mpgs-dbtool --locked --quiet
         if ($LASTEXITCODE -ne 0) { throw "cargo build failed: $LASTEXITCODE" }
-        Add-Result 'build.tools' $true "mpgs-server + mpgs-dbtool built sha=$gitSha"
     } finally {
         Pop-Location
     }
@@ -218,6 +242,14 @@ try {
     if (-not (Test-Path $serverExe)) { $serverExe = Join-Path $repoRoot 'target\debug\mpgs-server' }
     $dbtool = Join-Path $repoRoot 'target\debug\mpgs-dbtool.exe'
     if (-not (Test-Path $dbtool)) { $dbtool = Join-Path $repoRoot 'target\debug\mpgs-dbtool' }
+    $debugInfoText = & $serverExe --build-info
+    if ($LASTEXITCODE -ne 0) { throw "debug server --build-info failed: $LASTEXITCODE" }
+    $debugInfo = ($debugInfoText -join "`n") | ConvertFrom-Json
+    $debugInfoOk = [string]$debugInfo.git_sha -eq $gitSha -and
+        [int]$debugInfo.schema_version -gt 0 -and
+        -not [string]::IsNullOrWhiteSpace([string]$debugInfo.algorithm_version) -and
+        -not [string]::IsNullOrWhiteSpace([string]$debugInfo.rustc_target)
+    Add-Result 'build.tools' $debugInfoOk "sha=$($debugInfo.git_sha) target=$($debugInfo.rustc_target) schema=$($debugInfo.schema_version) algorithm=$($debugInfo.algorithm_version)"
 
     $workDir = Join-Path $env:TEMP ("mpgs-m6-" + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $workDir -Force | Out-Null
@@ -231,6 +263,7 @@ try {
     $env:MPGS_SEED_DEMO = 'true'
     $env:MPGS_AI_PROVIDER = 'disabled'
     $env:MPGS_AI_EMBED_PROVIDER = 'hash'
+    $env:MPGS_RATE_LIMIT_ENABLED = 'false'
     $env:MPGS_BIND_ADDR = "127.0.0.1:$port"
     $serverLog = Join-Path $workDir 'server.out.log'
     $serverErr = Join-Path $workDir 'server.err.log'
@@ -296,7 +329,7 @@ try {
             -not [string]::IsNullOrWhiteSpace([string](Get-JsonProp $m 'service_version')) -and
             -not [string]::IsNullOrWhiteSpace([string](Get-JsonProp $m 'algorithm_version')) -and
             $null -ne (Get-JsonProp $m 'schema_version') -and [int](Get-JsonProp $m 'schema_version') -gt 0 -and
-            $null -ne (Get-JsonProp $m 'build_git_sha') -and
+            (Get-JsonProp $m 'build_git_sha') -eq $gitSha -and
             $null -ne (Get-JsonProp $m 'data_updated_at_ms')
         Add-Result 'runtime.meta_provenance' $metaOk (
             "service=$(Get-JsonProp $m 'service_version') algo=$(Get-JsonProp $m 'algorithm_version') schema=$(Get-JsonProp $m 'schema_version') git=$(Get-JsonProp $m 'build_git_sha') data_ms=$(Get-JsonProp $m 'data_updated_at_ms')"
@@ -313,10 +346,33 @@ try {
         $aiStatus = [string](Get-JsonProp $nl.Json 'ai_status')
         $nlOk = $nl.StatusCode -eq 200 -and $aiStatus -eq 'fallback'
         Add-Result 'runtime.nl_fallback' $nlOk "status=$($nl.StatusCode) ai_status=$aiStatus body=$($nl.Text.Substring(0, [Math]::Min(120, $nl.Text.Length)))"
+
+        $soakOk = $true
+        $soakCount = 0
+        $soakDeadline = [DateTime]::UtcNow.AddSeconds($SoakSeconds)
+        $soakPaths = @('/health/live', '/health/ready', '/v1/meta', '/v1/feeds/classic_legacy?limit=5')
+        while ([DateTime]::UtcNow -lt $soakDeadline) {
+            foreach ($path in $soakPaths) {
+                [void]$serverProc.Refresh()
+                if ($serverProc.HasExited) {
+                    $soakOk = $false
+                    break
+                }
+                $probe = Invoke-Json -Method GET -Url "$base$path" -Headers @{ 'x-device-id' = "m6-process-soak-$soakCount" }
+                $soakCount++
+                if ($probe.StatusCode -ne 200) {
+                    $soakOk = $false
+                    break
+                }
+            }
+            if (-not $soakOk) { break }
+        }
+        Add-Result 'runtime.process_soak' $soakOk "duration_seconds=$SoakSeconds requests=$soakCount process_alive=$(-not $serverProc.HasExited)"
     } else {
         Add-Result 'runtime.meta_provenance' $false 'server never became ready'
         Add-Result 'runtime.feed' $false 'skipped'
         Add-Result 'runtime.nl_fallback' $false 'skipped'
+        Add-Result 'runtime.process_soak' $false 'skipped'
     }
 
     Write-Step 'backup / restore'
@@ -333,34 +389,46 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "dbtool integrity failed: $LASTEXITCODE" }
     Add-Result 'ops.backup_restore' $true "backup+restore+integrity ok"
 
-    if ($Package) {
-        Write-Step 'release package layout'
-        $pkgOut = Join-Path $workDir 'dist'
-        Push-Location $repoRoot
-        try {
-            $env:MPGS_BUILD_GIT_SHA = $gitSha
-            cargo build -p mpgs-server -p mpgs-dbtool --release --locked --quiet
-            if ($LASTEXITCODE -ne 0) { throw "release build failed: $LASTEXITCODE" }
-        } finally {
-            Pop-Location
-        }
-        & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot 'scripts\package_server.ps1') -OutDir $pkgOut -SkipBuild
-        if ($LASTEXITCODE -ne 0) { throw "package_server failed: $LASTEXITCODE" }
-        $pkgDir = Get-ChildItem -LiteralPath $pkgOut -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
-        $packagePath = if ($pkgDir) { $pkgDir.FullName } else { '' }
-        $prov = Join-Path $packagePath 'PROVENANCE.json'
-        $sums = Join-Path $packagePath 'SHA256SUMS.txt'
-        $serverName = if ($env:OS -eq 'Windows_NT') { 'mpgs-server.exe' } else { 'mpgs-server' }
-        $binOk = $packagePath -and (Test-Path (Join-Path $packagePath "bin\$serverName"))
-        $pkgOk = $binOk -and (Test-Path $prov) -and (Test-Path $sums)
-        if ($pkgOk) {
-            $provObj = Get-Content -LiteralPath $prov -Raw | ConvertFrom-Json
-            $pkgOk = $provObj.signing -eq 'unsigned' -and [int]$provObj.schema_version -gt 0
-        }
-        Add-Result 'package.provenance' ([bool]$pkgOk) "path=$packagePath"
-    } else {
-        Add-Result 'package.provenance' $true 'skipped (-Package not set); layout scripts present'
+    Write-Step 'release package layout'
+    $pkgOut = Join-Path $workDir 'dist'
+    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot 'scripts\package_server.ps1') -OutDir $pkgOut
+    if ($LASTEXITCODE -ne 0) { throw "package_server failed: $LASTEXITCODE" }
+    $pkgDir = Get-ChildItem -LiteralPath $pkgOut -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
+    $packagePath = if ($pkgDir) { $pkgDir.FullName } else { '' }
+    $packageBuilt = -not [string]::IsNullOrWhiteSpace($packagePath)
+    $prov = Join-Path $packagePath 'PROVENANCE.json'
+    $sums = Join-Path $packagePath 'SHA256SUMS.txt'
+    $serverName = if ($env:OS -eq 'Windows_NT') { 'mpgs-server.exe' } else { 'mpgs-server' }
+    $packagedServer = Join-Path (Join-Path $packagePath 'bin') $serverName
+    $platformDir = if ($env:OS -eq 'Windows_NT') { 'windows' } else { 'linux' }
+    $provObj = $null
+    $checksumsOk = $false
+    $binOk = $packagePath -and (Test-Path -LiteralPath $packagedServer -PathType Leaf)
+    $pkgOk = $binOk -and
+        (Test-Path -LiteralPath $prov -PathType Leaf) -and
+        (Test-Path -LiteralPath $sums -PathType Leaf) -and
+        (Test-Path -LiteralPath (Join-Path $packagePath $platformDir) -PathType Container)
+    if ($pkgOk) {
+        $provObj = Get-Content -LiteralPath $prov -Raw | ConvertFrom-Json
+        $packagedInfoText = & $packagedServer --build-info
+        $packagedInfo = ($packagedInfoText -join "`n") | ConvertFrom-Json
+        $checksumsOk = Test-PackageChecksums $packagePath $sums
+        $pkgOk = $provObj.signing -eq 'unsigned' -and
+            $provObj.package_layout -eq 'm6-server-2' -and
+            [string]$provObj.git_sha -eq $gitSha -and
+            -not [bool]$provObj.source_dirty -and
+            [string]$packagedInfo.git_sha -eq [string]$provObj.git_sha -and
+            [string]$packagedInfo.rustc_target -eq [string]$provObj.rustc_target -and
+            [int]$packagedInfo.schema_version -eq [int]$provObj.schema_version -and
+            [string]$packagedInfo.algorithm_version -eq [string]$provObj.algorithm_version -and
+            $checksumsOk
     }
+    $packageDetail = if ($null -eq $provObj) {
+        "path=$packagePath provenance_missing=true"
+    } else {
+        "path=$packagePath git=$($provObj.git_sha) target=$($provObj.rustc_target) source_dirty=$($provObj.source_dirty) checksums=$checksumsOk"
+    }
+    Add-Result 'package.provenance' ([bool]$pkgOk) $packageDetail
 
     $failed = @($results | Where-Object { -not $_.ok })
     # Dirty tree fails source.clean but we still write report; overall pass requires all ok.
@@ -384,7 +452,14 @@ finally {
     if ($serverProc -and -not $serverProc.HasExited) {
         Stop-Process -Id $serverProc.Id -Force -ErrorAction SilentlyContinue
     }
-    foreach ($key in @('MPGS_DATABASE_PATH', 'MPGS_SEED_DEMO', 'MPGS_AI_PROVIDER', 'MPGS_BIND_ADDR')) {
+    foreach ($key in @(
+            'MPGS_DATABASE_PATH',
+            'MPGS_SEED_DEMO',
+            'MPGS_AI_PROVIDER',
+            'MPGS_AI_EMBED_PROVIDER',
+            'MPGS_RATE_LIMIT_ENABLED',
+            'MPGS_BIND_ADDR'
+        )) {
         Remove-Item "Env:$key" -ErrorAction SilentlyContinue
     }
     if ($workDir -and (Test-Path -LiteralPath $workDir)) {

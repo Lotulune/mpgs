@@ -12,12 +12,13 @@
   <id>mpgs-server</id>
   <name>MPGS Server</name>
   <description>MPGS Steam multiplayer recommendation API (local SQLite authority)</description>
-  <executable>%BASE%\bin\mpgs-server.exe</executable>
-  <workingdirectory>%BASE%</workingdirectory>
-  <env name="MPGS_DATABASE_PATH" value="%BASE%\data\mpgs.db"/>
+  <executable>%BASE%\..\bin\mpgs-server.exe</executable>
+  <workingdirectory>%BASE%\..</workingdirectory>
+  <env name="MPGS_DATABASE_PATH" value="%BASE%\..\data\mpgs.db"/>
   <env name="MPGS_BIND_ADDR" value="127.0.0.1:8080"/>
   <!-- Prefer EnvironmentFile-style secrets via a host-local env file and set:
        <env name="MPGS_ADMIN_TOKEN" value="..."/> only on the private host. -->
+  <logpath>%BASE%\..\logs</logpath>
   <log mode="roll-by-size">
     <sizeThreshold>10240</sizeThreshold>
     <keepFiles>8</keepFiles>

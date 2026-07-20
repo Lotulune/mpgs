@@ -274,6 +274,37 @@ pub fn count_jobs_by_status(conn: &Connection, status: &str) -> StorageResult<i6
     Ok(n)
 }
 
+/// Whether an equivalent job is still pending or leased.
+///
+/// Schedulers use this instead of relying solely on time-slot idempotency:
+/// a slow worker must not allow a new scheduled job to accumulate behind an
+/// older equivalent job.
+pub fn has_active_job(
+    conn: &Connection,
+    source: &str,
+    task_type: &str,
+    entity_key: &str,
+) -> StorageResult<bool> {
+    if source.trim().is_empty() || task_type.trim().is_empty() || entity_key.trim().is_empty() {
+        return Err(StorageError::validation(
+            "source, task_type, and entity_key are required",
+        ));
+    }
+    conn.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM jobs
+             WHERE source = ?1
+               AND task_type = ?2
+               AND entity_key = ?3
+               AND status IN ('pending', 'leased')
+         )",
+        params![source, task_type, entity_key],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|value| value != 0)
+    .map_err(Into::into)
+}
+
 fn map_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRecord> {
     Ok(JobRecord {
         job_id: row.get(0)?,

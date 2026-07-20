@@ -4,7 +4,9 @@ use serde::Deserialize;
 
 use crate::error::SourceError;
 use crate::hash::parameter_hash;
-use crate::proposal::{ReviewSummaryProposal, SourceStability};
+use crate::proposal::{
+    PopularReviewProposal, PopularReviewsProposal, ReviewSummaryProposal, SourceStability,
+};
 use crate::raw::RawResponse;
 
 pub const ADAPTER_VERSION: &str = "reviews-0.1.0";
@@ -17,6 +19,7 @@ pub struct ReviewSummaryRequest {
     pub purchase_type: String,
     pub filter_offtopic_activity: bool,
     pub num_per_page: u32,
+    pub filter: Option<String>,
 }
 
 impl ReviewSummaryRequest {
@@ -27,11 +30,23 @@ impl ReviewSummaryRequest {
             purchase_type: "all".into(),
             filter_offtopic_activity: true,
             num_per_page: 0,
+            filter: None,
+        }
+    }
+
+    pub fn popular_schinese(app_id: u32) -> Self {
+        Self {
+            app_id,
+            language: "schinese".into(),
+            purchase_type: "all".into(),
+            filter_offtopic_activity: true,
+            num_per_page: 10,
+            filter: Some("all".into()),
         }
     }
 
     pub fn parameter_pairs(&self) -> Vec<(&str, String)> {
-        vec![
+        let mut pairs = vec![
             ("json", "1".into()),
             ("language", self.language.clone()),
             ("purchase_type", self.purchase_type.clone()),
@@ -44,7 +59,11 @@ impl ReviewSummaryRequest {
                 },
             ),
             ("num_per_page", self.num_per_page.to_string()),
-        ]
+        ];
+        if let Some(filter) = &self.filter {
+            pairs.push(("filter", filter.clone()));
+        }
+        pairs
     }
 
     pub fn parameter_hash(&self) -> String {
@@ -69,6 +88,49 @@ struct ReviewsEnvelope {
     success: i32,
     #[serde(default)]
     query_summary: Option<QuerySummaryDto>,
+    #[serde(default)]
+    reviews: Vec<ReviewDto>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReviewDto {
+    recommendationid: String,
+    #[serde(default)]
+    author: AuthorDto,
+    #[serde(default)]
+    language: String,
+    #[serde(default)]
+    review: String,
+    #[serde(default)]
+    timestamp_created: i64,
+    #[serde(default)]
+    timestamp_updated: i64,
+    #[serde(default)]
+    voted_up: bool,
+    #[serde(default)]
+    votes_up: u32,
+    #[serde(default)]
+    votes_funny: u32,
+    #[serde(default)]
+    comment_count: u32,
+    #[serde(default)]
+    steam_purchase: bool,
+    #[serde(default)]
+    received_for_free: bool,
+    #[serde(default)]
+    written_during_early_access: bool,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct AuthorDto {
+    #[serde(default)]
+    personaname: Option<String>,
+    #[serde(default)]
+    profile_url: Option<String>,
+    #[serde(default)]
+    playtime_forever: Option<u32>,
+    #[serde(default)]
+    playtime_at_review: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -83,6 +145,101 @@ struct QuerySummaryDto {
     review_score: Option<u32>,
     #[serde(default)]
     review_score_desc: Option<String>,
+}
+
+pub fn parse_popular_reviews(
+    request: &ReviewSummaryRequest,
+    raw: &RawResponse,
+) -> Result<PopularReviewsProposal, SourceError> {
+    let envelope: ReviewsEnvelope = raw.parse_json()?;
+    if envelope.success != 1 {
+        return Err(SourceError::Permanent {
+            message: format!(
+                "appreviews success={} for app {}",
+                envelope.success, request.app_id
+            ),
+        });
+    }
+    let reviews = envelope
+        .reviews
+        .into_iter()
+        .take(10)
+        .filter_map(|review| {
+            let text = clean_review_text(&review.review);
+            if text.is_empty() {
+                return None;
+            }
+            Some(PopularReviewProposal {
+                recommendation_id: review.recommendationid,
+                author_name: review
+                    .author
+                    .personaname
+                    .filter(|value| !value.trim().is_empty()),
+                author_profile_url: review
+                    .author
+                    .profile_url
+                    .filter(|value| value.starts_with("https://steamcommunity.com/")),
+                language: review.language,
+                review_text: text,
+                voted_up: review.voted_up,
+                votes_up: review.votes_up,
+                votes_funny: review.votes_funny,
+                comment_count: review.comment_count,
+                playtime_forever_minutes: review.author.playtime_forever,
+                playtime_at_review_minutes: review.author.playtime_at_review,
+                created_at_s: review.timestamp_created,
+                updated_at_s: review.timestamp_updated,
+                steam_purchase: review.steam_purchase,
+                received_for_free: review.received_for_free,
+                written_during_early_access: review.written_during_early_access,
+            })
+        })
+        .collect();
+    Ok(PopularReviewsProposal {
+        app_id: request.app_id,
+        language_scope: request.language.clone(),
+        reviews,
+        parameter_hash: request.parameter_hash(),
+        content_hash: raw.content_hash.clone(),
+        source: SOURCE_NAME,
+        stability: SourceStability::OfficialStable,
+        adapter_version: ADAPTER_VERSION,
+    })
+}
+
+fn clean_review_text(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len().min(4_000));
+    let mut in_tag = false;
+    for ch in raw.chars() {
+        match ch {
+            '[' => in_tag = true,
+            ']' if in_tag => in_tag = false,
+            _ if !in_tag => out.push(ch),
+            _ => {}
+        }
+    }
+    let normalized = out
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut compact = String::new();
+    let mut blank_lines = 0_u8;
+    for line in normalized.lines() {
+        if line.trim().is_empty() {
+            blank_lines = blank_lines.saturating_add(1);
+            if blank_lines > 1 {
+                continue;
+            }
+        } else {
+            blank_lines = 0;
+        }
+        if !compact.is_empty() {
+            compact.push('\n');
+        }
+        compact.push_str(line);
+    }
+    compact.trim().chars().take(4_000).collect()
 }
 
 pub fn parse_review_summary(
@@ -148,6 +305,7 @@ mod tests {
         let body = match name {
             "summary" => include_bytes!("../fixtures/reviews_summary.json").to_vec(),
             "fail" => include_bytes!("../fixtures/reviews_fail.json").to_vec(),
+            "popular" => include_bytes!("../fixtures/reviews_popular.json").to_vec(),
             other => panic!("unknown fixture {other}"),
         };
         RawResponse::validate(200, body, Some("application/json".into()), 1024 * 1024).unwrap()
@@ -189,5 +347,20 @@ mod tests {
         let request = ReviewSummaryRequest::summary_only(1);
         let err = parse_review_summary(&request, &fixture("fail")).unwrap_err();
         assert!(matches!(err, SourceError::Permanent { .. }));
+    }
+
+    #[test]
+    fn parses_and_cleans_popular_reviews() {
+        let request = ReviewSummaryRequest::popular_schinese(892970);
+        let proposal = parse_popular_reviews(&request, &fixture("popular")).unwrap();
+        assert_eq!(proposal.reviews.len(), 2);
+        assert_eq!(
+            proposal.reviews[0].review_text,
+            "很适合和朋友一起玩。\n\n更新后内容更丰富。"
+        );
+        assert_eq!(proposal.reviews[0].votes_up, 321);
+        assert!(proposal.reviews[0].voted_up);
+        assert!(request.path_and_query().contains("filter=all"));
+        assert!(request.path_and_query().contains("num_per_page=10"));
     }
 }

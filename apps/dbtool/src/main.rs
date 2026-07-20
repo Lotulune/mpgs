@@ -9,24 +9,63 @@ use std::time::Duration;
 
 use mpgs_ai::{EmbeddingInput, embedding_provider_from_env, encode_f32_le};
 use mpgs_steam_source::{
-    CcuRequest, DEFAULT_STORE_COUNTRY, DEFAULT_STORE_LANGUAGE, DEFAULT_USER_AGENT, GoldenSet,
-    RawResponse, ReviewSummaryRequest, STEAM_STORE_HOST, STEAM_WEB_API_HOST, STORE_ADAPTER_VERSION,
-    STORE_SEARCH_ADAPTER_VERSION, STORE_SEARCH_SOURCE_NAME, STORE_SOURCE_NAME, SourceError,
-    StoreDetailsRequest, StoreSearchPage, StoreSearchRequest, parse_ccu, parse_review_summary,
-    parse_store_details, parse_store_search_page,
+    APP_LIST_ADAPTER_VERSION, APP_LIST_MAX_RESULTS, APP_LIST_SOURCE_NAME, AppListCursor,
+    AppListRequest, CcuRequest, DEFAULT_STORE_COUNTRY, DEFAULT_STORE_LANGUAGE, DEFAULT_USER_AGENT,
+    GoldenSet, RawResponse, ReviewSummaryRequest, STEAM_STORE_HOST, STEAM_WEB_API_HOST,
+    STORE_ADAPTER_VERSION, STORE_SEARCH_ADAPTER_VERSION, STORE_SEARCH_SOURCE_NAME,
+    STORE_SOURCE_NAME, SourceError, StoreDetailsRequest, StoreSearchPage, StoreSearchRequest,
+    apply_page_to_cursor, http_not_found_proposal, parse_app_list_page, parse_ccu,
+    parse_popular_reviews, parse_review_summary, parse_store_details, parse_store_search_page,
 };
-use mpgs_storage::{Clock, Database, HASH_EMBED_MODEL, PutEmbedding, Repository, SystemClock};
+use mpgs_storage::{
+    Clock, Database, EnrichmentNeedFilter, HASH_EMBED_MODEL, PutEmbedding, Repository,
+    StorageResult, SystemClock,
+};
 use serde::{Deserialize, Serialize};
 
 const STORE_SEARCH_CURSOR_KEY: &str = "steam_store_search:multiplayer:reviews_desc";
 const ENRICH_CURSOR_KEY: &str = "steam_store_enrichment:dynamic:v2";
+const APP_LIST_CURSOR_KEY: &str = "steam_istore_getapplist:games:v1";
+const APP_LIST_PAGES_DEFAULT: u32 = 1;
+const APP_LIST_PAGES_MAX: u32 = 100;
+const APP_LIST_PAGE_SIZE_DEFAULT: u32 = 1_000;
+const APP_LIST_INTER_REQUEST_MS: u64 = 1_100;
+const WORKER_JOB_LIMIT_DEFAULT: i64 = 1;
+const WORKER_JOB_LIMIT_MAX: i64 = 10;
+const WORKER_LEASE_MS: i64 = 30 * 60 * 1_000;
+const WORKER_RETRY_BASE_MS: i64 = 60 * 1_000;
 const STORE_SEARCH_TARGET_DEFAULT: u32 = 2_000;
 const STORE_SEARCH_TARGET_MAX: u32 = 10_000;
 const STORE_SEARCH_RESPONSE_MAX_BYTES: usize = 4 * 1024 * 1024;
 const ENRICH_LIMIT_DEFAULT: u32 = 100;
 const ENRICH_LIMIT_MAX: u32 = 5_000;
 const ENRICH_RESPONSE_MAX_BYTES: usize = 2 * 1024 * 1024;
-const ENRICH_INTER_REQUEST_MS: u64 = 1_100;
+const ENRICH_INTER_REQUEST_MS: u64 = 2_500;
+const ENRICH_RATE_LIMIT_COOLDOWN_MS: u64 = 5 * 60 * 1_000;
+const STORAGE_WRITE_RETRIES: u64 = 3;
+
+fn env_flag(name: &str) -> bool {
+    env::var(name).ok().is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
+fn enrich_inter_request_ms() -> u64 {
+    env::var("MPGS_ENRICH_INTER_REQUEST_MS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| (1_000..=60_000).contains(value))
+        .unwrap_or(ENRICH_INTER_REQUEST_MS)
+}
+const M7_MIN_CANDIDATES: i64 = 2_000;
+const M7_MIN_TRUSTED_FRIEND_PROFILES: i64 = 300;
+const M7_MIN_SECTION_CANDIDATES: i64 = 20;
+const M7_MIN_DATE_COVERAGE_PERCENT: i64 = 95;
+const M7_MIN_COVER_COVERAGE_PERCENT: i64 = 95;
+const M7_MIN_SEVEN_DAY_FOCUS: i64 = 300;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct StoreSearchCursor {
@@ -52,6 +91,19 @@ struct CollectionError {
     category: &'static str,
     message: String,
     stats: CollectionStats,
+}
+
+#[derive(Debug, Default)]
+struct SteamWorkerStats {
+    leased: usize,
+    completed: usize,
+    retried: usize,
+    dead: usize,
+}
+
+#[derive(Debug)]
+struct WorkerTaskError {
+    category: &'static str,
 }
 
 fn main() -> ExitCode {
@@ -96,6 +148,15 @@ fn run() -> Result<(), String> {
             let repo = Repository::new(db);
             repo.readiness_check().map_err(err)?;
             audit_m3(&repo, &db_path)
+        }
+        "m7-data-audit" => {
+            let db_path = required_path(args.next(), "--db path")?;
+            let upcoming_shortfall_reason = parse_m7_audit_options(&mut args)?;
+            let db = Database::open(&db_path).map_err(err)?;
+            db.assert_ready().map_err(err)?;
+            let repo = Repository::new(db);
+            repo.readiness_check().map_err(err)?;
+            audit_m7(&repo, &db_path, upcoming_shortfall_reason.as_deref())
         }
         "sync-retrieval" => {
             let db_path = required_path(args.next(), "--db path")?;
@@ -160,6 +221,38 @@ fn run() -> Result<(), String> {
             println!("offline_feature_extract=ok");
             Ok(())
         }
+        "materialize-store-profiles" => {
+            let db_path = required_path(args.next(), "--db path")?;
+            if args.next().is_some() {
+                return Err("materialize-store-profiles accepts only db-path".into());
+            }
+            let db = Database::open(&db_path).map_err(err)?;
+            db.migrate().map_err(err)?;
+            let repo = Repository::new(db);
+            repo.ensure_runtime_defaults().map_err(err)?;
+            let applied = repo.materialize_store_category_profiles().map_err(err)?;
+            println!("path={}", db_path.display());
+            println!("store_profiles_applied={applied}");
+            println!("materialize_store_profiles=ok");
+            Ok(())
+        }
+        "repair-empty-availability" => {
+            let db_path = required_path(args.next(), "--db path")?;
+            if args.next().is_some() {
+                return Err("repair-empty-availability accepts only db-path".into());
+            }
+            let db = Database::open(&db_path).map_err(err)?;
+            db.migrate().map_err(err)?;
+            let repo = Repository::new(db);
+            repo.ensure_runtime_defaults().map_err(err)?;
+            let restored = repo
+                .restore_empty_availability_from_evidence()
+                .map_err(err)?;
+            println!("path={}", db_path.display());
+            println!("availability_fields_restored={restored}");
+            println!("repair_empty_availability=ok");
+            Ok(())
+        }
         "embed-documents" => {
             let db_path = required_path(args.next(), "--db path")?;
             let limit = args
@@ -202,6 +295,73 @@ fn run() -> Result<(), String> {
             println!("embedding_count={}", repo.embedding_count().map_err(err)?);
             println!("embed_documents=ok");
             Ok(())
+        }
+        "collect-steam-catalog" => {
+            let db_path = required_path(args.next(), "--db path")?;
+            let max_pages = optional_catalog_page_count(args.next())?;
+            let page_size = optional_catalog_page_size(args.next())?;
+            if args.next().is_some() {
+                return Err(
+                    "collect-steam-catalog accepts db-path, max-pages, and page-size only".into(),
+                );
+            }
+            let api_key = steam_web_api_key()?;
+            let db = Database::open(&db_path).map_err(err)?;
+            db.migrate().map_err(err)?;
+            let repo = Repository::new(db);
+            repo.ensure_runtime_defaults().map_err(err)?;
+            let run_id = repo
+                .start_source_run(
+                    APP_LIST_SOURCE_NAME,
+                    "catalog_sync",
+                    APP_LIST_ADAPTER_VERSION,
+                    Some(&format!(
+                        "max_pages={max_pages};page_size={page_size};key=present"
+                    )),
+                )
+                .map_err(err)?;
+            match collect_steam_catalog(&repo, &api_key, max_pages, page_size) {
+                Ok(stats) => {
+                    repo.finish_source_run(
+                        run_id,
+                        "succeeded",
+                        stats.request_count,
+                        stats.success_count,
+                        None,
+                        Some("cursor persisted"),
+                    )
+                    .map_err(err)?;
+                    println!("path={}", db_path.display());
+                    println!("requests={}", stats.request_count);
+                    println!("apps_ingested={}", stats.success_count);
+                    println!("catalog_apps={}", repo.count_apps().map_err(err)?);
+                    println!("steam_catalog_sync=ok");
+                    Ok(())
+                }
+                Err(failure) => {
+                    let status = if failure.stats.success_count > 0 {
+                        "partial"
+                    } else {
+                        "failed"
+                    };
+                    repo.finish_source_run(
+                        run_id,
+                        status,
+                        failure.stats.request_count,
+                        failure.stats.success_count,
+                        Some(failure.category),
+                        Some(&failure.message),
+                    )
+                    .map_err(err)?;
+                    Err(format!(
+                        "Steam catalog sync {} after {} requests and {} ingested apps: {}",
+                        failure.category,
+                        failure.stats.request_count,
+                        failure.stats.success_count,
+                        failure.message
+                    ))
+                }
+            }
         }
         "collect-steam-candidates" => {
             let db_path = required_path(args.next(), "--db path")?;
@@ -298,9 +458,27 @@ fn run() -> Result<(), String> {
                 .transpose()
                 .map_err(|error| format!("invalid enrichment cursor: {error}"))?
                 .unwrap_or_default();
-            let targets = repo
-                .list_enrichment_targets_after(limit, Some(cursor.after_app_id), &country_code)
+            let store_only = env_flag("MPGS_ENRICH_STORE_ONLY");
+            let skip_reviews = store_only || env_flag("MPGS_ENRICH_SKIP_REVIEWS");
+            let skip_ccu = store_only || env_flag("MPGS_ENRICH_SKIP_CCU");
+            let skip_store = env_flag("MPGS_ENRICH_SKIP_STORE");
+            let need_filter = EnrichmentNeedFilter {
+                store: !skip_store,
+                reviews: !skip_reviews,
+                review_excerpts: !store_only,
+                ccu: !skip_ccu,
+                price: !skip_store,
+            };
+            let mut targets = repo
+                .list_enrichment_targets_after_filtered(
+                    limit,
+                    Some(cursor.after_app_id),
+                    &country_code,
+                    &language,
+                    need_filter,
+                )
                 .map_err(err)?;
+            targets.retain(|target| target.matches_filter(need_filter));
             if targets.is_empty() {
                 println!("path={}", db_path.display());
                 print_coverage(&before);
@@ -350,10 +528,12 @@ fn run() -> Result<(), String> {
                             None
                         },
                         Some(&format!(
-                            "apps_attempted={} store={} reviews={} ccu={} errors={}",
+                            "apps_attempted={} store={} store_not_found={} reviews={} popular_reviews={} ccu={} errors={}",
                             stats.apps_attempted,
                             stats.store_ok,
+                            stats.store_not_found,
                             stats.reviews_ok,
+                            stats.popular_reviews_ok,
                             stats.ccu_ok,
                             stats.error_count
                         )),
@@ -364,7 +544,9 @@ fn run() -> Result<(), String> {
                     println!("requests={}", stats.request_count);
                     println!("apps_attempted={}", stats.apps_attempted);
                     println!("store_details_ok={}", stats.store_ok);
+                    println!("store_details_not_found={}", stats.store_not_found);
                     println!("reviews_ok={}", stats.reviews_ok);
+                    println!("popular_reviews_ok={}", stats.popular_reviews_ok);
                     println!("ccu_ok={}", stats.ccu_ok);
                     println!("errors={}", stats.error_count);
                     print_coverage(&after);
@@ -398,6 +580,37 @@ fn run() -> Result<(), String> {
                         failure.category, failure.stats.request_count, failure.message
                     ))
                 }
+            }
+        }
+        "run-steam-worker-once" => {
+            let db_path = required_path(args.next(), "--db path")?;
+            let job_limit = optional_worker_job_limit(args.next())?;
+            let enrich_limit = optional_enrich_limit(args.next())?;
+            if args.next().is_some() {
+                return Err(
+                    "run-steam-worker-once accepts db-path, job-limit, and enrich-limit only"
+                        .into(),
+                );
+            }
+            let api_key = optional_steam_web_api_key()?;
+            let owner = configured_worker_owner()?;
+            let db = Database::open(&db_path).map_err(err)?;
+            db.migrate().map_err(err)?;
+            let repo = Repository::new(db);
+            repo.ensure_runtime_defaults().map_err(err)?;
+            let stats =
+                run_steam_worker_once(&repo, &owner, job_limit, enrich_limit, api_key.as_deref())?;
+            println!("path={}", db_path.display());
+            println!("worker={owner}");
+            println!("jobs_leased={}", stats.leased);
+            println!("jobs_completed={}", stats.completed);
+            println!("jobs_retried={}", stats.retried);
+            println!("jobs_dead={}", stats.dead);
+            if stats.dead > 0 {
+                Err(format!("Steam worker marked {} job(s) dead", stats.dead))
+            } else {
+                println!("steam_worker=ok");
+                Ok(())
             }
         }
         "import-golden-profiles" => {
@@ -507,6 +720,400 @@ fn optional_enrich_limit(arg: Option<String>) -> Result<u32, String> {
     Ok(limit)
 }
 
+fn optional_catalog_page_count(arg: Option<String>) -> Result<u32, String> {
+    let pages = match arg {
+        Some(value) => value
+            .parse::<u32>()
+            .map_err(|_| format!("invalid catalog page count: {value}"))?,
+        None => APP_LIST_PAGES_DEFAULT,
+    };
+    if !(1..=APP_LIST_PAGES_MAX).contains(&pages) {
+        return Err(format!(
+            "catalog page count must be between 1 and {APP_LIST_PAGES_MAX}"
+        ));
+    }
+    Ok(pages)
+}
+
+fn optional_catalog_page_size(arg: Option<String>) -> Result<u32, String> {
+    let page_size = match arg {
+        Some(value) => value
+            .parse::<u32>()
+            .map_err(|_| format!("invalid catalog page size: {value}"))?,
+        None => APP_LIST_PAGE_SIZE_DEFAULT,
+    };
+    if !(1..=APP_LIST_MAX_RESULTS).contains(&page_size) {
+        return Err(format!(
+            "catalog page size must be between 1 and {APP_LIST_MAX_RESULTS}"
+        ));
+    }
+    Ok(page_size)
+}
+
+fn optional_worker_job_limit(arg: Option<String>) -> Result<i64, String> {
+    let limit = match arg {
+        Some(value) => value
+            .parse::<i64>()
+            .map_err(|_| format!("invalid worker job limit: {value}"))?,
+        None => WORKER_JOB_LIMIT_DEFAULT,
+    };
+    if !(1..=WORKER_JOB_LIMIT_MAX).contains(&limit) {
+        return Err(format!(
+            "worker job limit must be between 1 and {WORKER_JOB_LIMIT_MAX}"
+        ));
+    }
+    Ok(limit)
+}
+
+fn steam_web_api_key() -> Result<String, String> {
+    optional_steam_web_api_key()?
+        .ok_or_else(|| "MPGS_STEAM_WEB_API_KEY is required for collect-steam-catalog".to_owned())
+}
+
+fn optional_steam_web_api_key() -> Result<Option<String>, String> {
+    let value = match env::var("MPGS_STEAM_WEB_API_KEY") {
+        Ok(value) => value,
+        Err(env::VarError::NotPresent) => return Ok(None),
+        Err(_) => return Err("MPGS_STEAM_WEB_API_KEY could not be read".into()),
+    };
+    let key = value.trim().to_owned();
+    if key.len() != 32 || !key.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("MPGS_STEAM_WEB_API_KEY must be a 32-character hexadecimal key".into());
+    }
+    Ok(Some(key))
+}
+
+fn configured_worker_owner() -> Result<String, String> {
+    let owner = env::var("MPGS_STEAM_WORKER_ID")
+        .unwrap_or_else(|_| format!("mpgs-dbtool-{}", std::process::id()));
+    let owner = owner.trim().to_owned();
+    if owner.is_empty() || owner.len() > 96 {
+        return Err("MPGS_STEAM_WORKER_ID must be between 1 and 96 bytes".into());
+    }
+    Ok(owner)
+}
+
+fn worker_retry_delay_ms(attempts: i64) -> i64 {
+    let exponent = attempts.clamp(1, 6) as u32 - 1;
+    WORKER_RETRY_BASE_MS.saturating_mul(1_i64 << exponent)
+}
+
+fn current_coverage_ratio(repo: &Repository) -> Result<Option<f64>, String> {
+    let coverage = repo.m3_catalog_coverage().map_err(err)?;
+    Ok(Some(if coverage.normalized_multiplayer_candidates > 0 {
+        (coverage.recommendation_ready_profiles as f64
+            / coverage.normalized_multiplayer_candidates as f64)
+            .clamp(0.0, 1.0)
+    } else {
+        0.0
+    }))
+}
+
+fn worker_task_status(task_type: &str) -> Option<(&'static str, &'static str)> {
+    match task_type {
+        "sync_catalog" => Some(("catalog_sync", APP_LIST_CURSOR_KEY)),
+        "collect_candidates" => Some(("candidate_collection", STORE_SEARCH_CURSOR_KEY)),
+        "enrich_catalog" => Some(("enrichment", ENRICH_CURSOR_KEY)),
+        _ => None,
+    }
+}
+
+fn record_worker_refresh(
+    repo: &Repository,
+    task_name: &str,
+    cursor_key: &str,
+    error_category: Option<&str>,
+) -> Result<(), String> {
+    let previous = repo
+        .data_refresh_status()
+        .map_err(err)?
+        .into_iter()
+        .find(|status| status.task_name == task_name);
+    let cursor = repo.source_cursor(cursor_key).map_err(err)?;
+    let now_ms = repo.database().now_ms();
+    repo.update_data_refresh_status(
+        task_name,
+        if error_category.is_none() {
+            Some(now_ms)
+        } else {
+            previous
+                .as_ref()
+                .and_then(|status| status.last_success_at_ms)
+        },
+        previous.as_ref().and_then(|status| status.next_run_at_ms),
+        error_category,
+        cursor.as_deref(),
+        current_coverage_ratio(repo)?,
+    )
+    .map_err(err)
+}
+
+fn worker_storage_error(_error: impl std::fmt::Display) -> WorkerTaskError {
+    WorkerTaskError {
+        category: "network",
+    }
+}
+
+fn worker_task_error(category: &'static str, _message: impl Into<String>) -> WorkerTaskError {
+    WorkerTaskError { category }
+}
+
+fn worker_job_error_category(category: &'static str) -> &'static str {
+    match category {
+        "network" | "rate_limited" | "auth" | "not_found" | "parse_changed" | "invalid_payload" => {
+            category
+        }
+        // The job contract has no distinct oversized-response category; a
+        // response exceeding the adapter bound is treated as a source-shape
+        // change and requires operator review rather than blind retries.
+        "response_too_large" => "parse_changed",
+        // SQLite writer contention or a transient local filesystem issue must
+        // not make an otherwise valid collection job permanently dead.
+        "storage" => "network",
+        _ => "invalid_payload",
+    }
+}
+
+fn worker_completion_key(owner: &str, job_id: i64) -> String {
+    format!("worker:{owner}:{job_id}")
+}
+
+fn run_steam_worker_once(
+    repo: &Repository,
+    owner: &str,
+    job_limit: i64,
+    enrich_limit: u32,
+    api_key: Option<&str>,
+) -> Result<SteamWorkerStats, String> {
+    let jobs = repo
+        .lease_jobs(owner, job_limit, WORKER_LEASE_MS, Some("steam"))
+        .map_err(err)?;
+    let mut stats = SteamWorkerStats {
+        leased: jobs.len(),
+        ..SteamWorkerStats::default()
+    };
+    for job in jobs {
+        let status = worker_task_status(&job.task_type);
+        let result = match job.task_type.as_str() {
+            "sync_catalog" => match api_key {
+                Some(key) => run_catalog_worker_task(repo, key),
+                None => Err(worker_task_error(
+                    "auth",
+                    "MPGS_STEAM_WEB_API_KEY is not configured for the worker",
+                )),
+            },
+            "collect_candidates" => run_candidate_worker_task(repo),
+            "enrich_catalog" => run_enrichment_worker_task(repo, enrich_limit),
+            _ => Err(worker_task_error(
+                "invalid_payload",
+                "unsupported Steam job type",
+            )),
+        };
+        match result {
+            Ok(()) => {
+                repo.complete_job(job.job_id, owner, &worker_completion_key(owner, job.job_id))
+                    .map_err(err)?;
+                if let Some((task_name, cursor_key)) = status {
+                    record_worker_refresh(repo, task_name, cursor_key, None)?;
+                }
+                stats.completed = stats.completed.saturating_add(1);
+            }
+            Err(failure) => {
+                let job_error_category = worker_job_error_category(failure.category);
+                let failed = repo
+                    .fail_job(
+                        job.job_id,
+                        owner,
+                        job_error_category,
+                        worker_retry_delay_ms(job.attempts),
+                    )
+                    .map_err(err)?;
+                if let Some((task_name, cursor_key)) = status {
+                    record_worker_refresh(repo, task_name, cursor_key, Some(job_error_category))?;
+                }
+                if failed.status == "dead" {
+                    stats.dead = stats.dead.saturating_add(1);
+                } else {
+                    stats.retried = stats.retried.saturating_add(1);
+                }
+                eprintln!(
+                    "warn job_id={} task_type={} category={}",
+                    job.job_id, job.task_type, job_error_category
+                );
+            }
+        }
+    }
+    Ok(stats)
+}
+
+fn run_catalog_worker_task(repo: &Repository, api_key: &str) -> Result<(), WorkerTaskError> {
+    let run_id = repo
+        .start_source_run(
+            APP_LIST_SOURCE_NAME,
+            "catalog_sync",
+            APP_LIST_ADAPTER_VERSION,
+            Some("worker=true;max_pages=1;page_size=1000;key=present"),
+        )
+        .map_err(worker_storage_error)?;
+    match collect_steam_catalog(repo, api_key, 1, APP_LIST_PAGE_SIZE_DEFAULT) {
+        Ok(stats) => repo
+            .finish_source_run(
+                run_id,
+                "succeeded",
+                stats.request_count,
+                stats.success_count,
+                None,
+                Some("cursor persisted"),
+            )
+            .map_err(worker_storage_error),
+        Err(failure) => {
+            let status = if failure.stats.success_count > 0 {
+                "partial"
+            } else {
+                "failed"
+            };
+            let _ = repo.finish_source_run(
+                run_id,
+                status,
+                failure.stats.request_count,
+                failure.stats.success_count,
+                Some(failure.category),
+                Some(&failure.message),
+            );
+            Err(worker_task_error(failure.category, failure.message))
+        }
+    }
+}
+
+fn run_candidate_worker_task(repo: &Repository) -> Result<(), WorkerTaskError> {
+    let run_id = repo
+        .start_source_run(
+            STORE_SEARCH_SOURCE_NAME,
+            "candidate_discovery",
+            STORE_SEARCH_ADAPTER_VERSION,
+            Some("worker=true;category2=1;sort=Reviews_DESC;cc=US;l=english"),
+        )
+        .map_err(worker_storage_error)?;
+    match collect_steam_candidates(repo, STORE_SEARCH_TARGET_DEFAULT) {
+        Ok(stats) => repo
+            .finish_source_run(
+                run_id,
+                "succeeded",
+                stats.request_count,
+                stats.success_count,
+                None,
+                Some("target reached or already satisfied"),
+            )
+            .map_err(worker_storage_error),
+        Err(failure) => {
+            let status = if failure.stats.success_count > 0 {
+                "partial"
+            } else {
+                "failed"
+            };
+            let _ = repo.finish_source_run(
+                run_id,
+                status,
+                failure.stats.request_count,
+                failure.stats.success_count,
+                Some(failure.category),
+                Some(&failure.message),
+            );
+            Err(worker_task_error(failure.category, failure.message))
+        }
+    }
+}
+
+fn run_enrichment_worker_task(repo: &Repository, limit: u32) -> Result<(), WorkerTaskError> {
+    let (country_code, language) = configured_store_locale()
+        .map_err(|_| worker_task_error("invalid_payload", "invalid Steam store locale"))?;
+    let cursor = repo
+        .source_cursor(ENRICH_CURSOR_KEY)
+        .map_err(worker_storage_error)?
+        .map(|value| serde_json::from_str::<EnrichmentCursor>(&value))
+        .transpose()
+        .map_err(|_| worker_task_error("invalid_payload", "invalid stored enrichment cursor"))?
+        .unwrap_or_default();
+    let targets = repo
+        .list_enrichment_targets_after(limit, Some(cursor.after_app_id), &country_code, &language)
+        .map_err(worker_storage_error)?;
+    let run_id = repo
+        .start_source_run(
+            STORE_SOURCE_NAME,
+            "candidate_enrichment",
+            STORE_ADAPTER_VERSION,
+            Some(&format!(
+                "worker=true;limit={limit};targets={};country={country_code};language={language};after_app_id={}",
+                targets.len(), cursor.after_app_id
+            )),
+        )
+        .map_err(worker_storage_error)?;
+    if targets.is_empty() {
+        return repo
+            .finish_source_run(run_id, "succeeded", 0, 0, None, Some("no targets due"))
+            .map_err(worker_storage_error);
+    }
+    match enrich_steam_candidates(repo, &targets, &country_code, &language) {
+        Ok(stats) => {
+            let next_cursor = EnrichmentCursor {
+                after_app_id: targets
+                    .last()
+                    .map_or(cursor.after_app_id, |target| target.app_id),
+            };
+            repo.save_source_cursor(
+                ENRICH_CURSOR_KEY,
+                STORE_SOURCE_NAME,
+                &serde_json::to_value(next_cursor).map_err(worker_storage_error)?,
+            )
+            .map_err(worker_storage_error)?;
+            let status = if stats.error_count > 0 && stats.success_count > 0 {
+                "partial"
+            } else if stats.error_count > 0 {
+                "failed"
+            } else {
+                "succeeded"
+            };
+            repo.finish_source_run(
+                run_id,
+                status,
+                stats.request_count,
+                stats.success_count,
+                (stats.error_count > 0).then_some("partial_errors"),
+                Some(&format!(
+                    "apps_attempted={} store={} store_not_found={} reviews={} popular_reviews={} ccu={} errors={}",
+                    stats.apps_attempted,
+                    stats.store_ok,
+                    stats.store_not_found,
+                    stats.reviews_ok,
+                    stats.popular_reviews_ok,
+                    stats.ccu_ok,
+                    stats.error_count
+                )),
+            )
+            .map_err(worker_storage_error)?;
+            if stats.error_count > 0 {
+                Err(worker_task_error(
+                    "network",
+                    "one or more enrichment requests failed",
+                ))
+            } else {
+                Ok(())
+            }
+        }
+        Err(failure) => {
+            let _ = repo.finish_source_run(
+                run_id,
+                "failed",
+                failure.stats.request_count,
+                failure.stats.success_count,
+                Some(failure.category),
+                Some(&failure.message),
+            );
+            Err(worker_task_error(failure.category, failure.message))
+        }
+    }
+}
+
 fn print_coverage(coverage: &mpgs_storage::M3CatalogCoverage) {
     println!(
         "normalized_multiplayer_candidates={}",
@@ -567,6 +1174,357 @@ fn audit_m3(repo: &Repository, db_path: &std::path::Path) -> Result<(), String> 
     }
     println!("m3_catalog_gate=ok");
     Ok(())
+}
+
+fn parse_m7_audit_options(
+    args: &mut impl Iterator<Item = String>,
+) -> Result<Option<String>, String> {
+    let mut upcoming_shortfall_reason = None;
+    for arg in args {
+        let Some(value) = arg.strip_prefix("--allow-upcoming-shortfall=") else {
+            return Err(
+                "m7-data-audit accepts only --allow-upcoming-shortfall=<reason> after db-path"
+                    .into(),
+            );
+        };
+        let reason = value.trim();
+        if reason.is_empty()
+            || reason.len() > 240
+            || reason.contains('\r')
+            || reason.contains('\n')
+            || upcoming_shortfall_reason.is_some()
+        {
+            return Err(
+                "--allow-upcoming-shortfall needs one non-empty single-line reason of at most 240 bytes"
+                    .into(),
+            );
+        }
+        upcoming_shortfall_reason = Some(reason.to_owned());
+    }
+    Ok(upcoming_shortfall_reason)
+}
+
+fn percentage(covered: i64, total: i64) -> f64 {
+    if total <= 0 {
+        0.0
+    } else {
+        (covered.max(0) as f64 / total as f64) * 100.0
+    }
+}
+
+fn meets_percentage(covered: i64, total: i64, minimum_percent: i64) -> bool {
+    total > 0 && covered.max(0).saturating_mul(100) >= total.saturating_mul(minimum_percent)
+}
+
+fn print_m7_coverage(coverage: &mpgs_storage::M7DataCoverage) {
+    println!(
+        "normalized_multiplayer_candidates={}",
+        coverage.normalized_multiplayer_candidates
+    );
+    println!(
+        "trusted_friend_multiplayer_profiles={}",
+        coverage.trusted_friend_multiplayer_profiles
+    );
+    println!("candidates_with_date={}", coverage.candidates_with_date);
+    println!("candidates_with_cover={}", coverage.candidates_with_cover);
+    println!(
+        "date_coverage_percent={:.1}",
+        percentage(
+            coverage.candidates_with_date,
+            coverage.normalized_multiplayer_candidates
+        )
+    );
+    println!(
+        "cover_coverage_percent={:.1}",
+        percentage(
+            coverage.candidates_with_cover,
+            coverage.normalized_multiplayer_candidates
+        )
+    );
+    println!("upcoming_candidates={}", coverage.upcoming_candidates);
+    println!(
+        "recent_release_candidates={}",
+        coverage.recent_release_candidates
+    );
+    println!(
+        "popular_legacy_candidates={}",
+        coverage.popular_legacy_candidates
+    );
+    println!(
+        "classic_legacy_candidates={}",
+        coverage.classic_legacy_candidates
+    );
+    println!(
+        "trusted_profiles_with_seven_day_reviews={}",
+        coverage.trusted_profiles_with_seven_day_reviews
+    );
+    println!(
+        "trusted_profiles_with_seven_day_ccu={}",
+        coverage.trusted_profiles_with_seven_day_ccu
+    );
+}
+
+fn audit_m7(
+    repo: &Repository,
+    db_path: &std::path::Path,
+    upcoming_shortfall_reason: Option<&str>,
+) -> Result<(), String> {
+    let active = repo.active_algorithm_config().map_err(err)?;
+    let coverage = repo.m7_data_coverage(&active.config).map_err(err)?;
+    println!("path={}", db_path.display());
+    println!("algorithm_version={}", active.version);
+    println!("m7_policy_min_candidates={M7_MIN_CANDIDATES}");
+    println!("m7_policy_min_trusted_profiles={M7_MIN_TRUSTED_FRIEND_PROFILES}");
+    println!("m7_policy_min_section_candidates={M7_MIN_SECTION_CANDIDATES}");
+    println!("m7_policy_min_date_coverage_percent={M7_MIN_DATE_COVERAGE_PERCENT}");
+    println!("m7_policy_min_cover_coverage_percent={M7_MIN_COVER_COVERAGE_PERCENT}");
+    println!("m7_policy_min_seven_day_focus={M7_MIN_SEVEN_DAY_FOCUS}");
+    print_m7_coverage(&coverage);
+
+    let mut failures = Vec::new();
+    if coverage.normalized_multiplayer_candidates < M7_MIN_CANDIDATES {
+        failures.push(format!(
+            "{} normalized multiplayer candidates, need at least {M7_MIN_CANDIDATES}",
+            coverage.normalized_multiplayer_candidates
+        ));
+    }
+    if coverage.trusted_friend_multiplayer_profiles < M7_MIN_TRUSTED_FRIEND_PROFILES {
+        failures.push(format!(
+            "{} trusted familiar-multiplayer profiles, need at least {M7_MIN_TRUSTED_FRIEND_PROFILES}",
+            coverage.trusted_friend_multiplayer_profiles
+        ));
+    }
+    if !meets_percentage(
+        coverage.candidates_with_date,
+        coverage.normalized_multiplayer_candidates,
+        M7_MIN_DATE_COVERAGE_PERCENT,
+    ) {
+        failures.push(format!(
+            "date coverage is {:.1}%, need at least {M7_MIN_DATE_COVERAGE_PERCENT}%",
+            percentage(
+                coverage.candidates_with_date,
+                coverage.normalized_multiplayer_candidates
+            )
+        ));
+    }
+    if !meets_percentage(
+        coverage.candidates_with_cover,
+        coverage.normalized_multiplayer_candidates,
+        M7_MIN_COVER_COVERAGE_PERCENT,
+    ) {
+        failures.push(format!(
+            "cover coverage is {:.1}%, need at least {M7_MIN_COVER_COVERAGE_PERCENT}%",
+            percentage(
+                coverage.candidates_with_cover,
+                coverage.normalized_multiplayer_candidates
+            )
+        ));
+    }
+    if coverage.upcoming_candidates < M7_MIN_SECTION_CANDIDATES {
+        if let Some(reason) = upcoming_shortfall_reason {
+            println!("upcoming_shortfall_exception={reason}");
+        } else {
+            failures.push(format!(
+                "{} upcoming candidates, need at least {M7_MIN_SECTION_CANDIDATES} or an explicit documented shortfall exception",
+                coverage.upcoming_candidates
+            ));
+        }
+    } else if upcoming_shortfall_reason.is_some() {
+        failures.push(
+            "--allow-upcoming-shortfall is only valid when fewer than 20 upcoming candidates are available"
+                .into(),
+        );
+    }
+    for (name, count) in [
+        ("recent_release", coverage.recent_release_candidates),
+        ("popular_legacy", coverage.popular_legacy_candidates),
+        ("classic_legacy", coverage.classic_legacy_candidates),
+    ] {
+        if count < M7_MIN_SECTION_CANDIDATES {
+            failures.push(format!(
+                "{count} {name} candidates, need at least {M7_MIN_SECTION_CANDIDATES}"
+            ));
+        }
+    }
+    if coverage.trusted_profiles_with_seven_day_reviews < M7_MIN_SEVEN_DAY_FOCUS {
+        failures.push(format!(
+            "{} trusted profiles have seven consecutive review days, need at least {M7_MIN_SEVEN_DAY_FOCUS}",
+            coverage.trusted_profiles_with_seven_day_reviews
+        ));
+    }
+    if coverage.trusted_profiles_with_seven_day_ccu < M7_MIN_SEVEN_DAY_FOCUS {
+        failures.push(format!(
+            "{} trusted profiles have seven consecutive CCU days, need at least {M7_MIN_SEVEN_DAY_FOCUS}",
+            coverage.trusted_profiles_with_seven_day_ccu
+        ));
+    }
+    if !failures.is_empty() {
+        return Err(format!("M7 data gate failed: {}", failures.join("; ")));
+    }
+    println!("m7_data_gate=ok");
+    Ok(())
+}
+
+fn collect_steam_catalog(
+    repo: &Repository,
+    api_key: &str,
+    max_pages: u32,
+    page_size: u32,
+) -> Result<CollectionStats, CollectionError> {
+    let client = reqwest::blocking::Client::builder()
+        .user_agent(DEFAULT_USER_AGENT)
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::limited(3))
+        .build()
+        .map_err(|error| CollectionError {
+            category: "network",
+            message: error.to_string(),
+            stats: CollectionStats::default(),
+        })?;
+    let stored_cursor = repo
+        .source_cursor(APP_LIST_CURSOR_KEY)
+        .map_err(|error| CollectionError {
+            category: "storage",
+            message: error.to_string(),
+            stats: CollectionStats::default(),
+        })?
+        .map(|value| serde_json::from_str::<AppListCursor>(&value))
+        .transpose()
+        .map_err(|error| CollectionError {
+            category: "invalid_payload",
+            message: format!("invalid stored catalog cursor: {error}"),
+            stats: CollectionStats::default(),
+        })?;
+    let mut cursor =
+        stored_cursor.unwrap_or_else(|| AppListCursor::new_pass(0, APP_LIST_ADAPTER_VERSION));
+    // A completed pass starts a new incremental window. A parser upgrade keeps
+    // the prior watermark but restarts pagination with the new adapter version.
+    if !cursor.is_in_progress() || cursor.adapter_version != APP_LIST_ADAPTER_VERSION {
+        cursor = AppListCursor::new_pass(cursor.if_modified_since, APP_LIST_ADAPTER_VERSION);
+    }
+
+    let mut stats = CollectionStats::default();
+    for page_index in 0..max_pages {
+        let request = AppListRequest::from_cursor(&cursor, page_size);
+        let page = fetch_app_list_page_with_retry(&client, &request, api_key, &mut stats)?;
+        let ingested = repo
+            .ingest_app_list_page(&request, &page)
+            .map_err(|error| CollectionError {
+                category: "storage",
+                message: error.to_string(),
+                stats,
+            })?;
+        apply_page_to_cursor(&mut cursor, &page);
+        repo.save_source_cursor(
+            APP_LIST_CURSOR_KEY,
+            APP_LIST_SOURCE_NAME,
+            &serde_json::to_value(&cursor).map_err(|error| CollectionError {
+                category: "invalid_payload",
+                message: error.to_string(),
+                stats,
+            })?,
+        )
+        .map_err(|error| CollectionError {
+            category: "storage",
+            message: error.to_string(),
+            stats,
+        })?;
+        stats.success_count = stats.success_count.saturating_add(ingested as i64);
+        println!(
+            "progress catalog_apps={} page={} rows={} next_last_appid={} pass_complete={}",
+            repo.count_apps().map_err(|error| CollectionError {
+                category: "storage",
+                message: error.to_string(),
+                stats,
+            })?,
+            page_index + 1,
+            ingested,
+            cursor.last_appid,
+            !cursor.is_in_progress(),
+        );
+        if !cursor.is_in_progress() {
+            break;
+        }
+        if page_index + 1 < max_pages {
+            thread::sleep(Duration::from_millis(APP_LIST_INTER_REQUEST_MS));
+        }
+    }
+    Ok(stats)
+}
+
+fn fetch_app_list_page_with_retry(
+    client: &reqwest::blocking::Client,
+    request: &AppListRequest,
+    api_key: &str,
+    stats: &mut CollectionStats,
+) -> Result<mpgs_steam_source::AppListPage, CollectionError> {
+    let mut last_error = None;
+    for attempt in 0..3_u64 {
+        stats.request_count = stats.request_count.saturating_add(1);
+        match fetch_app_list_page(client, request, api_key) {
+            Ok(page) => return Ok(page),
+            Err(error) => {
+                let retryable = error.is_retryable();
+                let category = source_error_category(&error);
+                let message = error.to_string();
+                last_error = Some((category, message));
+                if !retryable || attempt == 2 {
+                    break;
+                }
+                thread::sleep(Duration::from_secs(1_u64 << attempt));
+            }
+        }
+    }
+    let (category, message) = last_error.unwrap_or(("network", "unknown fetch failure".into()));
+    Err(CollectionError {
+        category,
+        message,
+        stats: *stats,
+    })
+}
+
+fn fetch_app_list_page(
+    client: &reqwest::blocking::Client,
+    request: &AppListRequest,
+    api_key: &str,
+) -> Result<mpgs_steam_source::AppListPage, SourceError> {
+    let url = app_list_url(request, api_key)?;
+    let response = client
+        .get(url)
+        .header(reqwest::header::ACCEPT, "application/json")
+        .send()
+        // Do not preserve reqwest's URL text here: it would contain the key.
+        .map_err(|_| SourceError::Temporary {
+            message: "Steam Web API request failed".into(),
+        })?;
+    let status = response.status().as_u16();
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let mut body = Vec::new();
+    response
+        .take((RawResponse::DEFAULT_MAX_BYTES + 1) as u64)
+        .read_to_end(&mut body)
+        .map_err(|_| SourceError::Temporary {
+            message: "Steam Web API response read failed".into(),
+        })?;
+    let raw = RawResponse::validate(status, body, content_type, RawResponse::DEFAULT_MAX_BYTES)?;
+    parse_app_list_page(&raw)
+}
+
+fn app_list_url(request: &AppListRequest, api_key: &str) -> Result<reqwest::Url, SourceError> {
+    let mut url = reqwest::Url::parse(&format!(
+        "{STEAM_WEB_API_HOST}{}",
+        request.path_and_query_without_key()
+    ))
+    .map_err(|_| SourceError::Config {
+        message: "Steam Web API endpoint configuration is invalid".into(),
+    })?;
+    url.query_pairs_mut().append_pair("key", api_key);
+    Ok(url)
 }
 
 fn collect_steam_candidates(
@@ -759,7 +1717,7 @@ fn source_error_category(error: &SourceError) -> &'static str {
     match error {
         SourceError::RateLimited { .. } => "rate_limited",
         SourceError::HttpStatus { status: 401 | 403 } => "auth",
-        SourceError::NotFound { .. } => "not_found",
+        SourceError::NotFound { .. } | SourceError::HttpStatus { status: 404 } => "not_found",
         SourceError::JsonParse { .. }
         | SourceError::InvalidStructure { .. }
         | SourceError::InvalidUtf8 => "parse_changed",
@@ -775,7 +1733,9 @@ struct EnrichStats {
     success_count: i64,
     apps_attempted: i64,
     store_ok: i64,
+    store_not_found: i64,
     reviews_ok: i64,
+    popular_reviews_ok: i64,
     ccu_ok: i64,
     error_count: i64,
 }
@@ -786,6 +1746,11 @@ fn enrich_steam_candidates(
     country_code: &str,
     language: &str,
 ) -> Result<EnrichStats, CollectionError> {
+    let store_only = env_flag("MPGS_ENRICH_STORE_ONLY");
+    let skip_reviews = store_only || env_flag("MPGS_ENRICH_SKIP_REVIEWS");
+    let skip_ccu = store_only || env_flag("MPGS_ENRICH_SKIP_CCU");
+    let skip_store = env_flag("MPGS_ENRICH_SKIP_STORE");
+    let inter_request_ms = enrich_inter_request_ms();
     let client = reqwest::blocking::Client::builder()
         .user_agent(DEFAULT_USER_AGENT)
         .connect_timeout(Duration::from_secs(10))
@@ -805,7 +1770,7 @@ fn enrich_steam_candidates(
         let mut app_ok = 0_i64;
 
         // Price comes from appdetails; re-fetch store when platforms or price missing.
-        if target.needs_store_details || target.needs_price {
+        if !skip_store && (target.needs_store_details || target.needs_price) {
             match enrich_store_details(
                 &client,
                 repo,
@@ -814,8 +1779,12 @@ fn enrich_steam_candidates(
                 language,
                 &mut stats,
             ) {
-                Ok(()) => {
+                Ok(StoreDetailsOutcome::Ingested) => {
                     stats.store_ok = stats.store_ok.saturating_add(1);
+                    app_ok = app_ok.saturating_add(1);
+                }
+                Ok(StoreDetailsOutcome::NotFound) => {
+                    stats.store_not_found = stats.store_not_found.saturating_add(1);
                     app_ok = app_ok.saturating_add(1);
                 }
                 Err(error) => {
@@ -826,10 +1795,10 @@ fn enrich_steam_candidates(
                     );
                 }
             }
-            thread::sleep(Duration::from_millis(ENRICH_INTER_REQUEST_MS));
+            thread::sleep(Duration::from_millis(inter_request_ms));
         }
 
-        if target.needs_reviews {
+        if target.needs_reviews && !skip_reviews {
             match enrich_reviews(&client, repo, target.app_id, &mut stats) {
                 Ok(()) => {
                     stats.reviews_ok = stats.reviews_ok.saturating_add(1);
@@ -843,10 +1812,27 @@ fn enrich_steam_candidates(
                     );
                 }
             }
-            thread::sleep(Duration::from_millis(ENRICH_INTER_REQUEST_MS));
+            thread::sleep(Duration::from_millis(inter_request_ms));
         }
 
-        if target.needs_ccu {
+        if target.needs_review_excerpts && !store_only {
+            match enrich_popular_reviews(&client, repo, target.app_id, &mut stats) {
+                Ok(()) => {
+                    stats.popular_reviews_ok = stats.popular_reviews_ok.saturating_add(1);
+                    app_ok = app_ok.saturating_add(1);
+                }
+                Err(error) => {
+                    stats.error_count = stats.error_count.saturating_add(1);
+                    eprintln!(
+                        "warn app_id={} popular_reviews: {} ({})",
+                        target.app_id, error.message, error.category
+                    );
+                }
+            }
+            thread::sleep(Duration::from_millis(inter_request_ms));
+        }
+
+        if target.needs_ccu && !skip_ccu {
             match enrich_ccu(&client, repo, target.app_id, &mut stats) {
                 Ok(()) => {
                     stats.ccu_ok = stats.ccu_ok.saturating_add(1);
@@ -860,18 +1846,29 @@ fn enrich_steam_candidates(
                     );
                 }
             }
-            thread::sleep(Duration::from_millis(ENRICH_INTER_REQUEST_MS));
+            // CCU uses the separate Steam Web API host. When this app also had
+            // Store work, the preceding Store delay already spaces the next
+            // appdetails request. Preserve pacing for CCU-only refresh passes.
+            if !(target.needs_store_details
+                || target.needs_price
+                || target.needs_reviews
+                || target.needs_review_excerpts)
+            {
+                thread::sleep(Duration::from_millis(inter_request_ms));
+            }
         }
 
         stats.success_count = stats.success_count.saturating_add(app_ok);
         if (index + 1) % 10 == 0 || index + 1 == total {
             // stderr so progress is visible when stdout is piped/fully buffered.
             eprintln!(
-                "progress enriched_apps={}/{} store_ok={} reviews_ok={} ccu_ok={} errors={}",
+                "progress enriched_apps={}/{} store_ok={} store_not_found={} reviews_ok={} popular_reviews_ok={} ccu_ok={} errors={}",
                 index + 1,
                 total,
                 stats.store_ok,
+                stats.store_not_found,
                 stats.reviews_ok,
+                stats.popular_reviews_ok,
                 stats.ccu_ok,
                 stats.error_count
             );
@@ -886,6 +1883,11 @@ struct SoftEnrichError {
     message: String,
 }
 
+enum StoreDetailsOutcome {
+    Ingested,
+    NotFound,
+}
+
 fn enrich_store_details(
     client: &reqwest::blocking::Client,
     repo: &Repository,
@@ -893,7 +1895,7 @@ fn enrich_store_details(
     country_code: &str,
     language: &str,
     stats: &mut EnrichStats,
-) -> Result<(), SoftEnrichError> {
+) -> Result<StoreDetailsOutcome, SoftEnrichError> {
     let request =
         StoreDetailsRequest::with_locale(app_id, country_code, language).map_err(|error| {
             SoftEnrichError {
@@ -906,16 +1908,23 @@ fn enrich_store_details(
         &format!("{STEAM_STORE_HOST}{}", request.path_and_query()),
         stats,
     )?;
-    let parsed = parse_store_details(&request, &raw).map_err(|error| SoftEnrichError {
-        category: source_error_category(&error),
-        message: error.to_string(),
-    })?;
-    repo.ingest_store_details(&parsed.details, &parsed.relations)
-        .map_err(|error| SoftEnrichError {
-            category: "storage",
-            message: error.to_string(),
-        })?;
-    Ok(())
+    let parsed = match parse_store_details(&request, &raw) {
+        Ok(parsed) => parsed,
+        Err(_error @ SourceError::NotFound { .. }) => {
+            persist_with_retry(|| {
+                repo.record_store_details_not_found(app_id, country_code, language)
+            })?;
+            return Ok(StoreDetailsOutcome::NotFound);
+        }
+        Err(error) => {
+            return Err(SoftEnrichError {
+                category: source_error_category(&error),
+                message: error.to_string(),
+            });
+        }
+    };
+    persist_with_retry(|| repo.ingest_store_details(&parsed.details, &parsed.relations))?;
+    Ok(StoreDetailsOutcome::Ingested)
 }
 
 fn enrich_reviews(
@@ -934,11 +1943,27 @@ fn enrich_reviews(
         category: source_error_category(&error),
         message: error.to_string(),
     })?;
-    repo.ingest_review(&proposal)
-        .map_err(|error| SoftEnrichError {
-            category: "storage",
-            message: error.to_string(),
-        })?;
+    persist_with_retry(|| repo.ingest_review(&proposal))?;
+    Ok(())
+}
+
+fn enrich_popular_reviews(
+    client: &reqwest::blocking::Client,
+    repo: &Repository,
+    app_id: u32,
+    stats: &mut EnrichStats,
+) -> Result<(), SoftEnrichError> {
+    let request = ReviewSummaryRequest::popular_schinese(app_id);
+    let raw = fetch_raw_with_retry(
+        client,
+        &format!("{STEAM_STORE_HOST}{}", request.path_and_query()),
+        stats,
+    )?;
+    let proposal = parse_popular_reviews(&request, &raw).map_err(|error| SoftEnrichError {
+        category: source_error_category(&error),
+        message: error.to_string(),
+    })?;
+    persist_with_retry(|| repo.ingest_popular_reviews(&proposal))?;
     Ok(())
 }
 
@@ -949,21 +1974,42 @@ fn enrich_ccu(
     stats: &mut EnrichStats,
 ) -> Result<(), SoftEnrichError> {
     let request = CcuRequest::new(app_id);
-    let raw = fetch_raw_with_retry(
+    let raw = match fetch_raw_with_retry(
         client,
         &format!("{STEAM_WEB_API_HOST}{}", request.path_and_query()),
         stats,
-    )?;
+    ) {
+        Ok(raw) => raw,
+        Err(error) if error.category == "not_found" => {
+            return persist_with_retry(|| repo.ingest_ccu(&http_not_found_proposal(app_id)));
+        }
+        Err(error) => return Err(error),
+    };
     let proposal = parse_ccu(&request, &raw).map_err(|error| SoftEnrichError {
         category: source_error_category(&error),
         message: error.to_string(),
     })?;
-    repo.ingest_ccu(&proposal)
-        .map_err(|error| SoftEnrichError {
-            category: "storage",
-            message: error.to_string(),
-        })?;
+    persist_with_retry(|| repo.ingest_ccu(&proposal))?;
     Ok(())
+}
+
+fn persist_with_retry(mut write: impl FnMut() -> StorageResult<()>) -> Result<(), SoftEnrichError> {
+    let mut last_error = None;
+    for attempt in 0..STORAGE_WRITE_RETRIES {
+        match write() {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                last_error = Some(error.to_string());
+                if attempt + 1 < STORAGE_WRITE_RETRIES {
+                    thread::sleep(Duration::from_secs(1_u64 << attempt));
+                }
+            }
+        }
+    }
+    Err(SoftEnrichError {
+        category: "storage",
+        message: last_error.unwrap_or_else(|| "unknown storage failure".into()),
+    })
 }
 
 fn fetch_raw_with_retry(
@@ -984,7 +2030,7 @@ fn fetch_raw_with_retry(
                 if !retryable || attempt == 2 {
                     break;
                 }
-                thread::sleep(Duration::from_secs(1_u64 << attempt));
+                thread::sleep(enrich_retry_delay(&error, attempt));
             }
         }
     }
@@ -1001,11 +2047,20 @@ fn fetch_raw(client: &reqwest::blocking::Client, url: &str) -> Result<RawRespons
             message: error.to_string(),
         })?;
     let status = response.status().as_u16();
+    let retry_after_ms = response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(|seconds| seconds.saturating_mul(1_000));
     let content_type = response
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned);
+    if status == 429 {
+        return Err(SourceError::RateLimited { retry_after_ms });
+    }
     let mut body = Vec::new();
     response
         .take((ENRICH_RESPONSE_MAX_BYTES + 1) as u64)
@@ -1014,6 +2069,16 @@ fn fetch_raw(client: &reqwest::blocking::Client, url: &str) -> Result<RawRespons
             message: error.to_string(),
         })?;
     RawResponse::validate(status, body, content_type, ENRICH_RESPONSE_MAX_BYTES)
+}
+
+fn enrich_retry_delay(error: &SourceError, attempt: u64) -> Duration {
+    let delay_ms = match error {
+        SourceError::RateLimited { retry_after_ms } => retry_after_ms
+            .unwrap_or(0)
+            .max(ENRICH_RATE_LIMIT_COOLDOWN_MS),
+        _ => (1_000_u64).saturating_mul(1_u64 << attempt.min(6)),
+    };
+    Duration::from_millis(delay_ms)
 }
 
 fn err(error: impl std::fmt::Display) -> String {
@@ -1135,15 +2200,169 @@ fn usage() -> &'static str {
        migrate <db-path>\n\
        integrity <db-path>\n\
        m3-audit <db-path>\n\
+       m7-data-audit <db-path> [--allow-upcoming-shortfall=<reason>]\n\
        sync-retrieval <db-path> [limit=5000] [after_app_id=0]\n\
        extract-offline-features <db-path> [limit=5000] [after_app_id=0]\n\
+       materialize-store-profiles <db-path>\n\
+       repair-empty-availability <db-path>\n\
        embed-documents <db-path> [limit=200] [batch=16]\n\
+       collect-steam-catalog <db-path> [max-pages=1] [page-size=1000]\n\
        collect-steam-candidates <db-path> [target, default 2000]\n\
        enrich-steam-candidates <db-path> [limit, default 100]\n\
+       run-steam-worker-once <db-path> [job-limit=1] [enrich-limit=100]\n\
        import-golden-profiles <db-path>\n\
        backup <db-path> <backup-path>\n\
        restore <backup-path> <dest-db-path>\n\n\
      Enrichment environment:\n\
+       MPGS_STEAM_WEB_API_KEY (required by collect-steam-catalog; server-side only)\n\
+       MPGS_STEAM_WORKER_ID (optional stable lease owner name)\n\
        MPGS_STEAM_COUNTRY (default cn)\n\
        MPGS_STEAM_LANGUAGE (default schinese)\n"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn enrichment_retry_uses_a_long_rate_limit_cooldown() {
+        assert_eq!(
+            enrich_retry_delay(
+                &SourceError::RateLimited {
+                    retry_after_ms: None,
+                },
+                0,
+            ),
+            Duration::from_secs(300)
+        );
+        assert_eq!(
+            enrich_retry_delay(
+                &SourceError::RateLimited {
+                    retry_after_ms: Some(600_000),
+                },
+                0,
+            ),
+            Duration::from_secs(600)
+        );
+        assert_eq!(
+            enrich_retry_delay(
+                &SourceError::Temporary {
+                    message: "x".into()
+                },
+                1
+            ),
+            Duration::from_secs(2)
+        );
+    }
+
+    fn app_list_request() -> AppListRequest {
+        AppListRequest {
+            last_appid: 730,
+            if_modified_since: 1_700_000_000,
+            max_results: 100,
+            include_games: true,
+            include_dlc: false,
+            include_software: false,
+            include_videos: false,
+            include_hardware: false,
+        }
+    }
+
+    #[test]
+    fn catalog_arguments_stay_within_safe_bounds() {
+        assert_eq!(
+            optional_catalog_page_count(None).unwrap(),
+            APP_LIST_PAGES_DEFAULT
+        );
+        assert!(optional_catalog_page_count(Some("0".into())).is_err());
+        assert!(optional_catalog_page_count(Some((APP_LIST_PAGES_MAX + 1).to_string())).is_err());
+        assert_eq!(
+            optional_catalog_page_size(Some(APP_LIST_MAX_RESULTS.to_string())).unwrap(),
+            APP_LIST_MAX_RESULTS
+        );
+        assert!(optional_catalog_page_size(Some("0".into())).is_err());
+        assert!(optional_catalog_page_size(Some((APP_LIST_MAX_RESULTS + 1).to_string())).is_err());
+        assert_eq!(
+            optional_worker_job_limit(None).unwrap(),
+            WORKER_JOB_LIMIT_DEFAULT
+        );
+        assert!(optional_worker_job_limit(Some("0".into())).is_err());
+        assert_eq!(worker_job_error_category("storage"), "network");
+        assert_eq!(
+            worker_job_error_category("response_too_large"),
+            "parse_changed"
+        );
+    }
+
+    #[test]
+    fn m7_audit_requires_an_explicit_single_line_upcoming_exception_reason() {
+        let mut valid =
+            vec!["--allow-upcoming-shortfall=Steam schedule has fewer releases".into()].into_iter();
+        assert_eq!(
+            parse_m7_audit_options(&mut valid).unwrap().as_deref(),
+            Some("Steam schedule has fewer releases")
+        );
+
+        let mut missing_reason = vec!["--allow-upcoming-shortfall=".into()].into_iter();
+        assert!(parse_m7_audit_options(&mut missing_reason).is_err());
+        let mut unknown = vec!["--unexpected".into()].into_iter();
+        assert!(parse_m7_audit_options(&mut unknown).is_err());
+    }
+
+    #[test]
+    fn catalog_url_uses_the_official_endpoint_and_query_key() {
+        let key = "a".repeat(32);
+        let url = app_list_url(&app_list_request(), &key).unwrap();
+        assert_eq!(url.scheme(), "https");
+        assert_eq!(url.host_str(), Some("api.steampowered.com"));
+        let pairs = url.query_pairs().collect::<Vec<_>>();
+        assert!(
+            pairs
+                .iter()
+                .any(|(name, value)| name == "key" && value.as_ref() == key)
+        );
+        assert!(
+            pairs
+                .iter()
+                .any(|(name, value)| name == "last_appid" && value.as_ref() == "730")
+        );
+        assert!(
+            pairs
+                .iter()
+                .any(|(name, value)| name == "if_modified_since" && value.as_ref() == "1700000000")
+        );
+    }
+
+    #[test]
+    fn worker_marks_unsupported_steam_jobs_dead_without_network_access() {
+        let db = Database::open_in_memory().unwrap();
+        let repo = Repository::new(db);
+        repo.migrate().unwrap();
+        repo.ensure_runtime_defaults().unwrap();
+        let job_id = repo
+            .enqueue_job(&mpgs_storage::EnqueueJob {
+                source: "steam".into(),
+                task_type: "unsupported".into(),
+                entity_key: "test".into(),
+                priority: 1,
+                due_at_ms: 0,
+                idempotency_key: "dbtool-worker-unsupported".into(),
+                payload_json: None,
+                max_attempts: 1,
+            })
+            .unwrap();
+
+        let stats = run_steam_worker_once(&repo, "test-worker", 1, 1, None).unwrap();
+
+        assert_eq!(stats.leased, 1);
+        assert_eq!(stats.completed, 0);
+        assert_eq!(stats.dead, 1);
+        let job = repo
+            .database()
+            .with_conn(|conn| mpgs_storage::jobs::get_job(conn, job_id))
+            .unwrap()
+            .unwrap();
+        assert_eq!(job.status, "dead");
+        assert_eq!(job.last_error_category.as_deref(), Some("invalid_payload"));
+    }
 }

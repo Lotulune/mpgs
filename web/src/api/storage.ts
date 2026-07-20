@@ -2,15 +2,17 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { StorageLike } from "./types";
 
 const MPGS_KEY_PREFIX = "mpgs.";
+const SESSION_KEY = "mpgs.session.v1";
 
 class SqliteBackedStorage implements StorageLike {
   private readonly values = new Map<string, string>();
   private writeChain: Promise<void> = Promise.resolve();
   private lastWriteError: unknown = null;
 
-  hydrate(values: Record<string, string>): void {
+  hydrate(values: Record<string, string>, session: string | null): void {
     this.values.clear();
     for (const [key, value] of Object.entries(values)) this.values.set(key, value);
+    if (session !== null) this.values.set(SESSION_KEY, session);
   }
 
   get length(): number {
@@ -28,11 +30,19 @@ class SqliteBackedStorage implements StorageLike {
   setItem(key: string, value: string): void {
     const normalized = String(value);
     this.values.set(key, normalized);
+    if (key === SESSION_KEY) {
+      this.enqueue(() => invoke("auth_session_save", { value: normalized }));
+      return;
+    }
     this.enqueue(() => invoke("client_store_set", { key, value: normalized }));
   }
 
   removeItem(key: string): void {
     this.values.delete(key);
+    if (key === SESSION_KEY) {
+      this.enqueue(() => invoke("auth_session_remove"));
+      return;
+    }
     this.enqueue(() => invoke("client_store_remove", { key }));
   }
 
@@ -74,7 +84,8 @@ async function installDesktopCloseGuard(): Promise<void> {
 /**
  * Hydrate the desktop key/value mirror before React and app singletons load.
  * Browser development keeps the native Web Storage fallback; packaged Tauri
- * builds persist all MPGS client state in the private application SQLite DB.
+ * builds persist non-secret client state in the private application SQLite DB.
+ * Session tokens use the operating system credential store instead.
  */
 export async function initializeClientStorage(): Promise<void> {
   if (!isTauri()) {
@@ -83,8 +94,16 @@ export async function initializeClientStorage(): Promise<void> {
   }
 
   const store = new SqliteBackedStorage();
-  const persisted = await invoke<Record<string, string>>("client_store_load");
-  store.hydrate(persisted);
+  const [persisted, secureSession, sqliteLegacySession] = await Promise.all([
+    invoke<Record<string, string>>("client_store_load"),
+    invoke<string | null>("auth_session_load"),
+    invoke<string | null>("client_store_take_legacy_session"),
+  ]);
+  const session = secureSession ?? sqliteLegacySession;
+  store.hydrate(persisted, session);
+  if (secureSession === null && sqliteLegacySession !== null) {
+    store.setItem(SESSION_KEY, sqliteLegacySession);
+  }
 
   // One-time migration for users of the previous localStorage-backed builds.
   const legacy = globalThis.localStorage;

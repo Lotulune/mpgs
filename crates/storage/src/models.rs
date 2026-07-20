@@ -116,25 +116,96 @@ pub struct M3CatalogCoverage {
     pub with_ccu: i64,
 }
 
+/// Release-gate coverage for the M7 real-data requirements.
+///
+/// The section counts use the active recommendation configuration and the
+/// same eligibility rules as the public feed before per-user hard filters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct M7DataCoverage {
+    pub normalized_multiplayer_candidates: i64,
+    pub trusted_friend_multiplayer_profiles: i64,
+    pub candidates_with_date: i64,
+    pub candidates_with_cover: i64,
+    pub upcoming_candidates: i64,
+    pub recent_release_candidates: i64,
+    pub popular_legacy_candidates: i64,
+    pub classic_legacy_candidates: i64,
+    pub trusted_profiles_with_seven_day_reviews: i64,
+    pub trusted_profiles_with_seven_day_ccu: i64,
+}
+
 /// Multiplayer catalog row still missing automated enrichment dimensions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnrichmentTarget {
     pub app_id: u32,
     pub needs_store_details: bool,
     pub needs_reviews: bool,
+    pub needs_review_excerpts: bool,
     pub needs_ccu: bool,
     pub needs_price: bool,
 }
 
+/// Which enrichment dimensions should be selected and prioritized.
+///
+/// Used so store-only / skip-* passes do not LIMIT away the intended work when
+/// other dimensions (for example CCU) rank higher in the default ordering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EnrichmentNeedFilter {
+    pub store: bool,
+    pub reviews: bool,
+    pub review_excerpts: bool,
+    pub ccu: bool,
+    pub price: bool,
+}
+
+impl EnrichmentNeedFilter {
+    pub const ALL: Self = Self {
+        store: true,
+        reviews: true,
+        review_excerpts: true,
+        ccu: true,
+        price: true,
+    };
+
+    pub fn any(self) -> bool {
+        self.store || self.reviews || self.review_excerpts || self.ccu || self.price
+    }
+}
+
 impl EnrichmentTarget {
     pub fn needs_any(self) -> bool {
-        self.needs_store_details || self.needs_reviews || self.needs_ccu || self.needs_price
+        self.needs_store_details
+            || self.needs_reviews
+            || self.needs_review_excerpts
+            || self.needs_ccu
+            || self.needs_price
     }
 
     pub fn missing_count(self) -> u8 {
         u8::from(self.needs_store_details)
             + u8::from(self.needs_reviews)
+            + u8::from(self.needs_review_excerpts)
             + u8::from(self.needs_ccu)
             + u8::from(self.needs_price)
     }
+
+    pub fn matches_filter(self, filter: EnrichmentNeedFilter) -> bool {
+        (filter.store && self.needs_store_details)
+            || (filter.reviews && self.needs_reviews)
+            || (filter.review_excerpts && self.needs_review_excerpts)
+            || (filter.ccu && self.needs_ccu)
+            || (filter.price && self.needs_price)
+    }
+}
+
+/// Observable state for each controlled M7 data-refresh task.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DataRefreshStatus {
+    pub task_name: String,
+    pub last_success_at_ms: Option<i64>,
+    pub next_run_at_ms: Option<i64>,
+    pub last_error_category: Option<String>,
+    pub cursor_value: Option<String>,
+    pub coverage_ratio: Option<f64>,
+    pub updated_at_ms: i64,
 }

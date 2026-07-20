@@ -2,12 +2,13 @@
 
 import { useEffect, useRef, useState } from "react";
 import { ApiError } from "../api/client";
-import type { EvidenceItem, GameDetail } from "../api/types";
+import type { EvidenceItem, GameDetail, PopularReview } from "../api/types";
 import {
   dominantModeLabel,
   evidenceValueLabel,
   featureLabel,
   formatAgo,
+  formatReleaseDate,
   formatCount,
   formatPercent,
   formatPrice,
@@ -21,12 +22,78 @@ import {
 } from "../app/format";
 import { apiClient } from "../app/runtime";
 import { useTheme } from "../app/ThemeProvider";
+import { GameMedia } from "./GameMedia";
 import { VoteButton } from "./VoteButton";
 
 function boolLabel(value: boolean | null): string {
   if (value === true) return "支持";
   if (value === false) return "不支持";
   return "未知";
+}
+
+function fallbackSummary(game: GameDetail): string {
+  const mp = game.multiplayer;
+  const capabilities = [
+    mp.private_session === true ? "可创建私人房间" : null,
+    mp.online_coop === true ? "支持在线合作" : null,
+    mp.self_hosted_server === true ? "可自建服务器" : null,
+  ].filter((value): value is string => value !== null);
+  const party = partyLabel(mp.recommended_min, mp.recommended_max);
+  const capabilityText = capabilities.length > 0 ? capabilities.join("，") : "联机能力仍待补充";
+  const partyText =
+    party === "人数未定" ? "推荐人数仍待补充" : `推荐 ${party}`;
+  return `${dominantModeLabel(mp.dominant_mode)}玩法，${partyText}；${capabilityText}。`;
+}
+
+function reviewDate(timestampMs: number): string {
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  }).format(new Date(timestampMs));
+}
+
+function playtimeLabel(minutes: number | null): string | null {
+  if (minutes === null) return null;
+  const hours = minutes / 60;
+  return `游玩 ${hours >= 100 ? Math.round(hours) : hours.toFixed(1)} 小时`;
+}
+
+function PopularReviewCard({ review }: { review: PopularReview }) {
+  const [expanded, setExpanded] = useState(false);
+  const isLong = review.text.length > 360;
+  const playtime = playtimeLabel(review.playtime_forever_minutes);
+  return (
+    <article className="steam-review-card">
+      <div className="steam-review-head">
+        <span className={review.voted_up ? "chip ok" : "chip danger"}>
+          {review.voted_up ? "👍 推荐" : "👎 不推荐"}
+        </span>
+        {review.author_profile_url ? (
+          <a href={review.author_profile_url} target="_blank" rel="noreferrer noopener">
+            {review.author_name || "Steam 玩家"} ↗
+          </a>
+        ) : (
+          <strong>{review.author_name || "Steam 玩家"}</strong>
+        )}
+        <span className="steam-review-rank">热门 #{review.rank}</span>
+      </div>
+      <div className="steam-review-meta">
+        <span>{reviewDate(review.created_at_ms)}</span>
+        {playtime && <span>{playtime}</span>}
+        <span>{formatCount(review.votes_up)} 人觉得有用</span>
+        {review.written_during_early_access && <span>抢先体验期间撰写</span>}
+      </div>
+      <p className={expanded ? "steam-review-text expanded" : "steam-review-text"}>
+        {review.text}
+      </p>
+      {isLong && (
+        <button type="button" className="review-expand" onClick={() => setExpanded((value) => !value)}>
+          {expanded ? "收起" : "展开全文"}
+        </button>
+      )}
+    </article>
+  );
 }
 
 interface DetailState {
@@ -128,6 +195,11 @@ export function GameDetailScreen({ appId, onBack }: { appId: number; onBack: () 
   const game = state.detail;
   const mp = game.multiplayer;
   const av = game.availability;
+  const partySizeLabel = partyLabel(mp.recommended_min, mp.recommended_max);
+  const shortDescription = game.short_description?.trim() || null;
+  const price = av.is_free === true || (av.final_price_minor !== null && av.price_currency)
+    ? formatPrice(av.final_price_minor, av.price_currency, av.is_free)
+    : "待同步 Steam 国区价格";
 
   return (
     <div className="detail">
@@ -141,28 +213,40 @@ export function GameDetailScreen({ appId, onBack }: { appId: number; onBack: () 
         </span>
       </div>
 
-      <div className="detail-head">
-        <div>
-          <h2>{game.name}</h2>
-          <div className="card-meta" style={{ marginTop: 8 }}>
-            <span className="chip accent">{dominantModeLabel(mp.dominant_mode)}</span>
-            <span className="chip">{releaseStateLabel(game.release_state)}</span>
-            <span className="chip">{game.release_date ?? "发售日期未知"}</span>
-            {av.has_demo && <span className="chip ok">有 Demo</span>}
-          </div>
+      <div className="detail-hero">
+        <div className="detail-cover">
+          <GameMedia coverUrl={game.cover_url} name={game.name} appId={game.app_id} />
         </div>
-        <div className="detail-actions">
-          <VoteButton appId={game.app_id} intent={game.play_intent} size="large" />
-          <a
-            ref={steamBtnRef}
-            className="btn primary"
-            href={game.steam_url}
-            target="_blank"
-            rel="noreferrer noopener"
-            onClick={() => fireAction("confirm", steamBtnRef.current)}
-          >
-            在 Steam 打开 ↗
-          </a>
+        <div className="detail-hero-body">
+          <div className="detail-head">
+            <div>
+              <h2>{game.name}</h2>
+              <div className="card-meta" style={{ marginTop: 8 }}>
+                <span className="chip accent">{dominantModeLabel(mp.dominant_mode)}</span>
+                <span className="chip">{releaseStateLabel(game.release_state)}</span>
+                <span className="chip">{formatReleaseDate(game.release_date, game.release_date_raw, game.release_date_precision)}</span>
+                {av.has_demo && <span className="chip ok">有 Demo</span>}
+              </div>
+            </div>
+            <div className="detail-actions">
+              <VoteButton appId={game.app_id} intent={game.play_intent} size="large" />
+              <a
+                ref={steamBtnRef}
+                className="btn primary"
+                href={game.steam_url}
+                target="_blank"
+                rel="noreferrer noopener"
+                onClick={() => fireAction("confirm", steamBtnRef.current)}
+              >
+                在 Steam 打开 ↗
+              </a>
+            </div>
+          </div>
+          <section className="detail-summary" aria-label={shortDescription ? "商店简介" : "联机速览"}>
+            <h3>{shortDescription ? "商店简介" : "联机速览"}</h3>
+            <p>{shortDescription ?? fallbackSummary(game)}</p>
+            <span>{shortDescription ? "来源：Steam 商店" : "来源：已入库联机资料"}</span>
+          </section>
         </div>
       </div>
 
@@ -171,7 +255,18 @@ export function GameDetailScreen({ appId, onBack }: { appId: number; onBack: () 
           <h4>联机方式</h4>
           <dl className="kv">
             <dt>推荐人数</dt>
-            <dd>{partyLabel(mp.recommended_min, mp.recommended_max)}</dd>
+            <dd>
+              {partySizeLabel}
+              {partySizeLabel === "人数未定" && (
+                <span
+                  className="chip warn"
+                  style={{ marginLeft: 8 }}
+                  title="商店分类仅能确认多人，无法可靠得到小队人数区间"
+                >
+                  仅分类弱信号
+                </span>
+              )}
+            </dd>
             <dt>私人房间</dt>
             <dd>{boolLabel(mp.private_session)}</dd>
             <dt>在线合作</dt>
@@ -194,17 +289,17 @@ export function GameDetailScreen({ appId, onBack }: { appId: number; onBack: () 
           <h4>可用性</h4>
           <dl className="kv">
             <dt>平台</dt>
-            <dd>{platformLabels(av.platforms)}</dd>
+            <dd>{av.platforms.length > 0 ? platformLabels(av.platforms) : "待同步 Steam 商店资料"}</dd>
             <dt>语言</dt>
-            <dd>{languageLabels(av.languages)}</dd>
+            <dd>{av.languages.length > 0 ? languageLabels(av.languages) : "待同步 Steam 商店资料"}</dd>
             <dt>单局时长</dt>
             <dd>
               {av.typical_session_minutes_min !== null && av.typical_session_minutes_max !== null
                 ? `${av.typical_session_minutes_min}–${av.typical_session_minutes_max} 分钟`
-                : "未知"}
+                : "尚未录入"}
             </dd>
             <dt>价格</dt>
-            <dd>{formatPrice(av.final_price_minor, av.price_currency, av.is_free)}</dd>
+            <dd>{price}</dd>
           </dl>
         </section>
 
@@ -238,6 +333,24 @@ export function GameDetailScreen({ appId, onBack }: { appId: number; onBack: () 
                 </span>
               </div>
             ))
+          )}
+        </section>
+
+        <section className="panel review-panel">
+          <div className="review-panel-title">
+            <div>
+              <h4>Steam 热门评价</h4>
+              <span>简体中文 · 按 Steam 热门顺序 · 最多 10 条</span>
+            </div>
+          </div>
+          {game.reviews.featured.length === 0 ? (
+            <div className="review-empty">热门评价正文尚未同步。</div>
+          ) : (
+            <div className="steam-review-grid">
+              {game.reviews.featured.map((review) => (
+                <PopularReviewCard key={review.recommendation_id} review={review} />
+              ))}
+            </div>
           )}
         </section>
       </div>

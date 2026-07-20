@@ -98,6 +98,8 @@ struct AppDetailsData {
     #[serde(default)]
     short_description: Option<String>,
     #[serde(default)]
+    header_image: Option<String>,
+    #[serde(default)]
     developers: Option<Vec<String>>,
     #[serde(default)]
     publishers: Option<Vec<String>>,
@@ -296,6 +298,8 @@ pub fn parse_store_details(
 
     let details = StoreDetailsProposal {
         app_id,
+        country_code: request.country_code.trim().to_ascii_uppercase(),
+        language: request.language.clone(),
         name: data.name,
         app_type,
         release_state,
@@ -313,6 +317,7 @@ pub fn parse_store_details(
         developers: data.developers.unwrap_or_default(),
         publishers: data.publishers.unwrap_or_default(),
         short_description: data.short_description,
+        header_image_url: normalize_header_image(data.header_image),
         demo_app_ids: demo_app_ids.clone(),
         fullgame_app_id,
         multiplayer_category_hints,
@@ -393,6 +398,20 @@ fn normalize_price(
     None
 }
 
+fn normalize_header_image(raw: Option<String>) -> Option<String> {
+    let value = raw?.trim().to_owned();
+    let authority_and_path = value.strip_prefix("https://")?;
+    let (authority, path) = authority_and_path.split_once('/')?;
+    if authority.is_empty()
+        || path.is_empty()
+        || authority.contains(['@', ':'])
+        || !(authority == "steamstatic.com" || authority.ends_with(".steamstatic.com"))
+    {
+        return None;
+    }
+    Some(value)
+}
+
 fn currency_for_country(country: &str) -> Option<&'static str> {
     match country {
         "CN" => Some("CNY"),
@@ -410,46 +429,101 @@ fn currency_for_country(country: &str) -> Option<&'static str> {
 fn normalize_supported_languages(raw: &str) -> Vec<String> {
     const LANGUAGES: &[(&str, &str)] = &[
         ("Simplified Chinese", "schinese"),
+        ("简体中文", "schinese"),
         ("Traditional Chinese", "tchinese"),
+        ("繁体中文", "tchinese"),
         ("Portuguese - Brazil", "brazilian"),
+        ("葡萄牙语 - 巴西", "brazilian"),
         ("Brazilian Portuguese", "brazilian"),
+        ("巴西葡萄牙语", "brazilian"),
         ("Spanish - Latin America", "latam"),
+        ("西班牙语 - 拉丁美洲", "latam"),
         ("Arabic", "arabic"),
+        ("阿拉伯语", "arabic"),
         ("Bulgarian", "bulgarian"),
+        ("保加利亚语", "bulgarian"),
         ("Czech", "czech"),
+        ("捷克语", "czech"),
         ("Danish", "danish"),
+        ("丹麦语", "danish"),
         ("Dutch", "dutch"),
+        ("荷兰语", "dutch"),
         ("English", "english"),
+        ("英语", "english"),
         ("Finnish", "finnish"),
+        ("芬兰语", "finnish"),
         ("French", "french"),
+        ("法语", "french"),
         ("German", "german"),
+        ("德语", "german"),
         ("Greek", "greek"),
+        ("希腊语", "greek"),
         ("Hungarian", "hungarian"),
+        ("匈牙利语", "hungarian"),
         ("Indonesian", "indonesian"),
+        ("印度尼西亚语", "indonesian"),
         ("Italian", "italian"),
+        ("意大利语", "italian"),
         ("Japanese", "japanese"),
+        ("日语", "japanese"),
         ("Korean", "koreana"),
+        ("韩语", "koreana"),
         ("Norwegian", "norwegian"),
+        ("挪威语", "norwegian"),
         ("Polish", "polish"),
+        ("波兰语", "polish"),
         ("Portuguese", "portuguese"),
+        ("葡萄牙语", "portuguese"),
         ("Romanian", "romanian"),
+        ("罗马尼亚语", "romanian"),
         ("Russian", "russian"),
+        ("俄语", "russian"),
         ("Spanish - Spain", "spanish"),
+        ("西班牙语 - 西班牙", "spanish"),
         ("Spanish", "spanish"),
+        ("西班牙语", "spanish"),
         ("Swedish", "swedish"),
+        ("瑞典语", "swedish"),
         ("Thai", "thai"),
+        ("泰语", "thai"),
         ("Turkish", "turkish"),
+        ("土耳其语", "turkish"),
         ("Ukrainian", "ukrainian"),
+        ("乌克兰语", "ukrainian"),
         ("Vietnamese", "vietnamese"),
+        ("越南语", "vietnamese"),
     ];
-    let lower = raw.to_ascii_lowercase();
+    let tokens: Vec<String> = raw
+        .split(',')
+        .map(normalize_language_token)
+        .filter(|token| !token.is_empty())
+        .collect();
     let mut found = Vec::new();
     for (label, code) in LANGUAGES {
-        if lower.contains(&label.to_ascii_lowercase()) && !found.iter().any(|item| item == code) {
+        let label = label.to_ascii_lowercase();
+        if tokens.iter().any(|token| token == &label) && !found.iter().any(|item| item == code) {
             found.push((*code).to_owned());
         }
     }
     found
+}
+
+fn normalize_language_token(token: &str) -> String {
+    let mut stripped = String::with_capacity(token.len());
+    let mut in_tag = false;
+    for ch in token.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => stripped.push(ch),
+            _ => {}
+        }
+    }
+    stripped
+        .trim()
+        .trim_end_matches('*')
+        .trim()
+        .to_ascii_lowercase()
 }
 
 fn normalize_release_date(raw: Option<&str>) -> (Option<String>, Option<String>) {
@@ -462,6 +536,21 @@ fn normalize_release_date(raw: Option<&str>) -> (Option<String>, Option<String>)
             Some(format!("{year:04}-{month:02}-{day:02}")),
             Some("day".into()),
         );
+    }
+
+    if let Some((year, month, day)) = parse_chinese_day(raw) {
+        return (
+            Some(format!("{year:04}-{month:02}-{day:02}")),
+            Some("day".into()),
+        );
+    }
+
+    if parse_chinese_month(raw).is_some() {
+        return (None, Some("month".into()));
+    }
+
+    if parse_chinese_year(raw).is_some() {
+        return (None, Some("year".into()));
     }
 
     let cleaned = raw.replace(',', " ");
@@ -522,6 +611,37 @@ fn parse_iso_day(value: &str) -> Option<(i32, u32, u32)> {
     let month = value[5..7].parse().ok()?;
     let day = value[8..10].parse().ok()?;
     valid_day(year, month, day).then_some((year, month, day))
+}
+
+fn compact_chinese_date(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect::<String>()
+        .trim_start_matches("预计")
+        .to_owned()
+}
+
+fn parse_chinese_day(value: &str) -> Option<(i32, u32, u32)> {
+    let compact = compact_chinese_date(value);
+    let (year, rest) = compact.split_once('年')?;
+    let (month, day) = rest.split_once('月')?;
+    let day = day.strip_suffix('日').or_else(|| day.strip_suffix('号'))?;
+    let (year, month, day) = (year.parse().ok()?, month.parse().ok()?, day.parse().ok()?);
+    valid_day(year, month, day).then_some((year, month, day))
+}
+
+fn parse_chinese_month(value: &str) -> Option<(i32, u32)> {
+    let compact = compact_chinese_date(value);
+    let (year, month) = compact.split_once('年')?;
+    let month = month.strip_suffix('月')?;
+    let (year, month) = (year.parse().ok()?, month.parse().ok()?);
+    ((1..=12).contains(&month)).then_some((year, month))
+}
+
+fn parse_chinese_year(value: &str) -> Option<i32> {
+    let compact = compact_chinese_date(value);
+    compact.strip_suffix('年')?.parse().ok()
 }
 
 fn month_number(value: &str) -> Option<u32> {
@@ -608,6 +728,7 @@ mod tests {
         let request = StoreDetailsRequest::with_locale(892970, "US", "english").unwrap();
         let result = parse_store_details(&request, &fixture("game")).unwrap();
         assert_eq!(result.details.app_id, 892970);
+        assert_eq!(result.details.language, "english");
         assert_eq!(result.details.release_state, ReleaseStateProposal::Released);
         assert_eq!(result.details.release_date.as_deref(), Some("2021-02-02"));
         assert_eq!(
@@ -615,6 +736,12 @@ mod tests {
             Some("day")
         );
         assert_eq!(result.details.stability, SourceStability::ApprovedVolatile);
+        assert_eq!(
+            result.details.header_image_url.as_deref(),
+            Some(
+                "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/892970/header.jpg?t=1"
+            )
+        );
         assert!(!result.details.multiplayer_category_hints.is_empty());
         let price = result.details.price.expect("price_overview");
         assert_eq!(price.country_code, "US");
@@ -694,6 +821,25 @@ mod tests {
         assert_eq!(
             result.details.release_date_precision.as_deref(),
             Some("quarter")
+        );
+    }
+
+    #[test]
+    fn normalizes_chinese_storefront_release_dates() {
+        let raw = RawResponse::validate(
+            200,
+            r#"{"42":{"success":true,"data":{"steam_appid":42,"type":"game","release_date":{"coming_soon":false,"date":"2021 年 2 月 2 日"}}}}"#
+                .as_bytes()
+                .to_vec(),
+            Some("application/json".into()),
+            4096,
+        )
+        .unwrap();
+        let result = parse_store_details(&StoreDetailsRequest::new(42), &raw).unwrap();
+        assert_eq!(result.details.release_date.as_deref(), Some("2021-02-02"));
+        assert_eq!(
+            result.details.release_date_precision.as_deref(),
+            Some("day")
         );
     }
 
@@ -779,5 +925,42 @@ mod tests {
         .unwrap();
         let result = parse_store_details(&StoreDetailsRequest::new(42), &raw).unwrap();
         assert_eq!(result.details.platforms, Some(vec!["mac".into()]));
+    }
+
+    #[test]
+    fn normalizes_supported_languages_from_the_chinese_storefront() {
+        let raw = RawResponse::validate(
+            200,
+            r#"{"42":{"success":true,"data":{"steam_appid":42,"type":"game","supported_languages":"英语, 简体中文, 葡萄牙语 - 巴西, 日语, 韩语"}}}"#
+                .as_bytes()
+                .to_vec(),
+            Some("application/json".into()),
+            4096,
+        )
+        .unwrap();
+        let result = parse_store_details(&StoreDetailsRequest::new(42), &raw).unwrap();
+        assert_eq!(
+            result.details.supported_languages,
+            Some(vec![
+                "schinese".into(),
+                "brazilian".into(),
+                "english".into(),
+                "japanese".into(),
+                "koreana".into(),
+            ])
+        );
+    }
+
+    #[test]
+    fn rejects_non_steamstatic_header_images() {
+        let raw = RawResponse::validate(
+            200,
+            br#"{"42":{"success":true,"data":{"steam_appid":42,"type":"game","header_image":"https://example.com/header.jpg"}}}"#.to_vec(),
+            Some("application/json".into()),
+            4096,
+        )
+        .unwrap();
+        let result = parse_store_details(&StoreDetailsRequest::new(42), &raw).unwrap();
+        assert_eq!(result.details.header_image_url, None);
     }
 }

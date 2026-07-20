@@ -15,7 +15,7 @@
 ### 2.1 打包
 
 ```powershell
-# 服务端布局（含 PROVENANCE.json + SHA256SUMS）
+# 服务端布局（含已与二进制 --build-info 核对的 PROVENANCE.json + SHA256SUMS）
 .\scripts\package_server.ps1
 
 # 桌面（未签名；CI 已有三平台 smoke）
@@ -28,7 +28,7 @@ pnpm exec tauri build --config apps/desktop/src-tauri/tauri.conf.json --ci --no-
 
 ```bash
 # 解压 package 后
-sudo ./linux/install.sh .
+sudo bash ./linux/install.sh .
 # 编辑 /etc/mpgs/mpgs.env：MPGS_DATABASE_PATH、MPGS_ADMIN_TOKEN
 sudo -u mpgs mpgs-dbtool migrate /var/lib/mpgs/mpgs.db
 sudo systemctl start mpgs-server
@@ -73,20 +73,61 @@ mpgs-dbtool backup <db> <backup-path>
 
 ### 3.4 数据富化与检索
 
-```text
+```powershell
 mpgs-dbtool migrate <db>
+$env:MPGS_STEAM_WEB_API_KEY = '<server-side Steam Web API key>'
+mpgs-dbtool collect-steam-catalog <db> 1 1000
 mpgs-dbtool collect-steam-candidates <db> 2000
 mpgs-dbtool enrich-steam-candidates <db> 100
+$env:MPGS_STEAM_WORKER_ID = 'mpgs-steam-worker-1'
+mpgs-dbtool run-steam-worker-once <db> 1 100
 mpgs-dbtool import-golden-profiles <db>
 mpgs-dbtool m3-audit <db>
+mpgs-dbtool m7-data-audit <db>
 mpgs-dbtool sync-retrieval <db>
 mpgs-dbtool extract-offline-features <db>
 mpgs-dbtool embed-documents <db>
 ```
 
-默认商店区域 `CN/schinese`。采集需遵守限流与 [SOURCES.md](SOURCES.md)。
+`collect-steam-catalog` 只读取服务端环境中的 `MPGS_STEAM_WEB_API_KEY`，密钥不得作为命令参数、写入 SQLite 或进入客户端包。服务端以 5 分钟的默认检查频率观察三类独立到期时间：目录同步 15 分钟、候选发现 6 小时、富化 5 分钟。每类任务在同类 `pending` 或 `leased` 作业存在时不会再入队，因此慢目录同步不会积压并抢占候选/富化。使用同一数据库文件的主机必须周期执行 `run-steam-worker-once`。worker 以 SQLite 租约防止重复领取，并把成功时间、下次运行、错误类别、游标和覆盖率回写到 `/admin/v1/data-status`。不要通过网络文件系统运行该 worker；远程部署需要走受控 ingestion API。默认商店区域 `CN/schinese`。富化会分别同步全语言评价汇总与简体中文热门评价前 10 条，二者每日刷新；后者不依赖 Web API Key。采集需遵守限流与 [SOURCES.md](SOURCES.md)。
 
-### 3.5 密钥轮换
+`m7-data-audit` 是 DATA-206 的发布前命令，默认严格验证：至少 2,000 个规范化候选、300 个可信熟人联机画像、四个分区各 20 个候选、日期与封面各 95% 覆盖，以及 300 个重点画像各自连续 7 天的评价和 CCU 数据。它使用当前算法配置及与公开 feed 相同的分区资格规则，失败会返回非零退出码。若 Steam 当前新游确实不足 20 个，只能显式记录原因后运行：
+
+```powershell
+mpgs-dbtool m7-data-audit <db> --allow-upcoming-shortfall='官方目录当日新游不足'
+```
+
+该例外只豁免 `upcoming` 分区，不能绕过其他数据门禁；建议将命令输出连同原因保存到发布记录。
+
+### 3.5 Docker / Compose
+
+`deploy/docker-compose.yml` 包含 `mpgs-server`、静态 Web 网关 `mpgs-web` 和周期执行租约任务的 `mpgs-worker`。SQLite 与头像通过同一宿主机目录挂载到 `/var/lib/mpgs`，不得改成网络共享卷。
+
+```bash
+cp deploy/mpgs.env.example deploy/mpgs.env
+chmod 600 deploy/mpgs.env
+docker compose -f deploy/docker-compose.yml up -d --build
+docker compose -f deploy/docker-compose.yml exec mpgs-server \
+  mpgs-dbtool integrity /var/lib/mpgs/mpgs.db
+```
+
+迁移已有数据库时，先使用 `mpgs-dbtool backup <source> <backup>` 生成一致性副本，再把副本放到 `deploy/runtime/mpgs.db`。worker 默认每 60 秒领取一次任务；没有 `MPGS_STEAM_WEB_API_KEY` 时官方 AppList 同步保持禁用，但候选发现、商店详情、评价和 CCU 富化仍会执行。连续 7 天采集完成前，`m7-data-audit` 返回失败属于预期状态。
+
+正式 VPS 不应在宿主机编译 Rust。`.github/workflows/container-images.yml` 在 `main` 更新后把 release 镜像发布为 `ghcr.io/lotulune/mpgs-server:main` 和 `ghcr.io/lotulune/mpgs-web:main`，并保留 `sha-<commit>` 标签用于回滚。VPS 初始化：
+
+```bash
+cp deploy/.env.example deploy/.env
+chmod 600 deploy/.env deploy/mpgs.env
+# 私有 GHCR 包需要先使用具备 read:packages 的 PAT 登录；公开包无需登录。
+docker login ghcr.io
+./deploy/update.sh
+```
+
+`deploy/update.sh` 在源码目录是 Git checkout 时只允许 fast-forward 拉取；压缩包部署则跳过源码更新、直接拉镜像。它使用 `docker compose pull` 与 `up --no-build`，随后运行数据库完整性和 HTTP 健康检查。运行时密钥只保存在 `deploy/mpgs.env`，不得放入 `deploy/.env`、GitHub workflow 或镜像标签。
+
+自动更新还需在 GitHub 配置仓库变量 `MPGS_AUTO_DEPLOY=true`，并设置 Secrets：`MPGS_VPS_HOST`、`MPGS_VPS_USER`、`MPGS_VPS_SSH_KEY`、`MPGS_VPS_KNOWN_HOSTS`。未配置变量时 workflow 只发布镜像，不会连接 VPS。
+
+### 3.6 密钥轮换
 
 1. 生成新 `MPGS_ADMIN_TOKEN`。
 2. 更新环境文件 / 服务配置。

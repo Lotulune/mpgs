@@ -14,6 +14,17 @@ export const FEED_SECTIONS: FeedSection[] = [
   "classic_legacy",
 ];
 
+/** Feed list sort after recommendation scoring. */
+export type FeedSort = "recommended" | "ccu" | "reviews" | "release_date";
+export type FeedSortOrder = "asc" | "desc";
+
+export const FEED_SORT_OPTIONS: { id: FeedSort; label: string }[] = [
+  { id: "recommended", label: "推荐分" },
+  { id: "ccu", label: "在线人数" },
+  { id: "reviews", label: "评论数" },
+  { id: "release_date", label: "发售日期" },
+];
+
 export type FeedbackType =
   | "like"
   | "not_interested"
@@ -26,6 +37,13 @@ export type FeedbackType =
 export interface PlayIntentSummary {
   count: number;
   voted: boolean;
+  voters_preview?: PublicVoter[];
+  omitted_count?: number;
+}
+
+export interface PublicVoter {
+  display_name: string;
+  avatar_url: string;
 }
 
 export interface SessionTokens {
@@ -34,6 +52,8 @@ export interface SessionTokens {
   user_id: string;
   expires_at_ms: number;
   refresh_expires_at_ms: number;
+  /** False for an anonymous migration session, true for an account session. */
+  account: boolean;
 }
 
 export interface UserPreferences {
@@ -58,6 +78,7 @@ export interface MetaResponse {
   supported_sections: string[];
   ai_available: boolean;
   storage_enabled: boolean;
+  demo_mode: boolean;
 }
 
 export type AiStatus = "used" | "cached" | "fallback" | "disabled";
@@ -66,6 +87,15 @@ export interface FeedItem {
   app_id: number;
   name: string;
   section: FeedSection;
+  release_date: string | null;
+  release_date_raw: string | null;
+  release_date_precision: string | null;
+  cover_url: string | null;
+  cover_updated_at_ms: number | null;
+  total_reviews: number | null;
+  total_positive: number | null;
+  latest_ccu: number | null;
+  typical_ccu_7d: number | null;
   score: number;
   confidence: number;
   party: {
@@ -95,15 +125,23 @@ export interface FeedItem {
 export interface FeedResponse {
   items: FeedItem[];
   next_cursor: string | null;
+  total: number;
+  limit: number;
+  offset: number;
+  page: number;
+  total_pages: number;
   snapshot_at_ms: number;
   algorithm_version: string;
   data_updated_at_ms: number;
+  sort?: FeedSort;
+  order?: FeedSortOrder;
 }
 
 export interface CalendarItem {
   app_id: number;
   app_type: string;
   canonical_name: string;
+  cover_url?: string | null;
   release_state: string;
   release_date: string | null;
   release_date_raw: string | null;
@@ -147,6 +185,8 @@ export interface NaturalLanguageRecommendationResponse {
   };
   items: FeedItem[];
   ai_status: AiStatus;
+  ai_provider?: string;
+  ai_latency_ms?: number;
   fallback_reason: string | null;
   ai_summary?: string | null;
   ai_summary_evidence_ids?: string[];
@@ -160,6 +200,11 @@ export interface GameDetail {
   app_type: string;
   release_state: string;
   release_date: string | null;
+  release_date_raw: string | null;
+  release_date_precision: string | null;
+  cover_url: string | null;
+  cover_updated_at_ms: number | null;
+  short_description: string | null;
   steam_url: string;
   multiplayer: {
     dominant_mode: string | null;
@@ -174,6 +219,7 @@ export interface GameDetail {
   reviews: {
     total: number | null;
     positive: number | null;
+    featured: PopularReview[];
   };
   latest_ccu: number | null;
   availability: {
@@ -188,6 +234,22 @@ export interface GameDetail {
   };
   algorithm_version: string;
   data_updated_at_ms: number;
+}
+
+export interface PopularReview {
+  recommendation_id: string;
+  rank: number;
+  author_name: string | null;
+  author_profile_url: string | null;
+  text: string;
+  voted_up: boolean;
+  votes_up: number;
+  votes_funny: number;
+  comment_count: number;
+  playtime_forever_minutes: number | null;
+  playtime_at_review_minutes: number | null;
+  created_at_ms: number;
+  written_during_early_access: boolean;
 }
 
 export interface EvidenceItem {
@@ -216,6 +278,62 @@ export interface PlayIntentResult {
   app_id: number;
   count: number;
   voted: boolean;
+  voters_preview: PublicVoter[];
+  omitted_count: number;
+}
+
+export interface AccountProfile {
+  username: string;
+  display_name: string;
+  avatar_url: string;
+  avatar_version: number;
+}
+
+export interface AiSettings {
+  mode: "builtin" | "custom" | "off";
+  provider: string | null;
+  base_url: string | null;
+  model: string | null;
+  configured: boolean;
+  key_mask: string | null;
+  updated_at_ms: number | null;
+  builtin: {
+    available: boolean;
+    model: string;
+    daily_remaining: number | null;
+  };
+}
+
+export type CommunitySort = "trending" | "most_voted";
+export type CommunityReleaseState = "released" | "upcoming" | "coming_soon" | "retired" | "unknown";
+export type CommunityPlatform = "windows" | "macos" | "linux";
+
+export interface CommunityFilters {
+  releaseState?: CommunityReleaseState;
+  demoOnly?: boolean;
+  platform?: CommunityPlatform;
+  partySize?: number;
+}
+
+export interface CommunityItem {
+  app_id: number;
+  name: string;
+  app_type: string;
+  release_state: string;
+  release_date: string | null;
+  release_date_raw: string | null;
+  release_date_precision: string | null;
+  cover_url: string | null;
+  cover_updated_at_ms: number | null;
+  trending_count: number;
+  play_intent: PlayIntentSummary;
+}
+
+export interface CommunityResponse {
+  items: CommunityItem[];
+  next_cursor: string | null;
+  snapshot_revision: number;
+  data_updated_at_ms: number;
 }
 
 export interface ErrorEnvelope {

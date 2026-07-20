@@ -1,0 +1,11 @@
+.git
+.github
+data
+target
+node_modules
+web/node_modules
+web/dist
+scripts/__pycache__
+*.db
+*.db-shm
+*.db-wal

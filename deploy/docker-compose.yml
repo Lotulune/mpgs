@@ -1,0 +1,48 @@
+services:
+  mpgs-server:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      target: server
+      args:
+        MPGS_BUILD_PROFILE: ${MPGS_BUILD_PROFILE:-release}
+    image: ${MPGS_SERVER_IMAGE:-mpgs-server:local}
+    restart: unless-stopped
+    env_file:
+      - ./mpgs.env
+    environment:
+      MPGS_BIND_ADDR: 0.0.0.0:8080
+      MPGS_DATABASE_PATH: /var/lib/mpgs/mpgs.db
+      MPGS_AVATAR_DIR: /var/lib/mpgs/avatars
+      MPGS_SEED_DEMO: "false"
+    volumes:
+      - ./runtime:/var/lib/mpgs
+    expose:
+      - "8080"
+
+  mpgs-worker:
+    image: ${MPGS_SERVER_IMAGE:-mpgs-server:local}
+    restart: unless-stopped
+    env_file:
+      - ./mpgs.env
+    environment:
+      MPGS_DATABASE_PATH: /var/lib/mpgs/mpgs.db
+      MPGS_AVATAR_DIR: /var/lib/mpgs/avatars
+      MPGS_SEED_DEMO: "false"
+    volumes:
+      - ./runtime:/var/lib/mpgs
+    entrypoint: ["/usr/local/bin/mpgs-worker-loop"]
+    depends_on:
+      - mpgs-server
+
+  mpgs-web:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      target: web
+    image: ${MPGS_WEB_IMAGE:-mpgs-web:local}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:18082:80"
+    depends_on:
+      - mpgs-server

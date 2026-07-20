@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { ApiClient } from "../src/api/client";
 import { FeedbackQueue } from "../src/api/feedbackQueue";
-import { jsonResponse, makeFetchStub, MemoryStorage, sessionBody } from "./helpers";
+import { jsonResponse, makeFetchStub, MemoryStorage, seedAccountSession, sessionBody } from "./helpers";
+
+function accountClient(storage: MemoryStorage, fetchFn: typeof fetch) {
+  if (!storage.getItem("mpgs.session.v1")) seedAccountSession(storage);
+  return new ApiClient({ baseUrl: "http://x", fetchFn, storage });
+}
 
 function feedbackRecord(id: number, appId: number, type: string) {
   return jsonResponse(
@@ -27,7 +32,7 @@ function makeClient(storage: MemoryStorage, online: () => boolean) {
     "POST /v1/feedback/10/undo": () =>
       jsonResponse({ feedback_id: 10, app_id: 1, type: "like", recommendation_run_id: null, created_at_ms: 1 }),
   });
-  const client = new ApiClient({ baseUrl: "http://x", fetchFn, storage });
+  const client = accountClient(storage, fetchFn);
   return { client, calls };
 }
 
@@ -104,7 +109,7 @@ describe("FeedbackQueue", () => {
       "POST /v1/feedback/77/undo": () =>
         jsonResponse({ feedback_id: 77, app_id: 1, type: "like", created_at_ms: 1 }),
     });
-    const queue = new FeedbackQueue(new ApiClient({ baseUrl: "http://x", fetchFn, storage }), storage);
+    const queue = new FeedbackQueue(accountClient(storage, fetchFn), storage);
     const entry = queue.submit(1, "like");
     await started;
 
@@ -129,7 +134,7 @@ describe("FeedbackQueue", () => {
           : feedbackRecord(88, 1, "like");
       },
     });
-    const queue = new FeedbackQueue(new ApiClient({ baseUrl: "http://x", fetchFn, storage }), storage);
+    const queue = new FeedbackQueue(accountClient(storage, fetchFn), storage);
     queue.submit(1, "like");
     await queue.flush();
     expect(queue.pendingCount()).toBe(1);
@@ -153,7 +158,7 @@ describe("FeedbackQueue", () => {
           : jsonResponse({ feedback_id: 10, app_id: 1, type: "like", created_at_ms: 1 });
       },
     });
-    const queue = new FeedbackQueue(new ApiClient({ baseUrl: "http://x", fetchFn, storage }), storage);
+    const queue = new FeedbackQueue(accountClient(storage, fetchFn), storage);
     const entry = queue.submit(1, "like");
     await queue.flush();
 
@@ -172,7 +177,7 @@ describe("FeedbackQueue", () => {
       "POST /v1/feedback/10/undo": () =>
         jsonResponse({ feedback_id: 10, app_id: 1, type: "like", created_at_ms: 1 }),
     });
-    const queue = new FeedbackQueue(new ApiClient({ baseUrl: "http://x", fetchFn, storage }), storage);
+    const queue = new FeedbackQueue(accountClient(storage, fetchFn), storage);
     let changes = 0;
     queue.subscribeRankingChanged(() => {
       changes += 1;

@@ -1,14 +1,14 @@
 # M6 验收说明
 
-M6（发布加固）按 [MVP_PLAN.md](MVP_PLAN.md#m6发布加固) 与 [PRD §13](PRD.md#13-mvp-发布验收) 验收。  
+M6（发布加固）按 [MVP_PLAN.md](MVP_PLAN.md#m6发布加固) 与 [PRD §13](PRD.md#13-mvp-发布验收) 验收。
 目标是可运维、可回滚、可追溯的发布基线；**不**在未授权情况下启用真实代码签名或公网部署。
 
 ## 退出条件对照
 
 | 条件 | 工程证据 |
 | --- | --- |
-| 性能 / 长时间运行 / 故障注入 / 备份恢复 / 升级 | `cargo test`：`m6_*` soak/fault、storage 升级路径与 backup/restore；历史 P95 门槛测试（`two_thousand_game_feed_meets_local_p95_gate`，`#[ignore]` 手工） |
-| Windows/Linux 服务包；桌面包 | `packaging/**` + `scripts/package_server.ps1`；桌面仍由 CI Tauri smoke（NSIS/DEB/APP） |
+| 性能 / 长时间运行 / 故障注入 / 备份恢复 / 升级 | `cargo test`：并发 bounded soak、AI 超时/禁用、SQLite 锁等待、storage 升级与 backup/restore；验收脚本显式运行 2,000 游戏 P95 门槛，并对真实服务进程持续探测 |
+| Windows/Linux 服务包；桌面包 | CI 四个原生 runner 调用 `scripts/package_server.ps1` 生成可追溯服务包；桌面沿用 CI Tauri smoke（NSIS/DEB/APP） |
 | 签名 / 自动更新 / 隐私 / 第三方许可 / Steam 品牌 | [SIGNING_AND_UPDATES.md](SIGNING_AND_UPDATES.md)、[PRIVACY.md](PRIVACY.md)、[THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md)、[STEAM_BRAND_REVIEW.md](STEAM_BRAND_REVIEW.md) |
 | 运维手册 / 回滚 / 已知限制 | [OPERATIONS.md](OPERATIONS.md)、[ROLLBACK.md](ROLLBACK.md)、[KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md) |
 | 产物可追溯 | `PROVENANCE.json`、`SHA256SUMS.txt`、`/v1/meta` 的 version/schema/build_git_sha/data_updated_at_ms |
@@ -17,11 +17,11 @@ M6（发布加固）按 [MVP_PLAN.md](MVP_PLAN.md#m6发布加固) 与 [PRD §13]
 ## 本机门禁
 
 ```powershell
-# 离线全量（要求干净 git 工作树才记 PASS）
+# 离线全量：包含 release 构建、打包和校验（要求干净 git 工作树才记 PASS）
 .\scripts\m6_acceptance.ps1
 
-# 可选：打本地 release 包（耗时）
-.\scripts\m6_acceptance.ps1 -Package
+# 可调整真实进程持续探测时间，默认 10 秒
+.\scripts\m6_acceptance.ps1 -SoakSeconds 30 -KeepArtifacts
 ```
 
 结果写入 [`M6_ACCEPTANCE_RUN.md`](M6_ACCEPTANCE_RUN.md)。

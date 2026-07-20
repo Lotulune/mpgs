@@ -4,10 +4,10 @@
 import type { FeedSection } from "../api/types";
 
 export const SECTION_META: Record<FeedSection, { label: string; hint: string }> = {
-  recent_release: { label: "最近发售", hint: "180 天内的新作" },
-  upcoming: { label: "即将发售 / Demo", hint: "Coming Soon 与试玩" },
-  popular_legacy: { label: "人气老游", hint: "仍然活跃的口碑之作" },
-  classic_legacy: { label: "经典老游", hint: "自建服与私联经典" },
+  recent_release: { label: "近期正式发售", hint: "按最早已知发售日，近 180 天内的正式发售" },
+  upcoming: { label: "即将发售 / Demo", hint: "Steam 发售日历 · 未来 30 天" },
+  popular_legacy: { label: "人气老游", hint: "仍活跃且口碑达标的老游" },
+  classic_legacy: { label: "老牌联机", hint: "热门之外、发售超过 180 天的多人游戏" },
 };
 
 const DOMINANT_MODE_LABELS: Record<string, string> = {
@@ -15,10 +15,12 @@ const DOMINANT_MODE_LABELS: Record<string, string> = {
   coop: "合作",
   online_coop: "在线合作",
   self_hosted: "自建服务器",
+  self_hosted_survival: "自建服生存",
   dedicated_server: "专用服务器",
   p2p: "P2P 联机",
   matchmaking: "公共匹配",
   matchmaking_core: "公共匹配核心",
+  matchmaking_competitive: "竞技匹配",
   mmo: "MMO",
   pvp: "对抗",
   mixed: "混合模式",
@@ -29,13 +31,25 @@ export function dominantModeLabel(mode: string | null): string {
   return DOMINANT_MODE_LABELS[mode] ?? mode;
 }
 
+/**
+ * Party-size label for UI.
+ *
+ * Most catalog rows only have a store-search placeholder `recommended_min=2`
+ * with no max. That is not useful ("至少 2 人" ≈ multiplayer tag), so we only
+ * show concrete numbers when max is known (or a true min–max range).
+ */
 export function partyLabel(min: number | null, max: number | null): string {
-  if (min === null && max === null) return "人数未知";
   if (min !== null && max !== null) {
     return min === max ? `${min} 人` : `${min}–${max} 人`;
   }
   if (max !== null) return `最多 ${max} 人`;
-  return `至少 ${min} 人`;
+  // min-only (or neither) → unknown / not yet evidenced
+  return "人数未定";
+}
+
+/** True when we have a concrete party bound worth showing as a chip (needs max). */
+export function hasConcretePartySize(_min: number | null, max: number | null): boolean {
+  return max !== null;
 }
 
 export function formatPrice(minor: number | null, currency: string | null, isFree: boolean | null): string {
@@ -96,6 +110,37 @@ export function releaseStateLabel(state: string): string {
   return RELEASE_STATE_LABELS[state] ?? state;
 }
 
+/** Preserve the source precision rather than inventing a calendar day. */
+export function formatReleaseDate(
+  date: string | null,
+  raw: string | null,
+  precision: string | null,
+): string {
+  if (precision === "tba" || (!date && !raw)) return "日期未定";
+  const source = date ?? raw ?? "";
+  if (precision === "day") {
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(source);
+    if (match) return `${match[1]} 年${Number(match[2])} 月${Number(match[3])} 日`;
+    return raw ?? "日期未定";
+  }
+  if (precision === "month") {
+    const match = /^(\d{4})-(\d{2})/.exec(source);
+    if (match) return `预计 ${match[1]} 年${Number(match[2])} 月`;
+    return raw ?? "日期未定";
+  }
+  if (precision === "quarter") {
+    const match = /(\d{4}).*?(?:Q|第\s*)([1-4])/i.exec(source);
+    if (match) return `预计 ${match[1]} 年第${match[2]}季度`;
+    return raw ?? "日期未定";
+  }
+  if (precision === "year") {
+    const match = /(\d{4})/.exec(source);
+    if (match) return `预计 ${match[1]} 年`;
+    return raw ?? "日期未定";
+  }
+  return raw ?? (source || "日期未定");
+}
+
 const PLATFORM_LABELS: Record<string, string> = {
   windows: "Windows",
   mac: "macOS",
@@ -110,16 +155,36 @@ export function platformLabels(platforms: string[]): string {
 }
 
 const LANGUAGE_LABELS: Record<string, string> = {
+  arabic: "阿拉伯语",
+  brazilian: "巴西葡萄牙语",
+  bulgarian: "保加利亚语",
+  czech: "捷克语",
+  danish: "丹麦语",
+  dutch: "荷兰语",
   schinese: "简体中文",
   tchinese: "繁体中文",
   english: "英语",
+  finnish: "芬兰语",
   japanese: "日语",
   koreana: "韩语",
   russian: "俄语",
   german: "德语",
   french: "法语",
+  greek: "希腊语",
+  hungarian: "匈牙利语",
+  indonesian: "印度尼西亚语",
+  italian: "意大利语",
+  norwegian: "挪威语",
+  polish: "波兰语",
+  portuguese: "葡萄牙语",
+  romanian: "罗马尼亚语",
   spanish: "西班牙语",
+  swedish: "瑞典语",
+  thai: "泰语",
+  turkish: "土耳其语",
   latam: "拉美西语",
+  ukrainian: "乌克兰语",
+  vietnamese: "越南语",
 };
 
 export function languageLabels(languages: string[]): string {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ApiClient } from "../src/api/client";
-import type { FeedResponse } from "../src/api/types";
-import { jsonResponse, makeFetchStub, MemoryStorage, sessionBody } from "./helpers";
+import type { CommunityResponse, FeedResponse } from "../src/api/types";
+import { jsonResponse, makeFetchStub, MemoryStorage, seedAccountSession, sessionBody } from "./helpers";
 
 function feedBody(etagItems: string): FeedResponse {
   return {
@@ -12,6 +12,15 @@ function feedBody(etagItems: string): FeedResponse {
         section: "classic_legacy",
         score: 0.9,
         confidence: 0.9,
+        release_date: null,
+        release_date_raw: null,
+        release_date_precision: null,
+        cover_url: null,
+        cover_updated_at_ms: null,
+        total_reviews: null,
+        total_positive: null,
+        latest_ccu: null,
+        typical_ccu_7d: null,
         party: { recommended_min: 1, recommended_max: 4 },
         multiplayer: { dominant_mode: "private_coop" },
         play_intent: { count: 0, voted: false },
@@ -23,34 +32,54 @@ function feedBody(etagItems: string): FeedResponse {
       },
     ],
     next_cursor: null,
+    total: 1,
+    limit: 20,
+    offset: 0,
+    page: 1,
+    total_pages: 1,
     snapshot_at_ms: 1,
     algorithm_version: "rules-0.1.0",
     data_updated_at_ms: 1,
   };
 }
 
+function communityBody(): CommunityResponse {
+  return {
+    items: [],
+    next_cursor: null,
+    snapshot_revision: 1,
+    data_updated_at_ms: 1,
+  };
+}
+
 describe("ApiClient session", () => {
-  it("bootstraps an anonymous session for authed calls", async () => {
+  it("bootstraps an anonymous session for browsing-only natural-language calls", async () => {
     const storage = new MemoryStorage();
     const { fetchFn, calls } = makeFetchStub({
-      "POST /v1/session/anonymous": () => jsonResponse(sessionBody()),
-      "GET /v1/preferences": (call) => {
+      "POST /v1/session/anonymous": () => jsonResponse(sessionBody({ account: false })),
+      "POST /v1/recommendations/natural-language": (call) => {
         expect(call.headers.authorization).toBe("Bearer access-1");
-        return jsonResponse({ version: 1, party_size: 4 });
+        return jsonResponse({
+          query: "4 人合作",
+          interpreted: { party_size: 4, session_minutes_max: null, coop_competitive: 0.2 },
+          items: [], ai_status: "fallback", fallback_reason: "AI unavailable",
+          algorithm_version: "rules-0.1.0", data_updated_at_ms: 1,
+        });
       },
     });
     const client = new ApiClient({ baseUrl: "http://x", fetchFn, storage });
-    await client.getPreferences();
+    await client.naturalLanguageRecommendations("4 人合作");
     expect(calls.some((c) => c.url.endsWith("/v1/session/anonymous"))).toBe(true);
     expect(client.hasSession()).toBe(true);
+    expect(client.isAccountAuthenticated()).toBe(false);
   });
 
   it("refreshes then retries once on a 401", async () => {
     const storage = new MemoryStorage();
+    seedAccountSession(storage, { access_token: "old" });
     let prefsCalls = 0;
     const { fetchFn } = makeFetchStub({
-      "POST /v1/session/anonymous": () => jsonResponse(sessionBody({ access_token: "old" })),
-      "POST /v1/session/refresh": () => jsonResponse(sessionBody({ access_token: "new" })),
+      "POST /v1/auth/refresh": () => jsonResponse(sessionBody({ access_token: "new", account: true })),
       "GET /v1/preferences": (call) => {
         prefsCalls += 1;
         if (call.headers.authorization === "Bearer new") {
@@ -71,7 +100,7 @@ describe("ApiClient session", () => {
     const storage = new MemoryStorage();
     storage.setItem(
       "mpgs.session.v1",
-      JSON.stringify(sessionBody({ access_token: "expired", expires_at_ms: 0, user_id: "u_old" })),
+      JSON.stringify(sessionBody({ access_token: "expired", expires_at_ms: 0, user_id: "u_old", account: false })),
     );
     const { fetchFn, calls } = makeFetchStub({
       "POST /v1/session/refresh": () =>
@@ -93,7 +122,7 @@ describe("ApiClient session", () => {
     const storage = new MemoryStorage();
     storage.setItem(
       "mpgs.session.v1",
-      JSON.stringify(sessionBody({ access_token: "expired", expires_at_ms: 0, user_id: "u_old" })),
+      JSON.stringify(sessionBody({ access_token: "expired", expires_at_ms: 0, user_id: "u_old", account: false })),
     );
     const { fetchFn } = makeFetchStub({
       "POST /v1/session/refresh": () =>
@@ -191,13 +220,37 @@ describe("ApiClient ETag cache", () => {
     const after = await client.feed("classic_legacy");
     expect(after.fromOfflineCache).toBe(false);
   });
+
+  it("keeps community filter snapshots in separate cache scopes", async () => {
+    const storage = new MemoryStorage();
+    const { fetchFn, calls } = makeFetchStub({
+      "GET /v1/community/play-intents": () =>
+        jsonResponse(communityBody(), { headers: { etag: '"community"' } }),
+    });
+    const client = new ApiClient({ baseUrl: "http://x", fetchFn, storage });
+
+    await client.community("trending", {
+      releaseState: "released",
+      platform: "windows",
+      partySize: 4,
+    });
+    await client.community("trending", { releaseState: "upcoming", demoOnly: true });
+
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.url).toContain("release_state=released");
+    expect(calls[0]?.url).toContain("platform=windows");
+    expect(calls[0]?.url).toContain("party_size=4");
+    expect(calls[1]?.url).toContain("release_state=upcoming");
+    expect(calls[1]?.url).toContain("demo_only=true");
+    expect(calls[1]?.headers["if-none-match"]).toBeUndefined();
+  });
 });
 
 describe("ApiClient natural-language recommendations", () => {
   it("posts the query and exposes deterministic fallback metadata", async () => {
     const storage = new MemoryStorage();
     const { fetchFn, calls } = makeFetchStub({
-      "POST /v1/session/anonymous": () => jsonResponse(sessionBody()),
+      "POST /v1/session/anonymous": () => jsonResponse(sessionBody({ account: false })),
       "POST /v1/recommendations/natural-language": () =>
         jsonResponse({
           query: "4 人合作",
@@ -217,5 +270,41 @@ describe("ApiClient natural-language recommendations", () => {
     const request = calls.find((call) => call.url.endsWith("/v1/recommendations/natural-language"));
     expect(request?.body).toEqual({ query: "4 人合作", limit: 6 });
     expect(request?.headers.authorization).toBe("Bearer access-1");
+  });
+
+  it("sends a device-local custom key only with the live recommendation request", async () => {
+    const storage = new MemoryStorage();
+    seedAccountSession(storage);
+    const { fetchFn, calls } = makeFetchStub({
+      "POST /v1/recommendations/natural-language": () =>
+        jsonResponse({
+          query: "自建服合作",
+          interpreted: {},
+          items: [],
+          ai_status: "used",
+          algorithm_version: "rules-0.2.0",
+          data_updated_at_ms: 1,
+        }),
+    });
+    const client = new ApiClient({ baseUrl: "http://x", fetchFn, storage });
+
+    await client.naturalLanguageRecommendations("自建服合作", 6, {
+      provider: "openai_compat",
+      baseUrl: "https://provider.example/v1",
+      model: "model-a",
+      apiKey: "local-secret",
+    });
+
+    const request = calls[0];
+    expect(request?.body).toEqual({
+      query: "自建服合作",
+      limit: 6,
+      custom_ai: {
+        provider: "openai_compat",
+        base_url: "https://provider.example/v1",
+        model: "model-a",
+        api_key: "local-secret",
+      },
+    });
   });
 });

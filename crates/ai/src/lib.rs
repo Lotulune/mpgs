@@ -16,7 +16,10 @@ pub mod vector;
 
 pub use error::AiError;
 pub use gateway::{AiGateway, AiPolicy};
-pub use openai_compat::{OpenAiCompatEmbeddingProvider, OpenAiCompatProvider};
+pub use openai_compat::{
+    CustomBaseUrlResolution, OpenAiCompatEmbeddingProvider, OpenAiCompatProvider,
+    resolve_custom_base_url, test_custom_openai_connection, validate_custom_base_url,
+};
 pub use provider::{
     AiProvider, DisabledProvider, EmbeddingProvider, FakeProvider, HashEmbeddingProvider,
 };
@@ -27,7 +30,7 @@ pub use vector::{
     cosine_similarity, decode_f32_le, encode_f32_le, l2_normalize, reciprocal_rank_fusion,
 };
 
-pub const RANK_PROMPT_VERSION: &str = "rank-v2";
+pub const RANK_PROMPT_VERSION: &str = "rank-v4";
 
 use std::env;
 use std::sync::Arc;
@@ -132,8 +135,9 @@ pub fn embedding_provider_from_env() -> Result<Arc<dyn EmbeddingProvider>, AiErr
 pub fn rank_analysis_system_prompt() -> &'static str {
     "You are MPGS ranking assistant. Only use provided candidate facts. \
      Never invent AppIDs, scores outside [0,1], URLs, HTML, or evidence IDs. \
-     Return a single JSON object matching the schema. \
-     If unsure, lower confidence and avoid concrete unsupported claims."
+     Return a single complete JSON object matching the schema, with at most 8 recommendations. \
+     Keep summary, summary_evidence_ids, reasons, cautions, and reason_evidence_ids empty unless strictly necessary; prefer concise output. \
+     If unsure, lower confidence and avoid concrete unsupported claims. Output JSON only, with no markdown."
 }
 
 pub fn rank_analysis_schema() -> serde_json::Value {

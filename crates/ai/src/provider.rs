@@ -146,6 +146,8 @@ impl AiProvider for FakeProvider {
             content: self.response.clone(),
             usage_input: request.system_prompt.len() as u32,
             usage_output: 32,
+            prompt_cache_hit_tokens: None,
+            prompt_cache_miss_tokens: None,
             latency_ms: 1,
         })
     }

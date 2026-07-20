@@ -39,6 +39,41 @@ pub const MIGRATIONS: &[(i64, &str, &str)] = &[
         "0007_m5_ai_retrieval",
         include_str!("../../../migrations/0007_m5_ai_retrieval.sql"),
     ),
+    (
+        8,
+        "0008_m7_accounts_community_ai",
+        include_str!("../../../migrations/0008_m7_accounts_community_ai.sql"),
+    ),
+    (
+        9,
+        "0009_m7_avatar_moderation",
+        include_str!("../../../migrations/0009_m7_avatar_moderation.sql"),
+    ),
+    (
+        10,
+        "0010_popular_reviews",
+        include_str!("../../../migrations/0010_popular_reviews.sql"),
+    ),
+    (
+        11,
+        "0011_local_ai_credentials",
+        include_str!("../../../migrations/0011_local_ai_credentials.sql"),
+    ),
+    (
+        12,
+        "0012_enrichment_refresh_state",
+        include_str!("../../../migrations/0012_enrichment_refresh_state.sql"),
+    ),
+    (
+        13,
+        "0013_store_detail_success_state",
+        include_str!("../../../migrations/0013_store_detail_success_state.sql"),
+    ),
+    (
+        14,
+        "0014_device_local_ai_mode",
+        include_str!("../../../migrations/0014_device_local_ai_mode.sql"),
+    ),
 ];
 
 pub fn current_version(conn: &Connection) -> StorageResult<i64> {

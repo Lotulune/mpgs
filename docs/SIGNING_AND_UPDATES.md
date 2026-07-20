@@ -21,6 +21,8 @@ CI 桌面构建显式使用 `--no-sign`，避免在无证书环境失败。
 - `SHA256SUMS.txt`：包内文件摘要
 - 编译期 `MPGS_BUILD_GIT_SHA` → `GET /v1/meta.build_git_sha`
 
+CI 的 Windows/Linux x64/ARM64 原生构建均注入当前 GitHub SHA，并上传完整服务包而非裸二进制；打包时会执行 `mpgs-server --build-info` 核对内嵌版本信息。
+
 发布清单必须同时归档上述文件与迁移版本号。
 
 ## 3. 目标签名策略（授权后）

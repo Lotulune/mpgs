@@ -59,6 +59,35 @@ pub struct MultiplayerSignals {
     pub platform_or_anticheat_restriction: f64,
 }
 
+/// Deterministic familiar-group multiplayer fit used by feed eligibility and
+/// recommendation scoring. Inputs are normalized at the application boundary.
+pub fn friend_fit(signals: &MultiplayerSignals) -> f64 {
+    let base = 0.22 * unit_interval(signals.private_session)
+        + 0.20 * unit_interval(signals.self_host_or_dedicated)
+        + 0.18 * unit_interval(signals.online_coop)
+        + 0.15 * unit_interval(signals.group_size_fit)
+        + 0.10 * unit_interval(signals.low_public_population_dependency)
+        + 0.08 * unit_interval(signals.drop_in_out)
+        + 0.07 * unit_interval(signals.cross_platform_fit);
+
+    let penalty = 0.18 * unit_interval(signals.matchmaking_core)
+        + 0.15 * unit_interval(signals.public_world_dependency)
+        + 0.10 * unit_interval(signals.group_size_mismatch)
+        + 0.08 * unit_interval(signals.service_shutdown_risk)
+        + 0.06 * unit_interval(signals.external_account_friction)
+        + 0.05 * unit_interval(signals.platform_or_anticheat_restriction);
+
+    unit_interval(base - penalty)
+}
+
+fn unit_interval(value: f64) -> f64 {
+    if value.is_nan() {
+        0.0
+    } else {
+        value.clamp(0.0, 1.0)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
 pub struct RankingSignals {
     pub multiplayer: MultiplayerSignals,

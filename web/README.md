@@ -70,6 +70,9 @@ pnpm exec tauri build --config apps/desktop/src-tauri/tauri.conf.json --ci --no-
 `http://127.0.0.1:8080` 或 `http://localhost:8080`；桌面 CSP 只允许这两个本机源，构建会拒绝
 其他值，避免生成运行后必然被 CSP 阻断的客户端。
 
+浏览器开发模式保持 `VITE_MPGS_API_BASE` 为空时会走同源 `/v1` 代理。可选的
+`VITE_MPGS_DEV_PROXY_TARGET` 可将该代理指向其他本机服务端端口，仅用于开发和本地验收。
+
 ## 主题与特效
 
 五个主题：复古电子、极简白线、MC 方块、Steam 商店、樱枫和风。每个主题提供一套

@@ -2,10 +2,10 @@ use std::sync::Arc;
 
 use mpgs_domain::FeedbackType;
 use mpgs_steam_source::{
-    AppCatalogProposal, AppListRequest, AppTypeProposal, CcuProposal, CcuRequest, RawResponse,
-    ReviewSummaryProposal, ReviewSummaryRequest, SourceStability, StoreDetailsRequest,
-    StoreSearchCandidate, StoreSearchPage, parse_app_list_page, parse_ccu, parse_review_summary,
-    parse_store_details,
+    APP_LIST_SOURCE_NAME, AppCatalogProposal, AppListRequest, AppTypeProposal, CcuProposal,
+    CcuRequest, RawResponse, ReviewSummaryProposal, ReviewSummaryRequest, SourceStability,
+    StoreDetailsRequest, StoreSearchCandidate, StoreSearchPage, parse_app_list_page, parse_ccu,
+    parse_popular_reviews, parse_review_summary, parse_store_details,
 };
 
 use crate::clock::FakeClock;
@@ -29,6 +29,39 @@ fn empty_database_migrates_to_latest() {
     let version = db.migrate().unwrap();
     assert_eq!(version, latest_version());
     db.assert_ready().unwrap();
+}
+
+#[test]
+fn demo_seed_includes_capsules_for_known_steam_apps() {
+    let (repo, _) = repo_with_clock(1_000);
+    assert!(repo.seed_demo_if_empty().unwrap() > 0);
+    let capsule_url: String = repo
+        .database()
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT capsule_url FROM app_media WHERE app_id = 892970",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+        })
+        .unwrap();
+    assert_eq!(
+        capsule_url,
+        "https://cdn.akamai.steamstatic.com/steam/apps/892970/header.jpg"
+    );
+    let synthetic_media_count: i64 = repo
+        .database()
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM app_media WHERE app_id IN (2500001, 2500002)",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+        })
+        .unwrap();
+    assert_eq!(synthetic_media_count, 0);
 }
 
 #[test]
@@ -516,6 +549,53 @@ fn availability_override_restores_latest_store_evidence_on_revoke() {
 }
 
 #[test]
+fn empty_store_availability_does_not_erase_the_last_usable_snapshot() {
+    let (repo, _) = repo_with_clock(10_000);
+    let raw = RawResponse::validate(
+        200,
+        br#"{"42":{"success":true,"data":{"steam_appid":42,"type":"game","name":"Coop Test","platforms":{"windows":true},"supported_languages":"English, Simplified Chinese"}}}"#.to_vec(),
+        Some("application/json".into()),
+        4096,
+    )
+    .unwrap();
+    let parsed = parse_store_details(&StoreDetailsRequest::new(42), &raw).unwrap();
+    repo.ingest_store_details(&parsed.details, &parsed.relations)
+        .unwrap();
+
+    repo.database()
+        .with_conn_mut(|conn| {
+            conn.execute(
+                "UPDATE app_availability
+                 SET platforms_json = '[]', languages_json = '[]'
+                 WHERE app_id = 42",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(repo.restore_empty_availability_from_evidence().unwrap(), 2);
+
+    let mut empty_refresh = parsed.details.clone();
+    empty_refresh.platforms = Some(Vec::new());
+    empty_refresh.supported_languages = Some(Vec::new());
+    repo.ingest_store_details(&empty_refresh, &parsed.relations)
+        .unwrap();
+
+    let (platforms, languages): (String, String) = repo
+        .database()
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT platforms_json, languages_json FROM app_availability WHERE app_id = 42",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(platforms, r#"["windows"]"#);
+    assert_eq!(languages, r#"["schinese","english"]"#);
+}
+
+#[test]
 fn job_lease_retry_and_idempotent_complete() {
     let (repo, clock) = repo_with_clock(100);
     let id1 = repo
@@ -543,6 +623,7 @@ fn job_lease_retry_and_idempotent_complete() {
         })
         .unwrap();
     assert_eq!(id1, id2);
+    assert!(repo.has_active_job("steam", "ccu", "730").unwrap());
     let conflicting_enqueue = repo.enqueue_job(&EnqueueJob {
         source: "steam".into(),
         task_type: "ccu".into(),
@@ -589,6 +670,7 @@ fn job_lease_retry_and_idempotent_complete() {
         .complete_job(leased[0].job_id, "worker-1", "steam:ccu:730:t100")
         .unwrap();
     assert_eq!(again.status, "completed");
+    assert!(!repo.has_active_job("steam", "ccu", "730").unwrap());
     assert!(matches!(
         repo.complete_job(leased[0].job_id, "worker-1", "different-completion"),
         Err(crate::StorageError::Conflict { .. })
@@ -701,10 +783,47 @@ fn fixture_pipeline_into_storage() {
     )
     .unwrap();
     let parsed = parse_app_list_page(&page).unwrap();
-    for proposal in &parsed.proposals {
-        repo.upsert_catalog(proposal).unwrap();
-    }
+    let request = AppListRequest {
+        last_appid: 0,
+        if_modified_since: 0,
+        max_results: 100,
+        include_games: true,
+        include_dlc: false,
+        include_software: false,
+        include_videos: false,
+        include_hardware: false,
+    };
+    assert_eq!(repo.ingest_app_list_page(&request, &parsed).unwrap(), 3);
     assert!(repo.count_apps().unwrap() >= 3);
+    let source_document: (String, String, String) = repo
+        .database()
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT source, entity_key, parse_version
+                 FROM source_documents WHERE source = ?1",
+                [APP_LIST_SOURCE_NAME],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(Into::into)
+        })
+        .unwrap();
+    assert_eq!(source_document.0, APP_LIST_SOURCE_NAME);
+    assert_eq!(source_document.1, "last_appid=0;if_modified_since=0");
+    assert_eq!(source_document.2, "app-list-0.1.0");
+    let media_count: i64 = repo
+        .database()
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM app_media
+                 WHERE app_id = 10
+                   AND capsule_url LIKE 'https://cdn.akamai.steamstatic.com/steam/apps/10/%'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+        })
+        .unwrap();
+    assert_eq!(media_count, 1);
 
     let reviews = RawResponse::validate(
         200,
@@ -737,6 +856,45 @@ fn fixture_pipeline_into_storage() {
     assert_eq!(app.release_state, "released");
     assert_eq!(app.release_date.as_deref(), Some("2021-02-02"));
     assert_eq!(app.release_date_raw.as_deref(), Some("2 Feb, 2021"));
+    let localization: (String, String) = repo
+        .database()
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT language, short_description FROM app_localizations WHERE app_id = 892970",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(Into::into)
+        })
+        .unwrap();
+    assert_eq!(localization.0, "english");
+    assert_eq!(
+        localization.1,
+        "A brutal exploration and survival game for 1-10 players."
+    );
+    assert_eq!(
+        repo.game_detail(892970)
+            .unwrap()
+            .unwrap()
+            .short_description
+            .as_deref(),
+        Some("A brutal exploration and survival game for 1-10 players.")
+    );
+    let current_cover: String = repo
+        .database()
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT capsule_url FROM app_media WHERE app_id = 892970",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+        })
+        .unwrap();
+    assert_eq!(
+        current_cover,
+        "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/892970/header.jpg?t=1"
+    );
     let price_count: i64 = repo
         .database()
         .with_conn(|conn| {
@@ -940,10 +1098,169 @@ fn store_search_candidates_are_auditable_without_fabricated_profiles() {
     assert!(targets.iter().all(|t| t.needs_price));
 
     let rotated = repo
-        .list_enrichment_targets_after(2, Some(548430), "CN")
+        .list_enrichment_targets_after(2, Some(548430), "CN", "schinese")
         .unwrap();
     assert_eq!(rotated[0].app_id, 632360);
     assert_eq!(rotated[1].app_id, 548430);
+}
+
+#[test]
+fn store_categories_materialize_conservative_multiplayer_profiles() {
+    let (repo, _) = repo_with_clock(5_000);
+    let page = StoreSearchPage {
+        candidates: vec![StoreSearchCandidate {
+            app_id: 548430,
+            name: "Deep Rock Galactic".into(),
+        }],
+        start: 0,
+        result_count: 1,
+        total_count: 1,
+        content_hash: "profile-materialization".into(),
+    };
+    repo.ingest_store_search_page(&page).unwrap();
+    repo.database()
+        .with_conn_mut(|conn| {
+            crate::curation::insert_feature_evidence(
+                conn,
+                548430,
+                "category_hint",
+                &serde_json::json!(["Online Co-op", "Cross-Platform Multiplayer"]),
+                "store_category",
+                "fixture",
+                0.3,
+                5_000,
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+    assert_eq!(repo.materialize_store_category_profiles().unwrap(), 1);
+    let profile = repo.get_profile(548430).unwrap().unwrap();
+    assert_eq!(profile.dominant_mode.as_deref(), Some("coop"));
+    assert_eq!(profile.online_coop, Some(true));
+    assert_eq!(profile.crossplay, Some(true));
+    assert_eq!(profile.recommended_min_players, Some(2));
+    assert_eq!(profile.recommended_max_players, None);
+    assert_eq!(profile.profile_confidence, Some(0.3));
+    assert_eq!(repo.materialize_store_category_profiles().unwrap(), 0);
+}
+
+#[test]
+fn store_search_category_materializes_only_a_safe_minimum_party_size() {
+    let (repo, _) = repo_with_clock(5_000);
+    repo.ingest_store_search_page(&StoreSearchPage {
+        candidates: vec![StoreSearchCandidate {
+            app_id: 548430,
+            name: "Deep Rock Galactic".into(),
+        }],
+        start: 0,
+        result_count: 1,
+        total_count: 1,
+        content_hash: "search-profile-materialization".into(),
+    })
+    .unwrap();
+
+    assert_eq!(repo.materialize_store_category_profiles().unwrap(), 1);
+    let profile = repo.get_profile(548430).unwrap().unwrap();
+    assert_eq!(profile.recommended_min_players, Some(2));
+    assert_eq!(profile.recommended_max_players, None);
+    assert_eq!(profile.dominant_mode, None);
+    assert_eq!(profile.online_coop, None);
+    assert_eq!(profile.profile_confidence, Some(0.3));
+}
+
+#[test]
+fn m7_coverage_requires_consecutive_focus_snapshot_days() {
+    let (repo, _) = repo_with_clock(7 * 86_400_000);
+    let page = StoreSearchPage {
+        candidates: vec![StoreSearchCandidate {
+            app_id: 42,
+            name: "Coverage Fixture".into(),
+        }],
+        start: 0,
+        result_count: 1,
+        total_count: 1,
+        content_hash: "m7-coverage-fixture".into(),
+    };
+    assert_eq!(repo.ingest_store_search_page(&page).unwrap(), 1);
+    repo.ingest_multiplayer_bool(42, "online_coop", true, "verified_test", "fixture", 0.8)
+        .unwrap();
+    repo.database()
+        .with_conn_mut(|conn| {
+            conn.execute(
+                "UPDATE apps SET release_state = 'released', release_date = '1970-01-01',
+                     release_date_raw = '1970-01-01' WHERE app_id = 42",
+                [],
+            )?;
+            conn.execute(
+                "UPDATE multiplayer_profiles SET profile_confidence = 0.70 WHERE app_id = 42",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO app_media (app_id, capsule_url, source, updated_at_ms)
+                 VALUES (42, 'https://cdn.example.invalid/42.jpg', 'fixture', 1)
+                 ON CONFLICT(app_id) DO UPDATE SET
+                    capsule_url = excluded.capsule_url,
+                    source = excluded.source,
+                    updated_at_ms = excluded.updated_at_ms",
+                [],
+            )?;
+            for day in 0..7_i64 {
+                let captured_at_ms = day * 86_400_000;
+                conn.execute(
+                    "INSERT INTO review_snapshots (
+                        app_id, region_scope, language_scope, captured_at_ms,
+                        total_positive, total_negative, total_reviews, review_score,
+                        review_score_desc, wilson_lower, filter_offtopic_activity,
+                        parameter_hash, content_hash, source
+                     ) VALUES (42, 'all', 'english', ?1, 100, 10, 110, NULL, NULL,
+                               0.80, 1, ?2, ?3, 'fixture')",
+                    rusqlite::params![
+                        captured_at_ms,
+                        format!("review-params-{day}"),
+                        format!("review-content-{day}")
+                    ],
+                )?;
+                conn.execute(
+                    "INSERT INTO player_daily (
+                        app_id, day_utc, min_ccu, max_ccu, mean_ccu, median_approx_ccu,
+                        sample_count, missing_rate, updated_at_ms
+                     ) VALUES (42, ?1, 10, 20, 15.0, 15.0, 48, 0.0, ?2)",
+                    rusqlite::params![format!("1970-01-{:02}", day + 1), captured_at_ms],
+                )?;
+            }
+            Ok(())
+        })
+        .unwrap();
+
+    let coverage = repo
+        .m7_data_coverage(&mpgs_domain::RecommendationConfig::default())
+        .unwrap();
+    assert_eq!(coverage.normalized_multiplayer_candidates, 1);
+    assert_eq!(coverage.trusted_friend_multiplayer_profiles, 1);
+    assert_eq!(coverage.candidates_with_date, 1);
+    assert_eq!(coverage.candidates_with_cover, 1);
+    assert_eq!(coverage.trusted_profiles_with_seven_day_reviews, 1);
+    assert_eq!(coverage.trusted_profiles_with_seven_day_ccu, 1);
+
+    repo.database()
+        .with_conn_mut(|conn| {
+            conn.execute(
+                "DELETE FROM review_snapshots WHERE app_id = 42 AND captured_at_ms = 259200000",
+                [],
+            )?;
+            conn.execute(
+                "DELETE FROM player_daily WHERE app_id = 42 AND day_utc = '1970-01-04'",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let broken_streak = repo
+        .m7_data_coverage(&mpgs_domain::RecommendationConfig::default())
+        .unwrap();
+    assert_eq!(broken_streak.trusted_profiles_with_seven_day_reviews, 0);
+    assert_eq!(broken_streak.trusted_profiles_with_seven_day_ccu, 0);
 }
 
 #[test]
@@ -1038,6 +1355,21 @@ fn enrichment_targets_refresh_dynamic_dimensions_by_age() {
         &parse_review_summary(&ReviewSummaryRequest::summary_only(892970), &reviews).unwrap(),
     )
     .unwrap();
+    let popular_reviews = RawResponse::validate(
+        200,
+        include_bytes!("../../steam-source/fixtures/reviews_popular.json").to_vec(),
+        None,
+        1024 * 1024,
+    )
+    .unwrap();
+    repo.ingest_popular_reviews(
+        &parse_popular_reviews(
+            &ReviewSummaryRequest::popular_schinese(892970),
+            &popular_reviews,
+        )
+        .unwrap(),
+    )
+    .unwrap();
     let ccu = RawResponse::validate(
         200,
         include_bytes!("../../steam-source/fixtures/ccu_ok.json").to_vec(),
@@ -1049,17 +1381,174 @@ fn enrichment_targets_refresh_dynamic_dimensions_by_age() {
         .unwrap();
 
     assert!(repo.list_enrichment_targets(10).unwrap().is_empty());
+    repo.database()
+        .with_conn_mut(|conn| {
+            conn.execute("DELETE FROM popular_reviews WHERE app_id = 892970", [])?;
+            Ok(())
+        })
+        .unwrap();
+    assert!(
+        repo.list_enrichment_targets(10).unwrap().is_empty(),
+        "a successful empty popular-review refresh must not be retried immediately"
+    );
+
+    // Older databases can already have availability and price snapshots from
+    // appdetails versions that did not persist localized store text or media.
+    // They must be selected once more so the current ingester can backfill both.
+    repo.database()
+        .with_conn_mut(|conn| {
+            conn.execute(
+                "DELETE FROM app_localizations WHERE app_id = 892970 AND language = 'schinese'",
+                [],
+            )?;
+            conn.execute(
+                "DELETE FROM store_detail_refresh_state WHERE app_id = 892970",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let localization_due = repo.list_enrichment_targets(10).unwrap();
+    assert_eq!(localization_due.len(), 1);
+    assert!(localization_due[0].needs_store_details);
+    assert!(!localization_due[0].needs_reviews);
+    assert!(!localization_due[0].needs_review_excerpts);
+    assert!(!localization_due[0].needs_ccu);
+    assert!(!localization_due[0].needs_price);
+    repo.ingest_store_details(&details.details, &details.relations)
+        .unwrap();
+    assert!(repo.list_enrichment_targets(10).unwrap().is_empty());
+
+    repo.database()
+        .with_conn_mut(|conn| {
+            conn.execute(
+                "DELETE FROM app_localizations WHERE app_id = 892970 AND language = 'schinese'",
+                [],
+            )?;
+            conn.execute("DELETE FROM price_snapshots WHERE app_id = 892970", [])?;
+            Ok(())
+        })
+        .unwrap();
+    repo.record_store_details_not_found(892970, "CN", "schinese")
+        .unwrap();
+    assert!(
+        repo.list_enrichment_targets(10).unwrap().is_empty(),
+        "a recent regional not-found result must suppress immediate store retries"
+    );
+    repo.ingest_store_details(&details.details, &details.relations)
+        .unwrap();
+
+    // A successful response can legitimately omit regional price, platform,
+    // language, and localized text fields. Record that checked-empty terminal
+    // state so the same app is not fetched forever until the daily refresh.
+    repo.database()
+        .with_conn_mut(|conn| {
+            conn.execute(
+                "DELETE FROM app_localizations WHERE app_id = 892970 AND language = 'schinese'",
+                [],
+            )?;
+            conn.execute("DELETE FROM price_snapshots WHERE app_id = 892970", [])?;
+            conn.execute(
+                "UPDATE app_availability
+                 SET platforms_json = '[]', languages_json = '[]'
+                 WHERE app_id = 892970",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let checked_empty = RawResponse::validate(
+        200,
+        br#"{"892970":{"success":true,"data":{"steam_appid":892970,"type":"game"}}}"#.to_vec(),
+        Some("application/json".into()),
+        4096,
+    )
+    .unwrap();
+    let checked_empty = parse_store_details(
+        &StoreDetailsRequest::with_locale(892970, "CN", "schinese").unwrap(),
+        &checked_empty,
+    )
+    .unwrap();
+    repo.ingest_store_details(&checked_empty.details, &checked_empty.relations)
+        .unwrap();
+    assert!(
+        repo.list_enrichment_targets(10).unwrap().is_empty(),
+        "a recent successful checked-empty store response must suppress immediate retries"
+    );
+
     clock.advance_ms(CCU_REFRESH_INTERVAL_MS + 1);
     let ccu_due = repo.list_enrichment_targets(10).unwrap();
     assert_eq!(ccu_due.len(), 1);
     assert!(ccu_due[0].needs_ccu);
     assert!(!ccu_due[0].needs_reviews);
+    assert!(!ccu_due[0].needs_review_excerpts);
     assert!(!ccu_due[0].needs_price);
 
     clock.advance_ms(PRICE_REFRESH_INTERVAL_MS - CCU_REFRESH_INTERVAL_MS);
     let daily_due = repo.list_enrichment_targets(10).unwrap();
     assert!(daily_due[0].needs_reviews);
+    assert!(daily_due[0].needs_review_excerpts);
     assert!(daily_due[0].needs_price);
+}
+
+#[test]
+fn enrichment_targets_prioritize_apps_missing_the_most_dynamic_dimensions() {
+    let (repo, _) = repo_with_clock(10 * 24 * 60 * 60 * 1_000);
+    repo.ingest_store_search_page(&StoreSearchPage {
+        candidates: vec![
+            StoreSearchCandidate {
+                app_id: 10,
+                name: "Already Partly Enriched".into(),
+            },
+            StoreSearchCandidate {
+                app_id: 20,
+                name: "Never Enriched".into(),
+            },
+        ],
+        start: 0,
+        result_count: 2,
+        total_count: 2,
+        content_hash: "priority-fixture".into(),
+    })
+    .unwrap();
+
+    let reviews = RawResponse::validate(
+        200,
+        include_bytes!("../../steam-source/fixtures/reviews_summary.json").to_vec(),
+        None,
+        1024 * 1024,
+    )
+    .unwrap();
+    repo.ingest_review(
+        &parse_review_summary(&ReviewSummaryRequest::summary_only(10), &reviews).unwrap(),
+    )
+    .unwrap();
+    let popular = RawResponse::validate(
+        200,
+        include_bytes!("../../steam-source/fixtures/reviews_popular.json").to_vec(),
+        None,
+        1024 * 1024,
+    )
+    .unwrap();
+    repo.ingest_popular_reviews(
+        &parse_popular_reviews(&ReviewSummaryRequest::popular_schinese(10), &popular).unwrap(),
+    )
+    .unwrap();
+    let ccu = RawResponse::validate(
+        200,
+        include_bytes!("../../steam-source/fixtures/ccu_ok.json").to_vec(),
+        None,
+        1024 * 1024,
+    )
+    .unwrap();
+    repo.ingest_ccu(&parse_ccu(&CcuRequest::new(10), &ccu).unwrap())
+        .unwrap();
+
+    let targets = repo
+        .list_enrichment_targets_after(1, Some(0), "CN", "schinese")
+        .unwrap();
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].app_id, 20);
 }
 
 #[test]
@@ -1103,6 +1592,163 @@ fn source_cursor_and_run_state_support_resume() {
         })
         .unwrap();
     assert_eq!(status, "succeeded");
+}
+
+#[test]
+fn starting_a_new_source_run_finalizes_an_interrupted_predecessor() {
+    let (repo, clock) = repo_with_clock(7_000);
+    let old = repo
+        .start_source_run("steam", "candidate_enrichment", "v1", None)
+        .unwrap();
+    clock.advance_ms(1_000);
+    let new = repo
+        .start_source_run("steam", "candidate_enrichment", "v1", None)
+        .unwrap();
+    assert_ne!(old, new);
+    repo.database()
+        .with_conn(|conn| {
+            let predecessor: (String, Option<String>, Option<i64>) = conn.query_row(
+                "SELECT status, error_category, finished_at_ms FROM source_runs WHERE run_id = ?1",
+                [old],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(predecessor.0, "failed");
+            assert_eq!(predecessor.1.as_deref(), Some("interrupted"));
+            assert_eq!(predecessor.2, Some(8_000));
+            let running: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM source_runs
+                 WHERE source = 'steam' AND task_type = 'candidate_enrichment'
+                   AND status = 'running'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(running, 1);
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
+fn feed_sections_use_earliest_known_release_date() {
+    // 2026-07-18 UTC — after Palworld's 1.0 store date, within a 180-day recent window.
+    let now_ms = 1_784_342_400_000i64;
+    let (repo, _) = repo_with_clock(now_ms);
+    assert!(repo.seed_demo_if_empty().unwrap() > 0);
+
+    // Simulate a later store refresh that overwrote apps.release_date with the 1.0 day.
+    repo.database()
+        .with_conn_mut(|conn| {
+            conn.execute(
+                "UPDATE apps
+                 SET release_date = '2026-07-09',
+                     release_date_raw = 'Jul 9, 2026',
+                     updated_at_ms = ?1
+                 WHERE app_id = 1623730",
+                [now_ms],
+            )?;
+            conn.execute(
+                "INSERT INTO release_events (
+                     app_id, old_release_date, new_release_date, old_precision, new_precision,
+                     old_release_state, new_release_state, source, observed_at_ms
+                 ) VALUES (
+                     1623730, '2024-01-19', '2026-07-09', 'day', 'day',
+                     'released', 'released', 'steam_store_appdetails', ?1
+                 )",
+                [now_ms],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+    let config = mpgs_domain::RecommendationConfig::default();
+    let today = crate::util::day_utc_from_ms(now_ms);
+    let cutoff = crate::util::day_utc_from_ms(
+        now_ms.saturating_sub(i64::from(config.recent_days) * 24 * 60 * 60 * 1_000),
+    );
+
+    let recent = repo
+        .list_candidates(
+            mpgs_domain::FeedSection::RecentRelease,
+            &cutoff,
+            &today,
+            "CNY",
+            &config,
+            10_000,
+        )
+        .unwrap();
+    assert!(
+        recent.iter().all(|row| row.app_id != 1623730),
+        "1.0 store date must not place long-shipped titles in recent_release"
+    );
+
+    let classic = repo
+        .list_candidates(
+            mpgs_domain::FeedSection::ClassicLegacy,
+            &cutoff,
+            &today,
+            "CNY",
+            &config,
+            10_000,
+        )
+        .unwrap();
+    let popular = repo
+        .list_candidates(
+            mpgs_domain::FeedSection::PopularLegacy,
+            &cutoff,
+            &today,
+            "CNY",
+            &config,
+            10_000,
+        )
+        .unwrap();
+    let in_legacy = classic
+        .iter()
+        .chain(popular.iter())
+        .any(|row| row.app_id == 1623730);
+    assert!(
+        in_legacy,
+        "first known release date should keep Palworld in legacy sections"
+    );
+
+    let palworld = classic
+        .iter()
+        .chain(popular.iter())
+        .find(|row| row.app_id == 1623730)
+        .expect("palworld row");
+    assert_eq!(palworld.release_date.as_deref(), Some("2024-01-19"));
+
+    // Residual classic must not re-list popular legacy titles.
+    let classic_ids: std::collections::HashSet<u32> = classic
+        .into_iter()
+        .filter(|row| {
+            let signals = row.to_ranking_signals();
+            crate::query::section_matches(
+                mpgs_domain::FeedSection::ClassicLegacy,
+                row,
+                &signals,
+                &cutoff,
+                &today,
+                &config,
+            )
+        })
+        .map(|row| row.app_id)
+        .collect();
+    let popular_ids: std::collections::HashSet<u32> = popular
+        .into_iter()
+        .filter(|row| {
+            let signals = row.to_ranking_signals();
+            crate::query::section_matches(
+                mpgs_domain::FeedSection::PopularLegacy,
+                row,
+                &signals,
+                &cutoff,
+                &today,
+                &config,
+            )
+        })
+        .map(|row| row.app_id)
+        .collect();
+    assert!(classic_ids.is_disjoint(&popular_ids));
 }
 
 // silence unused import warnings for types used only in docs-like examples

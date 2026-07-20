@@ -74,9 +74,13 @@ Invoke-RestMethod 'http://127.0.0.1:8080/openapi.json'
 ```powershell
 cargo run -p mpgs-dbtool -- migrate .\data\mpgs.db
 cargo run -p mpgs-dbtool -- integrity .\data\mpgs.db
+$env:MPGS_STEAM_WEB_API_KEY = '<server-side Steam Web API key>'
+cargo run -p mpgs-dbtool --locked -- collect-steam-catalog .\data\m3-real.db 1 1000
 cargo run -p mpgs-dbtool --locked -- collect-steam-candidates .\data\m3-real.db 2000
 cargo run -p mpgs-dbtool --locked -- import-golden-profiles .\data\m3-real.db
 cargo run -p mpgs-dbtool --locked -- enrich-steam-candidates .\data\m3-real.db 100
+$env:MPGS_STEAM_WORKER_ID = 'mpgs-steam-worker-1'
+cargo run -p mpgs-dbtool --locked -- run-steam-worker-once .\data\m3-real.db 1 100
 cargo run -p mpgs-dbtool -- m3-audit .\data\m3-real.db
 cargo run -p mpgs-dbtool -- backup .\data\mpgs.db .\backups\mpgs.db
 cargo run -p mpgs-dbtool -- restore .\backups\mpgs.db .\data-restored\mpgs.db
@@ -86,6 +90,12 @@ cargo run -p mpgs-dbtool -- restore .\backups\mpgs.db .\data-restored\mpgs.db
 ```
 
 `collect-steam-candidates` 使用 Steam 商店搜索的 `category2=1` 多人分类和 `Reviews_DESC` 排序。该接口没有稳定公开契约，因此实现位于独立易变适配器中：响应限制为 4 MiB，HTML 通过 DOM 解析器读取，失败最多退避重试 3 次，成功页间隔至少 1.1 秒；每页写入 `source_documents`、`feature_evidence`、`source_runs` 和 `source_cursors`。命令可安全续传，但它只建立低置信候选证据，不会推断合作、自建服或私人房间能力。
+
+`collect-steam-catalog` 使用官方 `IStoreService/GetAppList`。它只从服务端环境变量 `MPGS_STEAM_WEB_API_KEY` 读取密钥，默认拉取一页 1,000 条游戏目录；每页在单一事务中写入目录、官方 CDN 封面回退、来源文档和游标。`max-pages` 与 `page-size` 仅限制本次运行，下一次会从持久化游标继续；完成一次目录遍历后，下一次运行以 `if_modified_since` 进行增量同步。密钥不写入 SQLite、来源文档、命令行参数或普通错误输出。
+
+服务端调度器会入队 `catalog_sync`、候选发现和富化作业；每类任务仅在到期且不存在同类 `pending`/`leased` 作业时才入队，避免慢目录同步挤占后续工作。默认目录同步为 15 分钟、候选发现为 6 小时、富化为 5 分钟；全局检查频率由 `MPGS_SCHEDULER_INTERVAL_SECS`（默认 5 分钟）控制，三个非敏感任务间隔可分别用 `MPGS_CATALOG_SYNC_INTERVAL_SECS`、`MPGS_CANDIDATE_COLLECTION_INTERVAL_SECS` 和 `MPGS_ENRICHMENT_INTERVAL_SECS` 覆盖（60 秒至 24 小时）。`run-steam-worker-once` 以租约消费作业，并在成功后更新 `/admin/v1/data-status` 的成功时间、下次运行、游标和覆盖率。worker 必须与 SQLite 数据库同机运行，不能通过网络共享同一个 SQLite 文件；应由 Windows 计划任务或 systemd 以固定的 `MPGS_STEAM_WORKER_ID` 周期执行。目录作业仅在服务端和 worker 都配置有效 `MPGS_STEAM_WEB_API_KEY` 时入队和执行，失败会保留最近一次有效快照并按稳定错误类别重试。
+
+发布前执行 `mpgs-dbtool m7-data-audit <db>`。该命令按当前算法配置和与公开 feed 相同的分区资格规则，严格检查 2,000 个规范化候选、300 个可信熟人联机画像、每个分区 20 个候选、候选日期/封面各 95% 覆盖，以及 300 个重点画像各自连续 7 天的评价与 CCU 数据。新游确实不足时只能显式传入 `--allow-upcoming-shortfall=<reason>`；其余不足会以非零退出码阻断发布。
 
 `import-golden-profiles` 将带版本、内容哈希和原始文档的嵌入式黄金集幂等写入 `multiplayer_profiles` 与 `feature_evidence`（不覆盖人工 override），用于提升 `recommendation_ready_profiles` / `trusted_familiar_profiles`。`enrich-steam-candidates` 对多人候选按轮转游标抓取 `appdetails`、评价摘要与 CCU：平台/语言缺失时补抓，评价和价格每 24 小时到期，CCU 每 6 小时到期；默认每次 100 个 App，请求间隔约 1.1 秒。商店区域默认 `CN/schinese`，可用 `MPGS_STEAM_COUNTRY`、`MPGS_STEAM_LANGUAGE` 覆盖。深度熟人联机画像仍依赖黄金集与人工校正，不由商店分类自动推断。
 
@@ -246,7 +256,7 @@ MPGS_AI_MODEL
 MPGS_EMBEDDING_MODEL
 ```
 
-这些 AI/Steam 变量当前尚未被代码读取。实现 Provider 时提供 `.env.example` 但不自动加载生产 `.env`，并确保日志只显示“已配置/未配置”。供应商 URL 是否允许自定义需要单独安全评审。
+`MPGS_STEAM_WEB_API_KEY` 已由 `mpgs-dbtool collect-steam-catalog` 和 `run-steam-worker-once` 读取，且仅用于进程内的官方 Steam 目录请求。其余变量按对应 Provider/功能启用；项目不自动加载生产 `.env`，日志只显示“已配置/未配置”。供应商 URL 是否允许自定义需要单独安全评审。
 
 M3 已读取的非敏感限流变量：`MPGS_RATE_LIMIT_ENABLED`、`MPGS_RATE_LIMIT_READ_PER_MINUTE`、`MPGS_RATE_LIMIT_SEARCH_PER_MINUTE`、`MPGS_RATE_LIMIT_SESSION_PER_MINUTE`、`MPGS_RATE_LIMIT_FEEDBACK_PER_MINUTE`、`MPGS_RATE_LIMIT_GLOBAL_PER_MINUTE`、`MPGS_TRUST_PROXY_HEADERS`。代理部署只有在入口覆盖并清洗转发头时才能开启最后一项。
 
@@ -272,13 +282,10 @@ GitHub Actions 构建 CI 已获负责人确认并创建于 `.github/workflows/ci
 ## 14. M6 发布加固
 
 ```powershell
-# 离线验收（干净工作树才 PASS）
+# 离线验收（干净工作树才 PASS；包含 release 服务包）
 .\scripts\m6_acceptance.ps1
-# 可选：再打带 PROVENANCE 的 release 服务包
-.\scripts\m6_acceptance.ps1 -Package
 
-# 单独打服务端包（注入 git SHA）
-$env:MPGS_BUILD_GIT_SHA = (git rev-parse HEAD)
+# 单独打服务端包（自动注入并核验 git SHA）
 .\scripts\package_server.ps1
 
 # 刷新第三方许可表

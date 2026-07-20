@@ -7,14 +7,13 @@ import { apiClient } from "../app/runtime";
 import {
   appTypeLabel,
   confidenceLabel,
-  dayLabel,
   defaultWindow,
   earlyDataLabel,
   groupByMonth,
   precisionLabel,
   recentWindow,
 } from "../app/calendar";
-import { formatAgo, isStale, releaseStateLabel } from "../app/format";
+import { formatAgo, formatReleaseDate, isStale, releaseStateLabel } from "../app/format";
 
 interface CalendarState {
   data: CalendarResponse | null;
@@ -48,7 +47,7 @@ function CalendarRow({
   const earlyLabel = earlyDataLabel(item.early_data, item.review_total);
   return (
     <button type="button" className="cal-row" onClick={() => onOpenGame(item.app_id)}>
-      <span className="cal-day">{dayLabel(item.release_date)}</span>
+      <span className="cal-day">{formatReleaseDate(item.release_date, item.release_date_raw, item.release_date_precision)}</span>
       <span className="cal-name">{item.canonical_name}</span>
       <span className="cal-tags">
         <span className="chip accent">{appTypeLabel(item.app_type)}</span>

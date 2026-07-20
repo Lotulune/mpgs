@@ -1,0 +1,107 @@
+name: Container images
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/container-images.yml"
+      - ".dockerignore"
+      - "Dockerfile"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "apps/**"
+      - "crates/**"
+      - "deploy/**"
+      - "migrations/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "web/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: container-images-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    name: Publish ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: mpgs-server
+            target: server
+          - image: mpgs-web
+            target: web
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Log in to GitHub Container Registry
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+
+      - name: Build and push release image
+        env:
+          IMAGE_NAME: ${{ matrix.image }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          owner=$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
+          image="ghcr.io/$owner/$IMAGE_NAME"
+          docker buildx create --use --name mpgs-builder
+          docker buildx build \
+            --target "$TARGET" \
+            --build-arg MPGS_BUILD_PROFILE=release \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --cache-from "type=gha,scope=$TARGET" \
+            --cache-to "type=gha,mode=max,scope=$TARGET" \
+            --tag "$image:main" \
+            --tag "$image:sha-$GITHUB_SHA" \
+            --push \
+            .
+
+  deploy:
+    name: Pull images on VPS
+    needs: publish
+    if: github.ref == 'refs/heads/main' && vars.MPGS_AUTO_DEPLOY == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Configure SSH
+        env:
+          VPS_HOST: ${{ secrets.MPGS_VPS_HOST }}
+          VPS_KNOWN_HOSTS: ${{ secrets.MPGS_VPS_KNOWN_HOSTS }}
+          VPS_SSH_KEY: ${{ secrets.MPGS_VPS_SSH_KEY }}
+          VPS_USER: ${{ secrets.MPGS_VPS_USER }}
+        run: |
+          set -eu
+          test -n "$VPS_HOST"
+          test -n "$VPS_USER"
+          test -n "$VPS_SSH_KEY"
+          test -n "$VPS_KNOWN_HOSTS"
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$VPS_SSH_KEY" > "$HOME/.ssh/mpgs_deploy"
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/mpgs_deploy" "$HOME/.ssh/known_hosts"
+
+      - name: Pull and restart on VPS
+        env:
+          VPS_HOST: ${{ secrets.MPGS_VPS_HOST }}
+          VPS_USER: ${{ secrets.MPGS_VPS_USER }}
+        run: |
+          ssh \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -i "$HOME/.ssh/mpgs_deploy" \
+            "$VPS_USER@$VPS_HOST" \
+            'cd /home/ubuntu/mpgs/src && ./deploy/update.sh'

@@ -6,4 +6,7 @@ fn main() {
     let sha = sha.lines().next().unwrap_or("unknown").trim();
     let sha = if sha.is_empty() { "unknown" } else { sha };
     println!("cargo:rustc-env=MPGS_BUILD_GIT_SHA={sha}");
+
+    let target = std::env::var("TARGET").unwrap_or_else(|_| "unknown".to_owned());
+    println!("cargo:rustc-env=MPGS_BUILD_TARGET={target}");
 }

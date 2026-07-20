@@ -1,17 +1,22 @@
 #![forbid(unsafe_code)]
 
+mod ai_limits;
 mod api;
 mod cors;
 mod rate_limit;
+mod scheduler;
 
 use std::{env, error::Error, io, net::SocketAddr};
 
 use mpgs_ai::{embedding_provider_from_env, gateway_from_env};
-use mpgs_storage::{Database, Repository};
+use mpgs_recommender::ALGORITHM_VERSION;
+use mpgs_storage::{Database, Repository, latest_version};
+use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
+use crate::ai_limits::AccountAiLimiter;
 use crate::api::{AppState, build_router};
 use crate::cors::CorsConfig;
 use crate::rate_limit::RateLimitConfig;
@@ -20,8 +25,16 @@ const DEFAULT_BIND_ADDR: &str = "127.0.0.1:8080";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    if env::args_os()
+        .nth(1)
+        .is_some_and(|arg| arg == "--build-info")
+    {
+        println!("{}", build_info());
+        return Ok(());
+    }
     init_tracing();
     let state = build_state()?;
+    scheduler::spawn(state.repo.clone());
     let address: SocketAddr = env::var("MPGS_BIND_ADDR")
         .unwrap_or_else(|_| DEFAULT_BIND_ADDR.to_owned())
         .parse()?;
@@ -36,15 +49,27 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn build_info() -> Value {
+    json!({
+        "product": "mpgs-server",
+        "service_version": env!("CARGO_PKG_VERSION"),
+        "git_sha": api::build_git_sha(),
+        "rustc_target": env!("MPGS_BUILD_TARGET"),
+        "schema_version": latest_version(),
+        "algorithm_version": ALGORITHM_VERSION,
+    })
+}
+
 fn build_state() -> Result<AppState, Box<dyn Error>> {
     let admin_token = env::var("MPGS_ADMIN_TOKEN").ok().filter(|s| !s.is_empty());
+    let demo_seed = demo_seed_enabled()?;
     let repo = match env::var("MPGS_DATABASE_PATH") {
         Ok(path) if !path.is_empty() => {
             let db = Database::open(&path)?;
             let repo = Repository::new(db);
             let version = repo.migrate()?;
             repo.ensure_runtime_defaults()?;
-            if demo_seed_enabled()? {
+            if demo_seed {
                 let seeded = repo.seed_demo_if_empty()?;
                 info!(seeded, "demo catalog seed enabled");
             }
@@ -52,15 +77,31 @@ fn build_state() -> Result<AppState, Box<dyn Error>> {
             info!(%path, version, "database ready");
             Some(repo)
         }
-        _ => {
-            // In-memory DB for local public API demos without configuring a path.
+        _ if cfg!(debug_assertions) => {
+            // Development can use a transient database, but sample content is
+            // never implicit: it requires MPGS_SEED_DEMO=true and is visible in
+            // service metadata. Release binaries reject this branch below.
             let db = Database::open_in_memory()?;
             let repo = Repository::new(db);
             repo.migrate()?;
             repo.ensure_runtime_defaults()?;
-            repo.seed_demo_if_empty()?;
-            info!("using in-memory database (set MPGS_DATABASE_PATH for persistence)");
+            if demo_seed {
+                let seeded = repo.seed_demo_if_empty()?;
+                info!(seeded, "development demo catalog seed enabled");
+                repo.assert_ready()?;
+            } else {
+                info!(
+                    "using empty development database; set MPGS_DATABASE_PATH or MPGS_SEED_DEMO=true"
+                );
+            }
             Some(repo)
+        }
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "MPGS_DATABASE_PATH is required by release builds; set MPGS_SEED_DEMO=true only for an explicit demo environment",
+            )
+            .into());
         }
     };
     let ai = gateway_from_env()
@@ -82,6 +123,7 @@ fn build_state() -> Result<AppState, Box<dyn Error>> {
         admin_token,
         rate_limits: RateLimitConfig::from_env()?,
         cors: CorsConfig::from_env()?,
+        account_ai_limits: AccountAiLimiter::from_env()?,
         ai,
         embedding,
     })
@@ -162,6 +204,7 @@ mod tests {
             admin_token: Some("secret".into()),
             rate_limits,
             cors: CorsConfig::default(),
+            account_ai_limits: AccountAiLimiter::default(),
             ai: mpgs_ai::AiGateway::disabled(),
             embedding: test_embedding(),
         });
@@ -170,6 +213,17 @@ mod tests {
 
     fn test_app() -> axum::Router {
         test_repo_and_app(RateLimitConfig::default()).1
+    }
+
+    #[test]
+    fn m6_build_info_matches_compiled_release_metadata() {
+        let info = build_info();
+        assert_eq!(info["product"], "mpgs-server");
+        assert_eq!(info["service_version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(info["git_sha"], crate::api::build_git_sha());
+        assert_eq!(info["rustc_target"], env!("MPGS_BUILD_TARGET"));
+        assert_eq!(info["schema_version"], latest_version());
+        assert_eq!(info["algorithm_version"], ALGORITHM_VERSION);
     }
 
     #[tokio::test]
@@ -254,23 +308,79 @@ mod tests {
         );
     }
 
-    async fn anon_token(app: &axum::Router) -> String {
-        let session = app
-            .clone()
+    #[tokio::test]
+    async fn admin_data_status_exposes_m7_release_coverage() {
+        let app = test_app();
+        let response = app
             .oneshot(
                 Request::builder()
-                    .method("POST")
-                    .uri("/v1/session/anonymous")
+                    .uri("/admin/v1/data-status")
+                    .header(header::AUTHORIZATION, "Bearer secret")
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json["tasks"].is_array());
+        assert!(json["coverage"]["normalized_multiplayer_candidates"].is_number());
+        assert!(json["m7_coverage"]["trusted_friend_multiplayer_profiles"].is_number());
+        assert!(json["m7_coverage"]["trusted_profiles_with_seven_day_ccu"].is_number());
+    }
+
+    async fn account_session_json(app: &axum::Router, username: &str) -> serde_json::Value {
+        let session = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/auth/register")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "username": username,
+                            "display_name": username,
+                            "password": format!("password-{username}-long"),
+                            "device_label": "test",
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(session.status(), StatusCode::CREATED);
         let bytes = axum::body::to_bytes(session.into_body(), 1024 * 1024)
             .await
             .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        json["access_token"].as_str().unwrap().to_owned()
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    async fn account_token(app: &axum::Router, username: &str) -> String {
+        account_session_json(app, username).await["access_token"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    }
+
+    fn account_for_repo(
+        repo: &Repository,
+        username: &str,
+    ) -> mpgs_storage::accounts::AccountSessionTokens {
+        repo.register_account(
+            &mpgs_storage::accounts::RegisterAccount {
+                username: username.to_owned(),
+                display_name: username.to_owned(),
+                password: format!("password-{username}-long"),
+                device_label: "test".to_owned(),
+            },
+            None,
+        )
+        .unwrap()
     }
 
     #[tokio::test]
@@ -293,7 +403,7 @@ mod tests {
     #[tokio::test]
     async fn play_intent_toggles_and_surfaces_in_feed() {
         let app = test_app();
-        let token = anon_token(&app).await;
+        let token = account_token(&app, "vote_user").await;
 
         // Cast a vote.
         let vote = app
@@ -371,9 +481,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn community_filters_and_page_size_are_part_of_the_cache_contract() {
+        let app = test_app();
+        let token = account_token(&app, "community_cache_user").await;
+        let vote = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/games/548430/play-intent")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"intent":true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(vote.status(), StatusCode::OK);
+
+        let first = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/community/play-intents?sort=trending&release_state=released&limit=1")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let etag = first.headers().get(header::ETAG).unwrap().clone();
+
+        let different_limit = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/community/play-intents?sort=trending&release_state=released&limit=2")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .header(header::IF_NONE_MATCH, etag)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(different_limit.status(), StatusCode::OK);
+
+        let invalid_filter = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/community/play-intents?platform=untrusted")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(invalid_filter.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
     async fn play_intent_unknown_game_is_not_found() {
         let app = test_app();
-        let token = anon_token(&app).await;
+        let token = account_token(&app, "missing_vote_user").await;
         let response = app
             .oneshot(
                 Request::builder()
@@ -413,7 +582,7 @@ mod tests {
             .as_str()
             .expect("feed has another page");
 
-        let session = repo.create_anonymous_session().unwrap();
+        let session = account_for_repo(&repo, "cursor_user");
         repo.set_play_intent(&session.user_id, 548430, true)
             .unwrap();
 
@@ -439,8 +608,8 @@ mod tests {
     #[tokio::test]
     async fn detail_etag_is_scoped_to_user_vote_state() {
         let (repo, app) = test_repo_and_app(RateLimitConfig::default());
-        let first_user = repo.create_anonymous_session().unwrap();
-        let second_user = repo.create_anonymous_session().unwrap();
+        let first_user = account_for_repo(&repo, "detail_first");
+        let second_user = account_for_repo(&repo, "detail_second");
         repo.set_play_intent(&first_user.user_id, 548430, true)
             .unwrap();
 
@@ -585,22 +754,7 @@ mod tests {
     #[tokio::test]
     async fn session_preferences_feedback_flow() {
         let app = test_app();
-        let session = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/session/anonymous")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(session.status(), StatusCode::CREATED);
-        let body = axum::body::to_bytes(session.into_body(), 1024 * 1024)
-            .await
-            .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let json = account_session_json(&app, "preferences_user").await;
         let token = json["access_token"].as_str().unwrap();
         let refresh_token = json["refresh_token"].as_str().unwrap();
 
@@ -654,7 +808,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/v1/session/refresh")
+                    .uri("/v1/auth/refresh")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(format!(
                         r#"{{"refresh_token":"{refresh_token}"}}"#
@@ -681,21 +835,7 @@ mod tests {
     #[tokio::test]
     async fn active_feedback_changes_feed_and_undo_restores_it() {
         let app = test_app();
-        let session = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/session/anonymous")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let session_body = axum::body::to_bytes(session.into_body(), 1024 * 1024)
-            .await
-            .unwrap();
-        let session_json: serde_json::Value = serde_json::from_slice(&session_body).unwrap();
+        let session_json = account_session_json(&app, "feedback_user").await;
         let token = session_json["access_token"].as_str().unwrap();
 
         let before = app
@@ -888,6 +1028,7 @@ mod tests {
                 ..RateLimitConfig::default()
             },
             cors: CorsConfig::default(),
+            account_ai_limits: AccountAiLimiter::default(),
             ai: AiGateway::disabled(),
             embedding: test_embedding(),
         });
@@ -950,6 +1091,7 @@ mod tests {
                 ..RateLimitConfig::default()
             },
             cors: CorsConfig::default(),
+            account_ai_limits: AccountAiLimiter::default(),
             ai: AiGateway::new(fake.clone(), AiPolicy::default()),
             embedding: test_embedding(),
         });
@@ -991,6 +1133,7 @@ mod tests {
                 ..RateLimitConfig::default()
             },
             cors: CorsConfig::default(),
+            account_ai_limits: AccountAiLimiter::default(),
             ai: AiGateway::new(fake, AiPolicy::default()),
             embedding: test_embedding(),
         })
@@ -1020,6 +1163,7 @@ mod tests {
                 ..RateLimitConfig::default()
             },
             cors: CorsConfig::default(),
+            account_ai_limits: AccountAiLimiter::default(),
             ai: AiGateway::new(Arc::new(FakeProvider::default()), AiPolicy::default()),
             embedding: test_embedding(),
         })
@@ -1039,7 +1183,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn natural_language_times_out_to_deterministic_results() {
+    async fn m6_fault_natural_language_times_out_to_deterministic_results() {
         use mpgs_ai::{AiGateway, AiPolicy, FakeProvider};
         use std::sync::Arc;
         use std::time::{Duration, Instant};
@@ -1065,6 +1209,7 @@ mod tests {
                 ..RateLimitConfig::default()
             },
             cors: CorsConfig::default(),
+            account_ai_limits: AccountAiLimiter::default(),
             ai: AiGateway::new(Arc::new(provider), policy),
             embedding: test_embedding(),
         });
@@ -1236,6 +1381,18 @@ mod tests {
             "/v1/meta",
             "/v1/session/anonymous",
             "/v1/session/refresh",
+            "/v1/auth/register",
+            "/v1/auth/login",
+            "/v1/auth/refresh",
+            "/v1/auth/logout",
+            "/v1/auth/logout-all",
+            "/v1/auth/password",
+            "/v1/me",
+            "/v1/me/avatar",
+            "/v1/me/ai-settings",
+            "/v1/me/ai-settings/test",
+            "/v1/me/ai-settings/custom-key",
+            "/v1/community/play-intents",
             "/v1/preferences",
             "/v1/feeds/{section}",
             "/v1/recommendations/natural-language",
@@ -1320,38 +1477,50 @@ mod tests {
     #[tokio::test]
     async fn active_algorithm_config_and_all_preference_inputs_drive_feed() {
         let (repo, app) = test_repo_and_app(RateLimitConfig::default());
+        // Classic is residual of non-popular legacy games; classic_min_* no longer
+        // empties the section. Prove active config still gates popular membership.
         repo.database()
             .with_conn(|conn| {
                 conn.execute(
                     "UPDATE algorithm_configs
-                     SET config_json = json_set(config_json, '$.classic_min_reviews', 999999999)
+                     SET config_json = json_set(
+                         json_set(config_json, '$.popular_min_ccu', 500000000),
+                         '$.popular_high_ccu', 500000000
+                     )
                      WHERE status = 'active'",
                     [],
                 )?;
                 Ok(())
             })
             .unwrap();
-        let empty = app
+        let empty_popular = app
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/v1/feeds/classic_legacy?limit=100")
+                    .uri("/v1/feeds/popular_legacy?limit=100")
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
-        let body = axum::body::to_bytes(empty.into_body(), 1024 * 1024)
+        assert_eq!(empty_popular.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(empty_popular.into_body(), 1024 * 1024)
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert!(json["items"].as_array().unwrap().is_empty());
+        let popular_items = json["items"]
+            .as_array()
+            .unwrap_or_else(|| panic!("unexpected popular feed body: {json}"));
+        assert!(popular_items.is_empty());
 
         repo.database()
             .with_conn(|conn| {
                 conn.execute(
                     "UPDATE algorithm_configs
-                     SET config_json = json_set(config_json, '$.classic_min_reviews', 3000)
+                     SET config_json = json_set(
+                         json_set(config_json, '$.popular_min_ccu', 500),
+                         '$.popular_high_ccu', 100000
+                     )
                      WHERE status = 'active'",
                     [],
                 )?;
@@ -1392,10 +1561,12 @@ mod tests {
             })
             .unwrap();
 
+        // Deep Rock Galactic is popular_legacy under residual classic rules (high CCU
+        // + friend-fit), so preference filtering is exercised on that section.
         let filtered = app
             .oneshot(
                 Request::builder()
-                    .uri("/v1/feeds/classic_legacy?limit=100&platforms=linux&languages=schinese&session_minutes_min=30&session_minutes_max=90&max_price_minor=6000&currency=CNY")
+                    .uri("/v1/feeds/popular_legacy?limit=100&platforms=linux&languages=schinese&session_minutes_min=30&session_minutes_max=90&max_price_minor=6000&currency=CNY")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1456,7 +1627,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn sqlite_lock_wait_does_not_block_the_async_runtime() {
+    async fn m6_fault_sqlite_lock_wait_does_not_block_the_async_runtime() {
         use std::sync::{Arc, Barrier};
         use std::time::Duration;
 
@@ -1557,6 +1728,7 @@ mod tests {
                 ..RateLimitConfig::default()
             },
             cors: CorsConfig::default(),
+            account_ai_limits: AccountAiLimiter::default(),
             ai: mpgs_ai::AiGateway::disabled(),
             embedding: test_embedding(),
         });
@@ -1649,32 +1821,54 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn m6_soak_repeated_reads_stay_healthy() {
-        let app = test_app();
-        for i in 0..80 {
-            let uri = match i % 4 {
-                0 => "/health/live",
-                1 => "/health/ready",
-                2 => "/v1/meta",
-                _ => "/v1/feeds/classic_legacy?limit=5",
-            };
-            let response = app
-                .clone()
-                .oneshot(
-                    Request::builder()
-                        .uri(uri)
-                        .header("x-device-id", "m6-soak-device")
-                        .body(Body::empty())
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(
-                response.status(),
-                StatusCode::OK,
-                "request {i} to {uri} must remain healthy"
-            );
+    async fn m6_soak_concurrent_reads_stay_healthy_for_bounded_window() {
+        let (_, app) = test_repo_and_app(RateLimitConfig {
+            enabled: false,
+            ..RateLimitConfig::default()
+        });
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut workers = Vec::new();
+        for worker in 0..4 {
+            let app = app.clone();
+            workers.push(tokio::spawn(async move {
+                let mut completed = 0usize;
+                while tokio::time::Instant::now() < deadline {
+                    let uri = match completed % 4 {
+                        0 => "/health/live",
+                        1 => "/health/ready",
+                        2 => "/v1/meta",
+                        _ => "/v1/feeds/classic_legacy?limit=5",
+                    };
+                    let response = app
+                        .clone()
+                        .oneshot(
+                            Request::builder()
+                                .uri(uri)
+                                .header("x-device-id", format!("m6-soak-{worker}"))
+                                .body(Body::empty())
+                                .unwrap(),
+                        )
+                        .await
+                        .unwrap();
+                    assert_eq!(
+                        response.status(),
+                        StatusCode::OK,
+                        "worker {worker} request {completed} to {uri} must remain healthy"
+                    );
+                    completed += 1;
+                }
+                completed
+            }));
         }
+
+        let mut completed = 0usize;
+        for worker in workers {
+            completed += worker.await.unwrap();
+        }
+        assert!(
+            completed >= 160,
+            "bounded soak completed only {completed} requests"
+        );
     }
 
     #[tokio::test]

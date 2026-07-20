@@ -5,9 +5,11 @@
 
 #![forbid(unsafe_code)]
 
+pub mod accounts;
 pub mod backup;
 pub mod catalog;
 pub mod clock;
+pub mod community;
 pub mod curation;
 pub mod db;
 pub mod error;

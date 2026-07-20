@@ -22,12 +22,13 @@ pub mod store;
 pub mod store_search;
 
 pub use app_list::{
-    ADAPTER_VERSION as APP_LIST_ADAPTER_VERSION, AppListPage, AppListRequest, apply_page_to_cursor,
-    collect_pages, parse_app_list_page,
+    ADAPTER_VERSION as APP_LIST_ADAPTER_VERSION, AppListPage, AppListRequest,
+    DEFAULT_MAX_RESULTS as APP_LIST_MAX_RESULTS, SOURCE_NAME as APP_LIST_SOURCE_NAME,
+    apply_page_to_cursor, collect_pages, parse_app_list_page,
 };
 pub use ccu::{
     ADAPTER_VERSION as CCU_ADAPTER_VERSION, CcuRequest, CcuSampleTier,
-    SOURCE_NAME as CCU_SOURCE_NAME, parse_ccu,
+    SOURCE_NAME as CCU_SOURCE_NAME, http_not_found_proposal, parse_ccu,
 };
 pub use cursor::AppListCursor;
 pub use error::SourceError;
@@ -37,15 +38,15 @@ pub use golden::{
 };
 pub use hash::{content_hash, parameter_hash};
 pub use proposal::{
-    AppCatalogProposal, AppRelationProposal, AppTypeProposal, CcuProposal, RelationTypeProposal,
-    ReleaseStateProposal, ReviewSummaryProposal, SourceStability, StoreDetailsProposal,
-    StorePriceProposal,
+    AppCatalogProposal, AppRelationProposal, AppTypeProposal, CcuProposal, PopularReviewProposal,
+    PopularReviewsProposal, RelationTypeProposal, ReleaseStateProposal, ReviewSummaryProposal,
+    SourceStability, StoreDetailsProposal, StorePriceProposal,
 };
 pub use rate_limit::{DailyBudget, TokenBucket};
 pub use raw::RawResponse;
 pub use reviews::{
     ADAPTER_VERSION as REVIEWS_ADAPTER_VERSION, ReviewSummaryRequest,
-    SOURCE_NAME as REVIEWS_SOURCE_NAME, parse_review_summary,
+    SOURCE_NAME as REVIEWS_SOURCE_NAME, parse_popular_reviews, parse_review_summary,
 };
 pub use store::{
     ADAPTER_VERSION as STORE_ADAPTER_VERSION, DEFAULT_STORE_COUNTRY, DEFAULT_STORE_LANGUAGE,

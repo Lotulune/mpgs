@@ -85,6 +85,37 @@ pub fn ensure_app_stub(
     )
 }
 
+/// Preserve the localized store identity returned by a store-details request.
+///
+/// A response may omit either field transiently, so an incomplete refresh must
+/// not erase the last usable localized summary.
+pub fn upsert_app_localization(
+    conn: &Connection,
+    app_id: u32,
+    language: &str,
+    name: Option<&str>,
+    short_description: Option<&str>,
+    source: &str,
+    now_ms: i64,
+) -> StorageResult<()> {
+    if name.is_none() && short_description.is_none() {
+        return Ok(());
+    }
+    ensure_app_stub(conn, app_id, &format!("app-{app_id}"), now_ms)?;
+    conn.execute(
+        "INSERT INTO app_localizations (
+             app_id, language, name, short_description, source, updated_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(app_id, language) DO UPDATE SET
+             name = COALESCE(excluded.name, app_localizations.name),
+             short_description = COALESCE(excluded.short_description, app_localizations.short_description),
+             source = excluded.source,
+             updated_at_ms = excluded.updated_at_ms",
+        params![app_id, language, name, short_description, source, now_ms],
+    )?;
+    Ok(())
+}
+
 pub fn upsert_relation(
     conn: &Connection,
     source_app_id: u32,
@@ -212,6 +243,40 @@ pub fn upsert_app_availability(
         ],
     )?;
     Ok(())
+}
+
+pub fn restore_empty_availability_from_evidence(
+    conn: &Connection,
+    now_ms: i64,
+) -> StorageResult<usize> {
+    let mut restored = 0_usize;
+    for (column, feature) in [
+        ("platforms_json", "platforms"),
+        ("languages_json", "languages"),
+    ] {
+        let sql = format!(
+            "UPDATE app_availability AS availability
+             SET {column} = (
+                     SELECT evidence.value_json
+                     FROM feature_evidence evidence
+                     WHERE evidence.app_id = availability.app_id
+                       AND evidence.feature_name = ?1
+                       AND evidence.value_json <> '[]'
+                     ORDER BY evidence.observed_at_ms DESC, evidence.evidence_id DESC
+                     LIMIT 1
+                 ),
+                 updated_at_ms = ?2
+             WHERE {column} = '[]'
+               AND EXISTS (
+                   SELECT 1 FROM feature_evidence evidence
+                   WHERE evidence.app_id = availability.app_id
+                     AND evidence.feature_name = ?1
+                     AND evidence.value_json <> '[]'
+               )"
+        );
+        restored += conn.execute(&sql, params![feature, now_ms])?;
+    }
+    Ok(restored)
 }
 
 pub fn set_availability_integer_field(

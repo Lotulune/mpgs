@@ -5,11 +5,12 @@ mod mmr;
 mod personalize;
 mod pipeline;
 
-use mpgs_domain::{FeedSection, MultiplayerSignals, RankingSignals};
+use mpgs_domain::{FeedSection, RankingSignals};
 use serde::{Deserialize, Serialize};
 
 pub use explain::{Explanation, explain};
 pub use mmr::mmr_rerank;
+pub use mpgs_domain::friend_fit;
 pub use personalize::{apply_personalization, hard_filter};
 pub use pipeline::{RankedCandidate, RankingInput, rank_feed, rank_feed_configured};
 
@@ -47,25 +48,6 @@ pub fn score(
         personalized_score,
         final_score,
     }
-}
-
-pub fn friend_fit(signals: &MultiplayerSignals) -> f64 {
-    let base = 0.22 * unit(signals.private_session)
-        + 0.20 * unit(signals.self_host_or_dedicated)
-        + 0.18 * unit(signals.online_coop)
-        + 0.15 * unit(signals.group_size_fit)
-        + 0.10 * unit(signals.low_public_population_dependency)
-        + 0.08 * unit(signals.drop_in_out)
-        + 0.07 * unit(signals.cross_platform_fit);
-
-    let penalty = 0.18 * unit(signals.matchmaking_core)
-        + 0.15 * unit(signals.public_world_dependency)
-        + 0.10 * unit(signals.group_size_mismatch)
-        + 0.08 * unit(signals.service_shutdown_risk)
-        + 0.06 * unit(signals.external_account_friction)
-        + 0.05 * unit(signals.platform_or_anticheat_restriction);
-
-    unit(base - penalty)
 }
 
 pub fn section_score(section: FeedSection, signals: &RankingSignals, friend_fit: f64) -> f64 {

@@ -1,17 +1,26 @@
-// Feed loading hook: first page via ETag/offline cache, cursor pagination,
-// stale/offline surfacing. State is kept per section and reset on section change.
+// Feed loading hook: page-based navigation with offline cache for first page,
+// stale/offline surfacing. State resets when section changes.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError } from "../api/client";
-import type { FeedItem, FeedResponse, FeedSection } from "../api/types";
+import type {
+  FeedItem,
+  FeedResponse,
+  FeedSection,
+  FeedSort,
+  FeedSortOrder,
+} from "../api/types";
 import { apiClient } from "./runtime";
+
+export const FEED_PAGE_SIZE = 12;
 
 export interface FeedState {
   items: FeedItem[];
   loading: boolean;
-  loadingMore: boolean;
   error: ApiError | null;
-  nextCursor: string | null;
+  page: number;
+  total: number;
+  totalPages: number;
   dataUpdatedAtMs: number | null;
   fromOfflineCache: boolean;
   algorithmVersion: string | null;
@@ -20,9 +29,10 @@ export interface FeedState {
 const INITIAL: FeedState = {
   items: [],
   loading: true,
-  loadingMore: false,
   error: null,
-  nextCursor: null,
+  page: 1,
+  total: 0,
+  totalPages: 0,
   dataUpdatedAtMs: null,
   fromOfflineCache: false,
   algorithmVersion: null,
@@ -38,72 +48,83 @@ function toApiError(error: unknown): ApiError {
       });
 }
 
-export function useFeed(section: FeedSection): FeedState & {
+export function defaultOrderForSort(sort: FeedSort, section: FeedSection): FeedSortOrder {
+  if (sort === "release_date") {
+    return section === "upcoming" || section === "recent_release" ? "asc" : "desc";
+  }
+  return "desc";
+}
+
+export function useFeed(
+  section: FeedSection,
+  sort: FeedSort = "recommended",
+  order?: FeedSortOrder,
+): FeedState & {
   reload: () => void;
-  loadMore: () => void;
+  goToPage: (page: number) => void;
 } {
   const [state, setState] = useState<FeedState>(INITIAL);
+  const [page, setPage] = useState(1);
   const generation = useRef(0);
-  const stateRef = useRef(state);
-  stateRef.current = state;
+  const resolvedOrder = order ?? defaultOrderForSort(sort, section);
 
-  const load = useCallback(() => {
-    const gen = generation.current + 1;
-    generation.current = gen;
-    setState({ ...INITIAL, loading: true });
-    apiClient
-      .feed(section, { limit: 20 })
-      .then((result) => {
-        if (generation.current !== gen) return;
-        const data: FeedResponse = result.data;
-        setState({
-          items: data.items,
-          loading: false,
-          loadingMore: false,
-          error: null,
-          nextCursor: data.next_cursor,
-          dataUpdatedAtMs: data.data_updated_at_ms,
-          fromOfflineCache: result.fromOfflineCache,
-          algorithmVersion: data.algorithm_version,
+  const load = useCallback(
+    (targetPage: number) => {
+      const gen = generation.current + 1;
+      generation.current = gen;
+      setState((prev) => ({ ...INITIAL, loading: true, page: targetPage, total: prev.total, totalPages: prev.totalPages }));
+      apiClient
+        .feed(section, {
+          limit: FEED_PAGE_SIZE,
+          page: targetPage,
+          sort,
+          order: resolvedOrder,
+        })
+        .then((result) => {
+          if (generation.current !== gen) return;
+          const data: FeedResponse = result.data;
+          setState({
+            items: data.items,
+            loading: false,
+            error: null,
+            page: data.page ?? targetPage,
+            total: data.total ?? data.items.length,
+            totalPages: data.total_pages ?? (data.items.length > 0 ? 1 : 0),
+            dataUpdatedAtMs: data.data_updated_at_ms,
+            fromOfflineCache: result.fromOfflineCache,
+            algorithmVersion: data.algorithm_version,
+          });
+        })
+        .catch((error: unknown) => {
+          if (generation.current !== gen) return;
+          setState((prev) => ({
+            ...prev,
+            loading: false,
+            error: toApiError(error),
+            page: targetPage,
+          }));
         });
-      })
-      .catch((error: unknown) => {
-        if (generation.current !== gen) return;
-        setState((prev) => ({ ...prev, loading: false, error: toApiError(error) }));
-      });
-  }, [section]);
+    },
+    [section, sort, resolvedOrder],
+  );
 
   useEffect(() => {
-    load();
+    setPage(1);
+    load(1);
   }, [load]);
 
-  const loadMore = useCallback(() => {
-    const current = stateRef.current;
-    if (!current.nextCursor || current.loadingMore) return;
-    const cursor = current.nextCursor;
-    const gen = generation.current;
-    setState((prev) => ({ ...prev, loadingMore: true }));
-    apiClient
-      .feed(section, { limit: 20, cursor })
-      .then((result) => {
-        if (generation.current !== gen) return;
-        setState((cur) => ({
-          ...cur,
-          items: [...cur.items, ...result.data.items],
-          nextCursor: result.data.next_cursor,
-          loadingMore: false,
-        }));
-      })
-      .catch((error: unknown) => {
-        if (generation.current !== gen) return;
-        // A stale cursor means the snapshot moved; restart from a fresh first page.
-        if (error instanceof ApiError && error.code === "cursor_stale") {
-          load();
-          return;
-        }
-        setState((cur) => ({ ...cur, loadingMore: false }));
-      });
-  }, [section, load]);
+  const goToPage = useCallback(
+    (targetPage: number) => {
+      if (targetPage < 1) return;
+      setPage(targetPage);
+      load(targetPage);
+    },
+    [load],
+  );
 
-  return { ...state, reload: load, loadMore };
+  const reload = useCallback(() => {
+    load(page);
+  }, [load, page]);
+
+  return { ...state, reload, goToPage };
 }

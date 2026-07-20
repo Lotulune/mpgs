@@ -14,3 +14,8 @@ dist/
 *.sqlite-wal
 /data/
 /logs/
+deploy/mpgs.env
+deploy/.env
+local-release.*
+**/__pycache__/
+*.pyc

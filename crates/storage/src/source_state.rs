@@ -1,6 +1,7 @@
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::error::{StorageError, StorageResult};
+use crate::models::DataRefreshStatus;
 
 pub fn load_cursor(conn: &Connection, cursor_key: &str) -> StorageResult<Option<String>> {
     conn.query_row(
@@ -57,6 +58,20 @@ pub fn start_run(
             return Err(StorageError::validation(format!("{label} is required")));
         }
     }
+    // A process killed or replaced mid-run cannot finalize its audit row. Do
+    // not leave such historical rows looking perpetually active forever.
+    // Only one invocation of a given source/task is supported at a time.
+    conn.execute(
+        "UPDATE source_runs SET
+             status = 'failed', finished_at_ms = ?1,
+             error_category = COALESCE(error_category, 'interrupted'),
+             notes = CASE
+                 WHEN notes IS NULL OR TRIM(notes) = '' THEN 'superseded by a newer run'
+                 ELSE notes || '; superseded by a newer run'
+             END
+         WHERE source = ?2 AND task_type = ?3 AND status = 'running'",
+        params![now_ms, source, task_type],
+    )?;
     conn.execute(
         "INSERT INTO source_runs (
             source, task_type, status, started_at_ms, parser_version, notes
@@ -108,4 +123,89 @@ pub fn finish_run(
         )));
     }
     Ok(())
+}
+
+pub fn ensure_data_refresh_tasks(conn: &Connection, now_ms: i64) -> StorageResult<()> {
+    for task_name in [
+        "catalog_sync",
+        "candidate_collection",
+        "enrichment",
+        "quality_check",
+        "retrieval_sync",
+    ] {
+        conn.execute(
+            "INSERT OR IGNORE INTO data_refresh_state (
+                task_name, last_success_at_ms, next_run_at_ms, last_error_category,
+                cursor_value, coverage_ratio, updated_at_ms
+             ) VALUES (?1, NULL, ?2, NULL, NULL, NULL, ?2)",
+            params![task_name, now_ms],
+        )?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn update_data_refresh_status(
+    conn: &Connection,
+    task_name: &str,
+    last_success_at_ms: Option<i64>,
+    next_run_at_ms: Option<i64>,
+    last_error_category: Option<&str>,
+    cursor_value: Option<&str>,
+    coverage_ratio: Option<f64>,
+    now_ms: i64,
+) -> StorageResult<()> {
+    if task_name.trim().is_empty() || task_name.len() > 80 {
+        return Err(StorageError::validation(
+            "data refresh task name is invalid",
+        ));
+    }
+    if let Some(ratio) = coverage_ratio
+        && (!ratio.is_finite() || !(0.0..=1.0).contains(&ratio))
+    {
+        return Err(StorageError::validation("data coverage ratio is invalid"));
+    }
+    conn.execute(
+        "INSERT INTO data_refresh_state (
+            task_name, last_success_at_ms, next_run_at_ms, last_error_category,
+            cursor_value, coverage_ratio, updated_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(task_name) DO UPDATE SET
+            last_success_at_ms = excluded.last_success_at_ms,
+            next_run_at_ms = excluded.next_run_at_ms,
+            last_error_category = excluded.last_error_category,
+            cursor_value = excluded.cursor_value,
+            coverage_ratio = excluded.coverage_ratio,
+            updated_at_ms = excluded.updated_at_ms",
+        params![
+            task_name,
+            last_success_at_ms,
+            next_run_at_ms,
+            last_error_category,
+            cursor_value,
+            coverage_ratio,
+            now_ms
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn data_refresh_status(conn: &Connection) -> StorageResult<Vec<DataRefreshStatus>> {
+    let mut statement = conn.prepare(
+        "SELECT task_name, last_success_at_ms, next_run_at_ms, last_error_category,
+                cursor_value, coverage_ratio, updated_at_ms
+         FROM data_refresh_state ORDER BY task_name",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok(DataRefreshStatus {
+            task_name: row.get(0)?,
+            last_success_at_ms: row.get(1)?,
+            next_run_at_ms: row.get(2)?,
+            last_error_category: row.get(3)?,
+            cursor_value: row.get(4)?,
+            coverage_ratio: row.get(5)?,
+            updated_at_ms: row.get(6)?,
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }

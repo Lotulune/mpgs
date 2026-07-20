@@ -3,6 +3,7 @@ import { ApiError } from "../api/client";
 import type { NaturalLanguageRecommendationResponse } from "../api/types";
 import { formatAgo, isStale } from "../app/format";
 import { apiClient, feedbackQueue } from "../app/runtime";
+import { loadLocalCustomAiSettings } from "../app/localAiSettings";
 import { GameCard } from "./GameCard";
 
 const EXAMPLES = ["4 人合作，单局一小时以内", "想找能自建服务器的长期联机游戏", "两个人轻松玩，不要太竞技"];
@@ -20,7 +21,22 @@ export function NaturalLanguageScreen({ onOpenGame }: { onOpenGame: (appId: numb
     setLoading(true);
     setError(null);
     try {
-      setResult(await apiClient.naturalLanguageRecommendations(text));
+      const userId = apiClient.sessionUserId();
+      const custom = userId ? await loadLocalCustomAiSettings(userId) : null;
+      setResult(
+        await apiClient.naturalLanguageRecommendations(
+          text,
+          6,
+          custom
+            ? {
+                provider: "openai_compat",
+                baseUrl: custom.baseUrl,
+                model: custom.model,
+                apiKey: custom.apiKey,
+              }
+            : undefined,
+        ),
+      );
     } catch (cause) {
       setError(
         cause instanceof ApiError
@@ -91,6 +107,12 @@ export function NaturalLanguageScreen({ onOpenGame }: { onOpenGame: (appId: numb
                 AI 未启用
               </span>
             )}
+            {result.ai_provider && result.ai_provider !== "disabled" && (
+              <span className="chip">Provider: {result.ai_provider}</span>
+            )}
+            {result.ai_latency_ms !== undefined && (
+              <span className="chip">AI 阶段 {result.ai_latency_ms} ms</span>
+            )}
             {result.interpreted.party_size !== null && <span className="chip">{result.interpreted.party_size} 人</span>}
             {result.interpreted.session_minutes_max !== null && <span className="chip">最长 {result.interpreted.session_minutes_max} 分钟</span>}
             {result.interpreted.coop_competitive !== null && (
@@ -110,6 +132,10 @@ export function NaturalLanguageScreen({ onOpenGame }: { onOpenGame: (appId: numb
                 "当前由确定性规则理解输入；无法识别的条件不会被伪造成已理解。"}
             </p>
           )}
+          {(result.ai_status === "used" || result.ai_status === "cached") &&
+            result.fallback_reason && (
+              <p className="cal-note">{result.fallback_reason}</p>
+            )}
           {(result.ai_status === "used" || result.ai_status === "cached") && result.ai_summary && (
             <p
               className="cal-note"
