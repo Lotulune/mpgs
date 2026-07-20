@@ -417,10 +417,7 @@ pub struct UpsertGameAiSummary {
     pub expires_at_ms: i64,
 }
 
-pub fn upsert_game_ai_summary(
-    conn: &Connection,
-    row: &UpsertGameAiSummary,
-) -> StorageResult<()> {
+pub fn upsert_game_ai_summary(conn: &Connection, row: &UpsertGameAiSummary) -> StorageResult<()> {
     match row.review_status.as_str() {
         "pending_review" | "accepted" | "rejected" => {}
         _ => {

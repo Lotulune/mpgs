@@ -33,7 +33,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
     init_tracing();
-    let state = build_state()?;
+    let state = build_state().await?;
     scheduler::spawn(state.repo.clone());
     let address: SocketAddr = env::var("MPGS_BIND_ADDR")
         .unwrap_or_else(|_| DEFAULT_BIND_ADDR.to_owned())
@@ -60,7 +60,7 @@ fn build_info() -> Value {
     })
 }
 
-fn build_state() -> Result<AppState, Box<dyn Error>> {
+async fn build_state() -> Result<AppState, Box<dyn Error>> {
     let admin_token = env::var("MPGS_ADMIN_TOKEN").ok().filter(|s| !s.is_empty());
     let demo_seed = demo_seed_enabled()?;
     let repo = match env::var("MPGS_DATABASE_PATH") {
@@ -120,6 +120,18 @@ fn build_state() -> Result<AppState, Box<dyn Error>> {
         available = task_router.is_available(),
         "AI task router ready"
     );
+    if task_router.is_available() {
+        match task_router.refresh_model_registry().await {
+            Ok(count) => info!(
+                models = count,
+                "AI model registry refreshed from /v1/models"
+            ),
+            Err(error) => tracing::warn!(
+                error = %error,
+                "AI model registry refresh skipped; routes stay optimistically open"
+            ),
+        }
+    }
     info!(
         provider = embedding.name(),
         available = embedding.is_available(),

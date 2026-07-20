@@ -391,11 +391,8 @@ impl AiProvider for OpenAiCompatProvider {
             protocol: Some(protocol),
         })
     }
-}
 
-impl OpenAiCompatProvider {
-    /// Discover models from `GET /v1/models` without logging secrets or bodies.
-    pub async fn list_models(&self) -> Result<Vec<ModelCapabilities>, AiError> {
+    async fn list_models(&self) -> Result<Vec<ModelCapabilities>, AiError> {
         let url = format!("{}/models", self.base_url);
         let response = self
             .client

@@ -26,7 +26,10 @@ pub struct SectionBlock {
 }
 
 impl GameAiSummary {
-    pub fn validate_evidence(&self, allowed: &std::collections::HashSet<String>) -> Result<(), AiError> {
+    pub fn validate_evidence(
+        &self,
+        allowed: &std::collections::HashSet<String>,
+    ) -> Result<(), AiError> {
         for (name, block) in self.sections() {
             if !(0.0..=1.0).contains(&block.confidence) {
                 return Err(AiError::InvalidOutput(format!(
@@ -39,9 +42,7 @@ impl GameAiSummary {
                 )));
             }
             // Concrete claims require evidence, except the explicit unknowns list.
-            if name != "unknowns"
-                && !block.text.trim().is_empty()
-                && block.evidence_ids.is_empty()
+            if name != "unknowns" && !block.text.trim().is_empty() && block.evidence_ids.is_empty()
             {
                 return Err(AiError::InvalidOutput(format!(
                     "summary.{name} requires evidence_ids"

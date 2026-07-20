@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use crate::error::AiError;
 use crate::types::{
-    ApiProtocol, Embedding, EmbeddingInput, ProviderCapabilities, StructuredRequest,
-    StructuredResponse,
+    ApiProtocol, Embedding, EmbeddingInput, ModelCapabilities, ProviderCapabilities,
+    StructuredRequest, StructuredResponse,
 };
 
 #[async_trait]
@@ -21,6 +21,14 @@ pub trait AiProvider: Send + Sync {
         &self,
         request: StructuredRequest,
     ) -> Result<StructuredResponse, AiError>;
+
+    /// Discover upstream models (`GET /v1/models`). Default: not supported.
+    async fn list_models(&self) -> Result<Vec<ModelCapabilities>, AiError> {
+        Err(AiError::Config(format!(
+            "provider '{}' does not support model discovery",
+            self.name()
+        )))
+    }
 }
 
 #[async_trait]

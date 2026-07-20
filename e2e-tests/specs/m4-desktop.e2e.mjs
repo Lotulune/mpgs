@@ -3,7 +3,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { stopSeedServer } from "../support/runtime.mjs";
 
-const FEEDS = ["最近发售", "即将发售 / Demo", "人气老游", "经典老游"];
+// Keep labels in sync with web/src/app/format.ts SECTION_META.
+const FEEDS = ["近期正式发售", "即将发售 / Demo", "人气老游", "老牌联机"];
 const packageDir = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const artifactDir = path.resolve(
   process.env.MPGS_E2E_ARTIFACT_DIR ?? path.join(packageDir, "artifacts"),
@@ -113,7 +114,8 @@ describe("M4 native desktop journey", () => {
     const input = await $("#nl-input");
     await input.setValue("4 人合作，单局一小时以内，不要太竞技");
     await (await exactButton("推荐")).click();
-    await expectVisibleText("规则解析模式");
+    // AI is disabled in E2E seed mode — UI surfaces deterministic fallback chips.
+    await expectVisibleText("确定性回退");
     await waitForFeed();
     await expectVisibleText("当前由确定性规则理解输入");
   });
@@ -132,7 +134,7 @@ describe("M4 native desktop journey", () => {
   });
 
   it("refreshes ranking after acknowledged feedback", async () => {
-    await clickTab("最近发售");
+    await clickTab("近期正式发售");
     await waitForFeed();
     const before = await cardNames();
     const firstCard = (await $$("article.card"))[0];
@@ -156,7 +158,7 @@ describe("M4 native desktop journey", () => {
   });
 
   it("serves a cached snapshot with data time after the server goes offline", async () => {
-    await clickTab("经典老游");
+    await clickTab("老牌联机");
     await waitForFeed();
     await expectVisibleText("数据更新于");
 

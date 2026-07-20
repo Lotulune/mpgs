@@ -1415,13 +1415,7 @@ impl Repository {
     ) -> StorageResult<i64> {
         let now = self.db.now_ms();
         self.db.with_conn_mut(|conn| {
-            crate::ai_m8::enqueue_web_discovery_job(
-                conn,
-                app_id,
-                game_name,
-                missing_features,
-                now,
-            )
+            crate::ai_m8::enqueue_web_discovery_job(conn, app_id, game_name, missing_features, now)
         })
     }
 }

@@ -27,29 +27,21 @@ pub mod validate;
 pub mod vector;
 pub mod web_discovery;
 
-pub use error::AiError;
-pub use gateway::{AiGateway, AiPolicy};
-pub use host_limit::{HostLimitConfig, HostLimiter, HostPermit};
 pub use compare::{
     COMPARE_COLUMNS, COMPARE_PROMPT_VERSION, CompareExplanation, compare_schema,
     compare_system_prompt, parse_compare_explanation,
 };
+pub use error::AiError;
+pub use gateway::{AiGateway, AiPolicy};
 pub use group_advice::{
     AppVoteCount, GROUP_ADVICE_PROMPT_VERSION, GroupAdviceRequest, GroupAdviceResult,
-    deterministic_group_advice, group_advice_schema, group_advice_system_prompt, parse_group_advice,
+    deterministic_group_advice, group_advice_schema, group_advice_system_prompt,
+    parse_group_advice,
 };
+pub use host_limit::{HostLimitConfig, HostLimiter, HostPermit};
 pub use intent::{
     INTENT_PROMPT_VERSION, RuleIntentBaseline, StructuredIntent, merge_intent_with_rules,
     parse_structured_intent,
-};
-pub use summary::{
-    SUMMARY_PROMPT_VERSION, GameAiSummary, game_summary_schema, game_summary_system_prompt,
-    parse_game_summary, rule_game_summary,
-};
-pub use web_discovery::{
-    DisabledWebSearchProvider, FakeWebSearchProvider, SourceTier, SourceWhitelist, WebSearchHit,
-    WebSearchProvider, WebSearchQuery, discovery_query_for_app, host_from_url,
-    normalize_search_hits, web_content_hash,
 };
 pub use model_registry::{
     ModelRegistry, apply_canary_result, capabilities_from_model_ids, parse_models_list,
@@ -66,10 +58,19 @@ pub use provider::{
 pub use route::{DEFAULT_ROUTE_VERSION, default_task_routes, task_routes_from_env};
 pub use router::{RouterPolicy, TaskRouter};
 pub use sanitize::{sanitize_untrusted_text, wrap_untrusted_data_block};
+pub use summary::{
+    GameAiSummary, SUMMARY_PROMPT_VERSION, game_summary_schema, game_summary_system_prompt,
+    parse_game_summary, rule_game_summary,
+};
 pub use types::*;
 pub use validate::{CandidateEvidence, validate_rank_result};
 pub use vector::{
     cosine_similarity, decode_f32_le, encode_f32_le, l2_normalize, reciprocal_rank_fusion,
+};
+pub use web_discovery::{
+    DisabledWebSearchProvider, FakeWebSearchProvider, SourceTier, SourceWhitelist, WebSearchHit,
+    WebSearchProvider, WebSearchQuery, discovery_query_for_app, host_from_url,
+    normalize_search_hits, web_content_hash,
 };
 
 pub const RANK_PROMPT_VERSION: &str = "rank-v5";

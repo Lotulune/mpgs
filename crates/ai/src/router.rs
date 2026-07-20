@@ -133,6 +133,15 @@ impl TaskRouter {
             .unwrap_or(crate::route::DEFAULT_ROUTE_VERSION)
     }
 
+    /// Refresh model availability from the upstream provider (`/v1/models`).
+    pub async fn refresh_model_registry(&self) -> Result<usize, AiError> {
+        let models = self.provider.list_models().await?;
+        let count = models.len();
+        self.registry
+            .replace_models(models, std::time::Duration::from_secs(300));
+        Ok(count)
+    }
+
     /// Execute a structured completion for `request.task`, walking the model chain.
     pub async fn structured_completion(
         &self,

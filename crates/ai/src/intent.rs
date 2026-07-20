@@ -183,14 +183,8 @@ pub fn merge_intent_with_rules(
     // Soft modes from coop/competitive rule signal.
     if let Some(coop) = rules.coop_competitive {
         if coop < 0.45 {
-            push_unique(
-                &mut merged.modes_preferred,
-                "private_coop".into(),
-            );
-            push_unique(
-                &mut merged.modes_excluded,
-                "matchmaking_competitive".into(),
-            );
+            push_unique(&mut merged.modes_preferred, "private_coop".into());
+            push_unique(&mut merged.modes_excluded, "matchmaking_competitive".into());
         } else if coop > 0.65 {
             push_unique(&mut merged.modes_preferred, "competitive".into());
         }
@@ -239,10 +233,7 @@ pub fn merge_intent_with_rules(
                 .session_minutes
                 .as_ref()
                 .is_some_and(|s| s.min.is_some() || s.max.is_some()),
-            "budget" => merged
-                .budget
-                .as_ref()
-                .is_some_and(|b| b.max_each.is_some()),
+            "budget" => merged.budget.as_ref().is_some_and(|b| b.max_each.is_some()),
             "demo_required" => merged.demo_required.is_some(),
             "self_hosting" => merged.self_hosting.is_some(),
             _ => false,

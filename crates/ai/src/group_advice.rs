@@ -67,9 +67,7 @@ pub fn parse_group_advice(
         ));
     }
     if result.conflicts.len() > 8 {
-        return Err(AiError::InvalidOutput(
-            "conflicts exceeds 8 entries".into(),
-        ));
+        return Err(AiError::InvalidOutput("conflicts exceeds 8 entries".into()));
     }
     for id in &result.evidence_ids {
         if !allowed_evidence.contains(id) {

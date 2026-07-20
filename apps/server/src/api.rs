@@ -12,14 +12,14 @@ use axum::{
 use image::{DynamicImage, ImageFormat, imageops::FilterType};
 use mpgs_ai::{
     AiError, AiGateway, AiPolicy, AiRankResult, AiStatus, AiTaskType, AppVoteCount,
-    CandidateEvidence, COMPARE_PROMPT_VERSION, DEFAULT_ROUTE_VERSION, EmbeddingInput,
+    COMPARE_PROMPT_VERSION, CandidateEvidence, DEFAULT_ROUTE_VERSION, EmbeddingInput,
     EmbeddingProvider, GroupAdviceRequest as AiGroupAdviceRequest, OpenAiCompatProvider,
     RANK_PROMPT_VERSION, RuleIntentBaseline, SUMMARY_PROMPT_VERSION, StructuredRequest, TaskRouter,
     compare_schema, compare_system_prompt, deterministic_group_advice, group_advice_schema,
     group_advice_system_prompt, intent_parse_schema, intent_parse_system_prompt,
-    merge_intent_with_rules, parse_compare_explanation, parse_group_advice, parse_structured_intent,
-    rank_analysis_schema, rank_analysis_system_prompt, rule_game_summary, validate_rank_result,
-    wrap_untrusted_data_block,
+    merge_intent_with_rules, parse_compare_explanation, parse_group_advice,
+    parse_structured_intent, rank_analysis_schema, rank_analysis_system_prompt, rule_game_summary,
+    validate_rank_result, wrap_untrusted_data_block,
 };
 use mpgs_domain::{FeedSection, FeedbackType, RecommendationConfig, UserPreferences};
 use mpgs_recommender::{
@@ -3878,11 +3878,91 @@ async fn ai_search(
                 obj.insert("ai_status".into(), json!("pending"));
             }
         }
+        // Finish rank_explain in the background so the first paint never waits.
+        if body.r#async && status_for_row == "pending" {
+            let state_bg = state.clone();
+            let analysis_id_bg = analysis_id.clone();
+            let query_bg = query.clone();
+            let items_bg = payload.get("items").cloned().unwrap_or_else(|| json!([]));
+            tokio::spawn(async move {
+                enhance_progressive_analysis_in_background(
+                    state_bg,
+                    analysis_id_bg,
+                    query_bg,
+                    items_bg,
+                )
+                .await;
+            });
+        }
     } else if let Some(obj) = payload.as_object_mut() {
         obj.insert("analysis_id".into(), json!(analysis_id));
     }
 
     Json(payload).into_response()
+}
+
+async fn enhance_progressive_analysis_in_background(
+    state: Arc<AppState>,
+    analysis_id: String,
+    query: String,
+    items_value: serde_json::Value,
+) {
+    let Some(repo) = state.repo.as_ref() else {
+        return;
+    };
+    let mut items = items_value.as_array().cloned().unwrap_or_default();
+    let router = state
+        .task_router
+        .is_available()
+        .then_some(state.task_router.as_ref());
+    let (ai_status, fallback_reason, ai_summary, ai_summary_evidence_ids) =
+        enhance_natural_language_with_ai(
+            &state.ai,
+            router,
+            Some(repo),
+            "progressive",
+            &query,
+            &mut items,
+            None,
+        )
+        .await;
+    let now_ms = chrono_like_now_ms();
+    let result = json!({
+        "items": items,
+        "ai_status": ai_status.as_str(),
+        "fallback_reason": fallback_reason,
+        "ai_summary": ai_summary,
+        "ai_summary_evidence_ids": ai_summary_evidence_ids,
+        "ai_provider": state.ai.provider_name(),
+    });
+    let result_json = result.to_string();
+    let status = ai_status.as_str().to_owned();
+    let update = mpgs_storage::CompleteProgressiveAnalysis {
+        analysis_id: analysis_id.clone(),
+        status,
+        provider: Some(state.ai.provider_name().to_owned()),
+        model: None,
+        protocol: None,
+        route_version: Some(
+            state
+                .task_router
+                .route_version(AiTaskType::RankExplain)
+                .to_owned(),
+        ),
+        result_json: Some(result_json),
+        error_category: fallback_reason.as_ref().map(|_| "ai_fallback".into()),
+        fallback_reason,
+        completed_at_ms: now_ms,
+    };
+    if let Err(error) = storage_result(repo, move |repo| {
+        repo.complete_progressive_analysis(&update)
+    })
+    .await
+    {
+        tracing::warn!(%analysis_id, %error, "progressive AI enhancement persistence failed");
+    } else {
+        tracing::info!(%analysis_id, status = ai_status.as_str(), "progressive AI enhancement completed");
+    }
 }
 
 async fn get_ai_analysis(
@@ -4035,72 +4115,70 @@ async fn ai_compare(
         .filter_map(|row| row.get("app_id").and_then(|v| v.as_u64()).map(|v| v as u32))
         .collect();
 
-    let (explanation, ai_status, fallback_reason, model) =
-        if state.task_router.is_available() || state.ai.is_available() {
-            let data_prompt = format!(
-                "{}\n\n{}",
-                wrap_untrusted_data_block(
-                    "fact_matrix_json",
-                    &serde_json::to_string(&matrix).unwrap_or_else(|_| "[]".into()),
-                    12_000
-                ),
-                wrap_untrusted_data_block(
-                    "allowed_columns",
-                    r#"["party_size","platforms","price","multiplayer_mode","service_dependency","content_pacing","review_quality","data_updated_at"]"#,
-                    500
-                )
-            );
-            let request = StructuredRequest {
-                task: AiTaskType::CompareGames,
-                system_prompt: compare_system_prompt().to_owned(),
-                data_prompt,
-                json_schema_name: "compare_games".into(),
-                json_schema: compare_schema(),
-                max_output_tokens: 1_800,
-                temperature: 0.2,
-                model: None,
-                protocol: None,
-            };
-            let completion = if state.task_router.is_available() {
-                state
-                    .task_router
-                    .structured_completion(request)
-                    .await
-                    .map(|r| r.response)
-            } else {
-                state.ai.structured_completion(request).await
-            };
-            match completion {
-                Ok(response) => {
-                    match parse_compare_explanation(
-                        &response.content,
-                        &allowed_ids,
-                        &allowed_evidence,
-                    ) {
-                        Ok(expl) => (Some(expl), AiStatus::Used, None, Some(response.model)),
-                        Err(error) => (
-                            None,
-                            AiStatus::Fallback,
-                            Some(safe_ai_failure_reason(&error)),
-                            Some(response.model),
-                        ),
-                    }
-                }
-                Err(error) => (
-                    None,
-                    AiStatus::Fallback,
-                    Some(safe_ai_failure_reason(&error)),
-                    None,
-                ),
-            }
-        } else {
-            (
-                None,
-                AiStatus::Disabled,
-                Some(AiError::Disabled.fallback_reason().to_owned()),
-                None,
+    let (explanation, ai_status, fallback_reason, model) = if state.task_router.is_available()
+        || state.ai.is_available()
+    {
+        let data_prompt = format!(
+            "{}\n\n{}",
+            wrap_untrusted_data_block(
+                "fact_matrix_json",
+                &serde_json::to_string(&matrix).unwrap_or_else(|_| "[]".into()),
+                12_000
+            ),
+            wrap_untrusted_data_block(
+                "allowed_columns",
+                r#"["party_size","platforms","price","multiplayer_mode","service_dependency","content_pacing","review_quality","data_updated_at"]"#,
+                500
             )
+        );
+        let request = StructuredRequest {
+            task: AiTaskType::CompareGames,
+            system_prompt: compare_system_prompt().to_owned(),
+            data_prompt,
+            json_schema_name: "compare_games".into(),
+            json_schema: compare_schema(),
+            max_output_tokens: 1_800,
+            temperature: 0.2,
+            model: None,
+            protocol: None,
         };
+        let completion = if state.task_router.is_available() {
+            state
+                .task_router
+                .structured_completion(request)
+                .await
+                .map(|r| r.response)
+        } else {
+            state.ai.structured_completion(request).await
+        };
+        match completion {
+            Ok(response) => {
+                match parse_compare_explanation(&response.content, &allowed_ids, &allowed_evidence)
+                {
+                    Ok(expl) => (Some(expl), AiStatus::Used, None, Some(response.model)),
+                    Err(error) => (
+                        None,
+                        AiStatus::Fallback,
+                        Some(safe_ai_failure_reason(&error)),
+                        Some(response.model),
+                    ),
+                }
+            }
+            Err(error) => (
+                None,
+                AiStatus::Fallback,
+                Some(safe_ai_failure_reason(&error)),
+                None,
+            ),
+        }
+    } else {
+        (
+            None,
+            AiStatus::Disabled,
+            Some(AiError::Disabled.fallback_reason().to_owned()),
+            None,
+        )
+    };
 
     Json(json!({
         "fact_matrix": matrix,
@@ -4317,10 +4395,18 @@ async fn ai_group_advice(
                         &allowed_evidence,
                     ) {
                         Ok(parsed) => (Some(parsed), AiStatus::Used, None),
-                        Err(error) => (det, AiStatus::Fallback, Some(safe_ai_failure_reason(&error))),
+                        Err(error) => (
+                            det,
+                            AiStatus::Fallback,
+                            Some(safe_ai_failure_reason(&error)),
+                        ),
                     }
                 }
-                Err(error) => (det, AiStatus::Fallback, Some(safe_ai_failure_reason(&error))),
+                Err(error) => (
+                    det,
+                    AiStatus::Fallback,
+                    Some(safe_ai_failure_reason(&error)),
+                ),
             }
         } else {
             (
@@ -4637,9 +4723,7 @@ async fn try_ai_intent_parse(
         platforms: rules.platforms.clone(),
         session_minutes_max: rules.session_minutes_max,
         demo_required: rules.demo_only,
-        self_hosting_required: rules
-            .self_hosting_willingness
-            .is_some_and(|v| v >= 0.5),
+        self_hosting_required: rules.self_hosting_willingness.is_some_and(|v| v >= 0.5),
         coop_competitive: rules.coop_competitive,
     };
     let data_prompt = wrap_untrusted_data_block("user_query", query, 500);
