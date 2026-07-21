@@ -180,10 +180,11 @@ pub fn capabilities_from_model_ids(
             let model = id.into();
             ModelCapabilities {
                 model,
-                // Optimistic: most OpenAI-compatible gateways speak chat; Responses
-                // is enabled only after canary or successful use.
+                // Optimistic both protocols: routers try route preference order and
+                // canary / failures can disable a protocol. Grok-4.5-class models
+                // need Responses attempted even before a successful canary.
                 chat_completions: true,
-                responses: false,
+                responses: true,
                 structured_json: true,
                 tool_calling: false,
                 streaming: false,

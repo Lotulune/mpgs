@@ -13,7 +13,7 @@ use crate::error::AiError;
 use crate::types::{AiTaskType, ApiProtocol, TaskRouteConfig};
 
 /// Shared route table version. Bump when default policy changes.
-pub const DEFAULT_ROUTE_VERSION: &str = "m8-route-v2";
+pub const DEFAULT_ROUTE_VERSION: &str = "m8-route-v3";
 
 /// Build the default multi-model route table from PRD suggestions.
 ///
@@ -23,12 +23,22 @@ pub fn default_task_routes() -> HashMap<AiTaskType, TaskRouteConfig> {
     let version = DEFAULT_ROUTE_VERSION.to_owned();
     let mut routes = HashMap::new();
 
+    // Fast path stays on chat-fast; heavier tasks try grok-4.5 (Responses-first).
+    let heavy_fallbacks = vec!["grok-4.20-0309-non-reasoning".into(), "grok-4.3".into()];
+    let reasoning_fallbacks = vec![
+        "grok-4.20-0309-reasoning".into(),
+        "grok-4.20-0309-non-reasoning".into(),
+        "grok-4.3".into(),
+    ];
+    // grok-4.5 is known to prefer Responses on Grok2API / OpenAI-compatible proxies.
+    let responses_first = vec![ApiProtocol::Responses, ApiProtocol::ChatCompletions];
+
     routes.insert(
         AiTaskType::IntentParse,
         TaskRouteConfig {
             task: AiTaskType::IntentParse,
             primary_model: "grok-chat-fast".into(),
-            fallback_models: vec!["grok-4.20-0309-non-reasoning".into()],
+            fallback_models: vec!["grok-4.20-0309-non-reasoning".into(), "grok-4.5".into()],
             protocol_preference: vec![ApiProtocol::ChatCompletions, ApiProtocol::Responses],
             timeout: Duration::from_secs(8),
             max_output_tokens: 512,
@@ -41,12 +51,10 @@ pub fn default_task_routes() -> HashMap<AiTaskType, TaskRouteConfig> {
         AiTaskType::RankExplain,
         TaskRouteConfig {
             task: AiTaskType::RankExplain,
-            // Prefer the stable non-reasoning model first; keep grok-4.3 as upgrade fallback.
-            // Production logs showed 4.3 often failing under Responses-first + 20s timeout.
-            primary_model: "grok-4.20-0309-non-reasoning".into(),
-            fallback_models: vec!["grok-4.3".into()],
-            protocol_preference: vec![ApiProtocol::ChatCompletions, ApiProtocol::Responses],
-            timeout: Duration::from_secs(30),
+            primary_model: "grok-4.5".into(),
+            fallback_models: heavy_fallbacks.clone(),
+            protocol_preference: responses_first.clone(),
+            timeout: Duration::from_secs(35),
             max_output_tokens: 1_800,
             enabled: true,
             route_version: version.clone(),
@@ -57,10 +65,10 @@ pub fn default_task_routes() -> HashMap<AiTaskType, TaskRouteConfig> {
         AiTaskType::GameSummary,
         TaskRouteConfig {
             task: AiTaskType::GameSummary,
-            primary_model: "grok-4.20-0309-non-reasoning".into(),
-            fallback_models: vec!["grok-4.3".into()],
-            protocol_preference: vec![ApiProtocol::ChatCompletions, ApiProtocol::Responses],
-            timeout: Duration::from_secs(30),
+            primary_model: "grok-4.5".into(),
+            fallback_models: heavy_fallbacks.clone(),
+            protocol_preference: responses_first.clone(),
+            timeout: Duration::from_secs(35),
             max_output_tokens: 2_000,
             enabled: true,
             route_version: version.clone(),
@@ -71,10 +79,10 @@ pub fn default_task_routes() -> HashMap<AiTaskType, TaskRouteConfig> {
         AiTaskType::CompareGames,
         TaskRouteConfig {
             task: AiTaskType::CompareGames,
-            primary_model: "grok-4.20-0309-reasoning".into(),
-            fallback_models: vec!["grok-4.3".into()],
-            protocol_preference: vec![ApiProtocol::ChatCompletions, ApiProtocol::Responses],
-            timeout: Duration::from_secs(25),
+            primary_model: "grok-4.5".into(),
+            fallback_models: reasoning_fallbacks.clone(),
+            protocol_preference: responses_first.clone(),
+            timeout: Duration::from_secs(40),
             max_output_tokens: 2_400,
             enabled: true,
             route_version: version.clone(),
@@ -85,10 +93,10 @@ pub fn default_task_routes() -> HashMap<AiTaskType, TaskRouteConfig> {
         AiTaskType::GroupAdvice,
         TaskRouteConfig {
             task: AiTaskType::GroupAdvice,
-            primary_model: "grok-4.20-0309-reasoning".into(),
-            fallback_models: vec!["grok-4.3".into()],
-            protocol_preference: vec![ApiProtocol::ChatCompletions, ApiProtocol::Responses],
-            timeout: Duration::from_secs(25),
+            primary_model: "grok-4.5".into(),
+            fallback_models: reasoning_fallbacks,
+            protocol_preference: responses_first.clone(),
+            timeout: Duration::from_secs(40),
             max_output_tokens: 2_000,
             enabled: true,
             route_version: version.clone(),
@@ -100,7 +108,7 @@ pub fn default_task_routes() -> HashMap<AiTaskType, TaskRouteConfig> {
         TaskRouteConfig {
             task: AiTaskType::DataQuality,
             primary_model: "grok-4.20-0309-non-reasoning".into(),
-            fallback_models: vec![],
+            fallback_models: vec!["grok-4.5".into()],
             protocol_preference: vec![ApiProtocol::ChatCompletions, ApiProtocol::Responses],
             timeout: Duration::from_secs(20),
             max_output_tokens: 1_200,
@@ -223,9 +231,16 @@ mod tests {
         assert!(routes.contains_key(&AiTaskType::DataQuality));
 
         let rank = routes.get(&AiTaskType::RankExplain).unwrap();
-        assert_eq!(rank.primary_model, "grok-4.20-0309-non-reasoning");
-        assert!(rank.fallback_models.iter().any(|m| m == "grok-4.3"));
-        assert_eq!(rank.protocol_preference[0], ApiProtocol::ChatCompletions);
+        assert_eq!(rank.primary_model, "grok-4.5");
+        assert!(
+            rank.fallback_models
+                .iter()
+                .any(|m| m == "grok-4.20-0309-non-reasoning")
+        );
+        assert_eq!(rank.protocol_preference[0], ApiProtocol::Responses);
+        let compare = routes.get(&AiTaskType::CompareGames).unwrap();
+        assert_eq!(compare.primary_model, "grok-4.5");
+        assert_eq!(compare.protocol_preference[0], ApiProtocol::Responses);
     }
 
     #[test]

@@ -517,6 +517,65 @@ mod tests {
         };
         let registry = Arc::new(ModelRegistry::new());
         registry.seed(capabilities_from_model_ids([
+            "grok-4.5",
+            "grok-4.3",
+            "grok-4.20-0309-non-reasoning",
+        ]));
+        let router = TaskRouter::new(
+            Arc::new(provider),
+            default_task_routes(),
+            registry,
+            RouterPolicy::default(),
+        );
+        let result = router
+            .structured_completion(base_request(AiTaskType::RankExplain))
+            .await
+            .unwrap();
+        assert_eq!(result.response.model, "grok-4.5");
+        assert!(!result.used_fallback);
+        assert_eq!(result.attempted_models, vec!["grok-4.5".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn router_skips_missing_primary_and_uses_fallback() {
+        let provider = FakeProvider {
+            response: json!({"ok": true}),
+            ..FakeProvider::default()
+        };
+        let registry = Arc::new(ModelRegistry::new());
+        // Primary grok-4.5 is absent from discovery.
+        registry.seed(capabilities_from_model_ids([
+            "grok-4.20-0309-non-reasoning",
+            "grok-4.3",
+        ]));
+        let router = TaskRouter::new(
+            Arc::new(provider),
+            default_task_routes(),
+            registry,
+            RouterPolicy::default(),
+        );
+        let result = router
+            .structured_completion(base_request(AiTaskType::RankExplain))
+            .await
+            .unwrap();
+        assert_eq!(result.response.model, "grok-4.20-0309-non-reasoning");
+        assert!(result.used_fallback);
+    }
+
+    #[tokio::test]
+    async fn router_falls_back_when_primary_errors() {
+        let provider = FakeProvider {
+            response: json!({"ok": true}),
+            fail_models: Mutex::new(
+                [("grok-4.5".into(), AiError::RateLimited)]
+                    .into_iter()
+                    .collect(),
+            ),
+            ..FakeProvider::default()
+        };
+        let registry = Arc::new(ModelRegistry::new());
+        registry.seed(capabilities_from_model_ids([
+            "grok-4.5",
             "grok-4.3",
             "grok-4.20-0309-non-reasoning",
         ]));
@@ -531,69 +590,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.response.model, "grok-4.20-0309-non-reasoning");
-        assert!(!result.used_fallback);
-        assert_eq!(
-            result.attempted_models,
-            vec!["grok-4.20-0309-non-reasoning".to_owned()]
-        );
-    }
-
-    #[tokio::test]
-    async fn router_skips_missing_primary_and_uses_fallback() {
-        let provider = FakeProvider {
-            response: json!({"ok": true}),
-            ..FakeProvider::default()
-        };
-        let registry = Arc::new(ModelRegistry::new());
-        // Primary non-reasoning is absent from discovery.
-        registry.seed(capabilities_from_model_ids(["grok-4.3"]));
-        let router = TaskRouter::new(
-            Arc::new(provider),
-            default_task_routes(),
-            registry,
-            RouterPolicy::default(),
-        );
-        let result = router
-            .structured_completion(base_request(AiTaskType::RankExplain))
-            .await
-            .unwrap();
-        assert_eq!(result.response.model, "grok-4.3");
-        assert!(result.used_fallback);
-    }
-
-    #[tokio::test]
-    async fn router_falls_back_when_primary_errors() {
-        let provider = FakeProvider {
-            response: json!({"ok": true}),
-            fail_models: Mutex::new(
-                [("grok-4.20-0309-non-reasoning".into(), AiError::RateLimited)]
-                    .into_iter()
-                    .collect(),
-            ),
-            ..FakeProvider::default()
-        };
-        let registry = Arc::new(ModelRegistry::new());
-        registry.seed(capabilities_from_model_ids([
-            "grok-4.3",
-            "grok-4.20-0309-non-reasoning",
-        ]));
-        let router = TaskRouter::new(
-            Arc::new(provider),
-            default_task_routes(),
-            registry,
-            RouterPolicy::default(),
-        );
-        let result = router
-            .structured_completion(base_request(AiTaskType::RankExplain))
-            .await
-            .unwrap();
-        assert_eq!(result.response.model, "grok-4.3");
         assert!(result.used_fallback);
         assert_eq!(
             result.attempted_models,
             vec![
-                "grok-4.20-0309-non-reasoning".to_owned(),
-                "grok-4.3".to_owned()
+                "grok-4.5".to_owned(),
+                "grok-4.20-0309-non-reasoning".to_owned()
             ]
         );
     }
@@ -606,6 +608,7 @@ mod tests {
         };
         let registry = Arc::new(ModelRegistry::new());
         registry.seed(capabilities_from_model_ids([
+            "grok-4.5",
             "grok-4.3",
             "grok-4.20-0309-non-reasoning",
         ]));
@@ -627,7 +630,7 @@ mod tests {
         let provider = FakeProvider {
             response: json!({"ok": true}),
             fail_models: Mutex::new(
-                [("grok-4.20-0309-non-reasoning".into(), AiError::Timeout)]
+                [("grok-4.5".into(), AiError::Timeout)]
                     .into_iter()
                     .collect(),
             ),
@@ -635,8 +638,9 @@ mod tests {
         };
         let registry = Arc::new(ModelRegistry::new());
         registry.seed(capabilities_from_model_ids([
-            "grok-4.3",
+            "grok-4.5",
             "grok-4.20-0309-non-reasoning",
+            "grok-4.3",
         ]));
         let policy = RouterPolicy {
             circuit_failure_threshold: 1,
@@ -655,7 +659,10 @@ mod tests {
             .structured_completion(base_request(AiTaskType::RankExplain))
             .await
             .unwrap();
-        assert_eq!(second.attempted_models, vec!["grok-4.3".to_owned()]);
+        assert_eq!(
+            second.attempted_models,
+            vec!["grok-4.20-0309-non-reasoning".to_owned()]
+        );
     }
 
     #[tokio::test]
