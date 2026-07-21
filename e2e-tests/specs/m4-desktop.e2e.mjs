@@ -92,6 +92,60 @@ async function assertNoCriticalOverflow(width, height) {
   expect(layout.outside).toEqual([]);
 }
 
+async function dismissAuthDialogIfOpen() {
+  const backdrop = await $(".modal-backdrop");
+  if (await backdrop.isExisting()) {
+    const close = await $(".auth-dialog button[aria-label='关闭']");
+    if (await close.isExisting()) {
+      await close.click();
+    } else {
+      await browser.keys("Escape");
+    }
+    await browser.waitUntil(async () => !(await $(".modal-backdrop").isExisting()), {
+      timeout: 10_000,
+      timeoutMsg: "expected auth dialog to close",
+    });
+  }
+}
+
+/** Feedback and play-intent require an account; anonymous clicks only open the auth gate. */
+async function ensureRegisteredAccount() {
+  await dismissAuthDialogIfOpen();
+  const loginBtn = await exactButton("登录");
+  // Already signed in — topbar shows avatar menu instead of 登录.
+  if (!(await loginBtn.isExisting())) return;
+
+  await loginBtn.click();
+  await $(".auth-dialog").waitForExist({ timeout: 15_000 });
+  // Mode tab in the dialog (not the primary submit button).
+  await (await $("//div[contains(@class,'auth-dialog')]//button[normalize-space(.)='注册']")).click();
+  await browser.waitUntil(
+    async () => (await $("h2#auth-title").getText()).includes("注册"),
+    { timeout: 10_000, timeoutMsg: "expected register mode" },
+  );
+  const suffix = Date.now().toString(36).slice(-6);
+  const username = `e2e_${suffix}`;
+  const password = `E2ePass_${suffix}9x`;
+  const inputs = await $$(".auth-dialog input:not([type='radio'])");
+  // register: username, display name, password
+  await inputs[0].setValue(username);
+  await inputs[1].setValue(`E2E ${suffix}`);
+  await inputs[2].setValue(password);
+  await (await $("//div[contains(@class,'auth-dialog')]//button[@type='submit']")).click();
+  await browser.waitUntil(async () => !(await $(".modal-backdrop").isExisting()), {
+    timeout: 20_000,
+    timeoutMsg: "expected registration to close auth dialog",
+  });
+  // Avatar menu replaces 登录 when account session is active.
+  await browser.waitUntil(
+    async () => (await $("button[aria-label='账户菜单']").isExisting()),
+    {
+      timeout: 15_000,
+      timeoutMsg: "expected account session after registration",
+    },
+  );
+}
+
 describe("M4 native desktop journey", () => {
   it("completes first-run onboarding and persists preferences", async () => {
     await browser.setWindowSize(1280, 800);
@@ -157,6 +211,7 @@ describe("M4 native desktop journey", () => {
   });
 
   it("refreshes ranking after acknowledged feedback", async () => {
+    await ensureRegisteredAccount();
     await clickFeedTab("recent_release");
     await waitForFeed();
     const before = await cardNames();
@@ -166,6 +221,7 @@ describe("M4 native desktop journey", () => {
 
     await browser.waitUntil(
       async () => {
+        if (await $(".modal-backdrop").isExisting()) return false;
         const names = await cardNames();
         const busy = await $("[aria-busy='true']").isExisting();
         return !busy && !names.includes(dismissedName);
@@ -176,11 +232,13 @@ describe("M4 native desktop journey", () => {
   });
 
   it("has no horizontal or critical topbar overflow at supported minimum sizes", async () => {
+    await dismissAuthDialogIfOpen();
     await assertNoCriticalOverflow(1024, 640);
     await assertNoCriticalOverflow(1280, 800);
   });
 
   it("serves a cached snapshot with data time after the server goes offline", async () => {
+    await dismissAuthDialogIfOpen();
     await clickFeedTab("classic_legacy");
     await waitForFeed();
     await expectVisibleText("数据更新于");

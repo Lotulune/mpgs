@@ -134,10 +134,12 @@ export function NaturalLanguageScreen({ onOpenGame }: { onOpenGame: (appId: numb
           {(result.ai_status === "fallback" ||
             result.ai_status === "disabled" ||
             result.ai_status === "pending") && (
-            <p className="cal-note">
-              {result.fallback_reason ??
-                "当前由确定性规则理解输入；无法识别的条件不会被伪造成已理解。"}
-            </p>
+            <>
+              {result.fallback_reason && <p className="cal-note">{result.fallback_reason}</p>}
+              <p className="cal-note">
+                当前由确定性规则理解输入；无法识别的条件不会被伪造成已理解。
+              </p>
+            </>
           )}
           {(result.ai_status === "used" || result.ai_status === "cached") &&
             result.fallback_reason && (
