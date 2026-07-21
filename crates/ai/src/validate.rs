@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::error::AiError;
 use crate::types::{AiRankItem, AiRankResult};
@@ -16,6 +16,217 @@ const MAX_EVIDENCE_ID_CHARS: usize = 120;
 pub struct CandidateEvidence {
     pub app_id: u32,
     pub evidence_ids: HashSet<String>,
+}
+
+/// Expand the evidence ids a model may cite for one feed candidate.
+///
+/// Models frequently invent ids like `feature:online_coop:{app}` or bare app
+/// ids; allow those when the corresponding facts appear in the prompt payload.
+pub fn expand_candidate_evidence_ids(
+    app_id: u32,
+    prompt_item: &Value,
+    base: HashSet<String>,
+) -> HashSet<String> {
+    let mut ids = base;
+    ids.insert(format!("app:{app_id}:identity"));
+    ids.insert(format!("app:{app_id}:profile"));
+    ids.insert(format!("app:{app_id}"));
+    ids.insert(app_id.to_string());
+    ids.insert(format!("review:{app_id}:summary"));
+
+    if prompt_item
+        .get("name")
+        .and_then(Value::as_str)
+        .is_some_and(|s| !s.trim().is_empty())
+    {
+        ids.insert(format!("app:{app_id}:name"));
+    }
+    if !prompt_item
+        .get("party")
+        .map(|value| value.is_null())
+        .unwrap_or(true)
+    {
+        ids.insert(format!("app:{app_id}:party"));
+        ids.insert(format!("feature:party:{app_id}"));
+        ids.insert(format!("feature:recommended_min_players:{app_id}"));
+        ids.insert(format!("feature:recommended_max_players:{app_id}"));
+    }
+    if !prompt_item
+        .get("multiplayer")
+        .map(|value| value.is_null())
+        .unwrap_or(true)
+    {
+        ids.insert(format!("app:{app_id}:multiplayer"));
+        ids.insert(format!("feature:dominant_mode:{app_id}"));
+        // Common model-invented feature ids for multiplayer facts in the prompt.
+        ids.insert(format!("feature:online_coop:{app_id}"));
+        ids.insert(format!("feature:private_session:{app_id}"));
+        ids.insert(format!("feature:self_hosted_server:{app_id}"));
+        ids.insert(format!("feature:crossplay:{app_id}"));
+        ids.insert(format!("feature:drop_in_out:{app_id}"));
+    }
+    if !prompt_item
+        .get("release_date")
+        .map(|value| value.is_null())
+        .unwrap_or(true)
+        || !prompt_item
+            .get("section")
+            .map(|value| value.is_null())
+            .unwrap_or(true)
+    {
+        ids.insert(format!("app:{app_id}:release"));
+        ids.insert(format!("feature:release_date:{app_id}"));
+    }
+    ids
+}
+
+/// Drop forged evidence ids and orphaned claims so ranking scores can still apply.
+/// Returns the sanitized result and whether anything was stripped.
+pub fn sanitize_rank_result(
+    value: &Value,
+    candidates: &[CandidateEvidence],
+    max_items: usize,
+) -> Result<(AiRankResult, bool), AiError> {
+    let by_id: HashMap<u32, &CandidateEvidence> =
+        candidates.iter().map(|c| (c.app_id, c)).collect();
+    let all_evidence: HashSet<&str> = candidates
+        .iter()
+        .flat_map(|candidate| candidate.evidence_ids.iter().map(String::as_str))
+        .collect();
+
+    let obj = value
+        .as_object()
+        .ok_or_else(|| AiError::InvalidOutput("root must be an object".into()))?;
+    let recommendations = obj
+        .get("recommendations")
+        .and_then(Value::as_array)
+        .ok_or_else(|| AiError::InvalidOutput("recommendations must be an array".into()))?;
+
+    let mut cleaned_items = Vec::new();
+    let mut stripped = false;
+    for item in recommendations {
+        let Some(item_obj) = item.as_object() else {
+            stripped = true;
+            continue;
+        };
+        let Some(raw_app_id) = item_obj.get("app_id").and_then(Value::as_u64) else {
+            stripped = true;
+            continue;
+        };
+        let Ok(app_id) = u32::try_from(raw_app_id) else {
+            stripped = true;
+            continue;
+        };
+        let Some(candidate) = by_id.get(&app_id) else {
+            stripped = true;
+            continue;
+        };
+
+        let mut evidence = string_list(
+            item_obj,
+            "reason_evidence_ids",
+            0,
+            12,
+            MAX_EVIDENCE_ID_CHARS,
+        )
+        .unwrap_or_default();
+        let before = evidence.len();
+        evidence.retain(|id| candidate.evidence_ids.contains(id));
+        if evidence.len() != before {
+            stripped = true;
+        }
+        let mut reasons =
+            string_list(item_obj, "reasons", 0, MAX_REASONS, MAX_REASON_CHARS).unwrap_or_default();
+        let mut cautions = string_list(item_obj, "cautions", 0, MAX_CAUTIONS, MAX_REASON_CHARS)
+            .unwrap_or_default();
+
+        // Soft-attach real prompt evidence when the model wrote claims but used forged ids.
+        if (!reasons.is_empty() || !cautions.is_empty()) && evidence.is_empty() {
+            let mut fallback: Vec<String> = candidate.evidence_ids.iter().cloned().collect();
+            fallback.sort();
+            if fallback.is_empty() {
+                reasons.clear();
+                cautions.clear();
+                stripped = true;
+            } else {
+                evidence = fallback.into_iter().take(3).collect();
+                stripped = true;
+            }
+        }
+
+        let fit_score = match unit_field(item_obj, "fit_score", 0) {
+            Ok(v) => v,
+            Err(_) => {
+                stripped = true;
+                continue;
+            }
+        };
+        let confidence = match unit_field(item_obj, "confidence", 0) {
+            Ok(v) => v,
+            Err(_) => {
+                stripped = true;
+                continue;
+            }
+        };
+
+        cleaned_items.push(json!({
+            "app_id": app_id,
+            "fit_score": fit_score,
+            "confidence": confidence,
+            "reason_evidence_ids": evidence,
+            "reasons": reasons,
+            "cautions": cautions,
+        }));
+    }
+
+    let summary = obj
+        .get("summary")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_owned();
+    let mut summary_evidence_ids =
+        root_string_list(obj, "summary_evidence_ids", 20, MAX_EVIDENCE_ID_CHARS)
+            .unwrap_or_default();
+    let before_summary = summary_evidence_ids.len();
+    summary_evidence_ids.retain(|id| all_evidence.contains(id.as_str()));
+    if summary_evidence_ids.len() != before_summary {
+        stripped = true;
+    }
+    let mut summary_out = summary;
+    if looks_like_html_or_url(&summary_out) {
+        summary_out.clear();
+        summary_evidence_ids.clear();
+        stripped = true;
+    } else if !summary_out.is_empty() && summary_evidence_ids.is_empty() {
+        let mut fallback: Vec<String> = all_evidence.iter().map(|s| (*s).to_owned()).collect();
+        fallback.sort();
+        if fallback.is_empty() {
+            summary_out.clear();
+            stripped = true;
+        } else {
+            summary_evidence_ids = fallback.into_iter().take(4).collect();
+            stripped = true;
+        }
+    }
+    if summary_out.chars().count() > MAX_SUMMARY_CHARS {
+        summary_out = summary_out.chars().take(MAX_SUMMARY_CHARS).collect();
+        stripped = true;
+    }
+
+    if cleaned_items.is_empty() && !recommendations.is_empty() {
+        return Err(AiError::InvalidOutput(
+            "no recommendations remained after sanitization".into(),
+        ));
+    }
+
+    let sanitized = json!({
+        "recommendations": cleaned_items,
+        "summary": summary_out,
+        "summary_evidence_ids": summary_evidence_ids,
+    });
+    let result = validate_rank_result(&sanitized, candidates, max_items)?;
+    Ok((result, stripped))
 }
 
 /// Validate AI ranking JSON: candidate membership, score ranges, evidence refs.
@@ -371,5 +582,51 @@ mod tests {
             "summary_evidence_ids": ["e1"]
         });
         assert!(validate_rank_result(&html_summary, &candidates(), 20).is_err());
+    }
+
+    #[test]
+    fn sanitize_keeps_reasons_after_dropping_forged_evidence() {
+        let raw = json!({
+            "recommendations": [{
+                "app_id": 1,
+                "fit_score": 0.9,
+                "confidence": 0.8,
+                "reason_evidence_ids": ["forged", "web:99"],
+                "reasons": ["good private coop"],
+                "cautions": []
+            }],
+            "summary": "nice picks",
+            "summary_evidence_ids": ["web:1"]
+        });
+        let (result, stripped) = sanitize_rank_result(&raw, &candidates(), 20).unwrap();
+        assert!(stripped);
+        assert_eq!(result.recommendations[0].reasons, vec!["good private coop"]);
+        assert!(
+            result.recommendations[0]
+                .reason_evidence_ids
+                .iter()
+                .all(|id| id == "e1")
+        );
+        assert_eq!(result.summary, "nice picks");
+        assert!(!result.summary_evidence_ids.is_empty());
+        assert!(
+            result
+                .summary_evidence_ids
+                .iter()
+                .all(|id| id == "e1" || id == "e2")
+        );
+    }
+
+    #[test]
+    fn expand_candidate_evidence_ids_adds_prompt_aliases() {
+        let item = json!({
+            "name": "Game",
+            "multiplayer": {"dominant_mode": "coop", "online_coop": true},
+            "party": {"recommended_min": 2}
+        });
+        let expanded = expand_candidate_evidence_ids(42, &item, HashSet::new());
+        assert!(expanded.contains("feature:online_coop:42"));
+        assert!(expanded.contains("app:42:multiplayer"));
+        assert!(expanded.contains("42"));
     }
 }

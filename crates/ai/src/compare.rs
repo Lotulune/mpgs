@@ -35,6 +35,27 @@ pub struct CompareDifference {
     pub evidence_ids: Vec<String>,
 }
 
+fn evidence_id_allowed(
+    id: &str,
+    allowed_app_ids: &[u32],
+    allowed_evidence: &std::collections::HashSet<String>,
+) -> bool {
+    if allowed_evidence.contains(id) {
+        return true;
+    }
+    // Models often cite bare AppIDs instead of app:{id}:profile.
+    if let Ok(app_id) = id.parse::<u32>() {
+        return allowed_app_ids.contains(&app_id);
+    }
+    if let Some(rest) = id.strip_prefix("app:") {
+        let app_part = rest.split(':').next().unwrap_or("");
+        if let Ok(app_id) = app_part.parse::<u32>() {
+            return allowed_app_ids.contains(&app_id);
+        }
+    }
+    false
+}
+
 pub fn parse_compare_explanation(
     value: &Value,
     allowed_app_ids: &[u32],
@@ -77,11 +98,12 @@ pub fn parse_compare_explanation(
             ));
         }
         for id in &diff.evidence_ids {
-            if !allowed_evidence.contains(id) {
-                return Err(AiError::InvalidOutput(format!(
-                    "compare evidence_id '{id}' is not allowed"
-                )));
+            if evidence_id_allowed(id, allowed_app_ids, allowed_evidence) {
+                continue;
             }
+            return Err(AiError::InvalidOutput(format!(
+                "compare evidence_id '{id}' is not allowed"
+            )));
         }
     }
 

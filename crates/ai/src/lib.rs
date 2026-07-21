@@ -65,7 +65,9 @@ pub use summary::{
     parse_game_summary, rule_game_summary,
 };
 pub use types::*;
-pub use validate::{CandidateEvidence, validate_rank_result};
+pub use validate::{
+    CandidateEvidence, expand_candidate_evidence_ids, sanitize_rank_result, validate_rank_result,
+};
 pub use vector::{
     cosine_similarity, decode_f32_le, encode_f32_le, l2_normalize, reciprocal_rank_fusion,
 };

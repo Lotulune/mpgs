@@ -12,14 +12,15 @@ use axum::{
 use image::{DynamicImage, ImageFormat, imageops::FilterType};
 use mpgs_ai::{
     AiError, AiGateway, AiPolicy, AiProvider, AiRankResult, AiStatus, AiTaskType, AppVoteCount,
-    COMPARE_PROMPT_VERSION, CandidateEvidence, DEFAULT_ROUTE_VERSION, EmbeddingInput,
-    EmbeddingProvider, GroupAdviceRequest as AiGroupAdviceRequest, OpenAiCompatProvider,
-    RANK_PROMPT_VERSION, RuleIntentBaseline, SUMMARY_PROMPT_VERSION, StructuredRequest, TaskRouter,
-    compare_schema, compare_system_prompt, deterministic_group_advice, group_advice_schema,
-    group_advice_system_prompt, intent_parse_schema, intent_parse_system_prompt,
-    merge_intent_with_rules, parse_compare_explanation, parse_group_advice,
-    parse_structured_intent, rank_analysis_schema, rank_analysis_system_prompt, rule_game_summary,
-    validate_rank_result, wrap_untrusted_data_block,
+    COMPARE_COLUMNS, COMPARE_PROMPT_VERSION, CandidateEvidence, DEFAULT_ROUTE_VERSION,
+    EmbeddingInput, EmbeddingProvider, GroupAdviceRequest as AiGroupAdviceRequest,
+    OpenAiCompatProvider, RANK_PROMPT_VERSION, RuleIntentBaseline, SUMMARY_PROMPT_VERSION,
+    StructuredRequest, TaskRouter, compare_schema, compare_system_prompt,
+    deterministic_group_advice, group_advice_schema, group_advice_system_prompt,
+    intent_parse_schema, intent_parse_system_prompt, merge_intent_with_rules,
+    parse_compare_explanation, parse_group_advice, parse_structured_intent, rank_analysis_schema,
+    rank_analysis_system_prompt, rule_game_summary, validate_rank_result,
+    wrap_untrusted_data_block,
 };
 use mpgs_domain::{FeedSection, FeedbackType, RecommendationConfig, UserPreferences};
 use mpgs_recommender::{
@@ -3617,7 +3618,7 @@ async fn enhance_natural_language_with_ai(
         else {
             continue;
         };
-        let evidence_ids = item
+        let base_evidence = item
             .get("evidence_ids")
             .and_then(|v| v.as_array())
             .map(|arr| {
@@ -3626,9 +3627,7 @@ async fn enhance_natural_language_with_ai(
                     .collect::<std::collections::HashSet<_>>()
             })
             .unwrap_or_default();
-        let mut evidence_list: Vec<String> = evidence_ids.iter().cloned().collect();
-        evidence_list.sort();
-        compact.push(json!({
+        let compact_item = json!({
             "app_id": app_id,
             "name": item.get("name").cloned().unwrap_or(json!("")),
             // Keep provider-prompt data independent of the current natural-language
@@ -3637,8 +3636,16 @@ async fn enhance_natural_language_with_ai(
             "release_date": item.get("release_date").cloned().unwrap_or(json!(null)),
             "party": item.get("party").cloned().unwrap_or(json!(null)),
             "multiplayer": item.get("multiplayer").cloned().unwrap_or(json!(null)),
-            "evidence_ids": evidence_list,
-        }));
+        });
+        let evidence_ids =
+            mpgs_ai::expand_candidate_evidence_ids(app_id, &compact_item, base_evidence);
+        let mut evidence_list: Vec<String> = evidence_ids.iter().cloned().collect();
+        evidence_list.sort();
+        let mut compact_item = compact_item;
+        if let Some(obj) = compact_item.as_object_mut() {
+            obj.insert("evidence_ids".into(), json!(evidence_list));
+        }
+        compact.push(compact_item);
         candidates.push(CandidateEvidence {
             app_id,
             evidence_ids,
@@ -3871,6 +3878,19 @@ fn validate_rank_result_with_safe_degradation(
     match validate_rank_result(value, candidates, max_items) {
         Ok(result) => Ok((result, None)),
         Err(AiError::InvalidOutput(strict_reason)) => {
+            // Prefer sanitizing forged evidence ids over discarding all AI text.
+            if let Ok((sanitized, stripped)) =
+                mpgs_ai::sanitize_rank_result(value, candidates, max_items)
+            {
+                let notice = if stripped {
+                    Some(format!(
+                        "AI output was sanitized after strict validation reported: {strict_reason}"
+                    ))
+                } else {
+                    None
+                };
+                return Ok((sanitized, notice));
+            }
             let recommendations = value
                 .get("recommendations")
                 .and_then(serde_json::Value::as_array)
@@ -4420,6 +4440,11 @@ async fn ai_compare(
         if let Some(id) = row.get("app_id").and_then(|v| v.as_u64()) {
             allowed_evidence.insert(format!("app:{id}:identity"));
             allowed_evidence.insert(format!("app:{id}:profile"));
+            allowed_evidence.insert(format!("app:{id}"));
+            allowed_evidence.insert(id.to_string());
+            for col in COMPARE_COLUMNS {
+                allowed_evidence.insert(format!("app:{id}:{col}"));
+            }
         }
     }
     let allowed_ids: Vec<u32> = matrix
@@ -6465,7 +6490,7 @@ mod tests {
     }
 
     #[test]
-    fn ai_degradation_keeps_safe_scores_but_discards_unverified_text() {
+    fn ai_degradation_keeps_safe_scores_and_sanitizes_unverified_evidence() {
         let candidates = vec![CandidateEvidence {
             app_id: 42,
             evidence_ids: HashSet::from(["allowed".to_owned()]),
@@ -6485,8 +6510,14 @@ mod tests {
         let (result, notice) =
             validate_rank_result_with_safe_degradation(&raw, &candidates, 1).unwrap();
         assert_eq!(result.recommendations[0].fit_score, 0.8);
-        assert!(result.recommendations[0].reasons.is_empty());
-        assert!(result.summary.is_empty());
+        // Soft-attach real allowed evidence so reasons can land after sanitization.
+        assert_eq!(result.recommendations[0].reasons, vec!["unsupported claim"]);
+        assert_eq!(
+            result.recommendations[0].reason_evidence_ids,
+            vec!["allowed"]
+        );
+        assert_eq!(result.summary, "unsupported summary");
+        assert_eq!(result.summary_evidence_ids, vec!["allowed"]);
         assert!(notice.is_some());
 
         let unknown = json!({

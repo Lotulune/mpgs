@@ -13,7 +13,7 @@ use crate::error::AiError;
 use crate::types::{AiTaskType, ApiProtocol, TaskRouteConfig};
 
 /// Shared route table version. Bump when default policy changes.
-pub const DEFAULT_ROUTE_VERSION: &str = "m8-route-v1";
+pub const DEFAULT_ROUTE_VERSION: &str = "m8-route-v2";
 
 /// Build the default multi-model route table from PRD suggestions.
 ///
@@ -41,11 +41,12 @@ pub fn default_task_routes() -> HashMap<AiTaskType, TaskRouteConfig> {
         AiTaskType::RankExplain,
         TaskRouteConfig {
             task: AiTaskType::RankExplain,
-            primary_model: "grok-4.3".into(),
-            fallback_models: vec!["grok-4.20-0309-non-reasoning".into()],
-            // Prefer Responses when a model (e.g. grok-4.5) only works reliably there.
-            protocol_preference: vec![ApiProtocol::Responses, ApiProtocol::ChatCompletions],
-            timeout: Duration::from_secs(20),
+            // Prefer the stable non-reasoning model first; keep grok-4.3 as upgrade fallback.
+            // Production logs showed 4.3 often failing under Responses-first + 20s timeout.
+            primary_model: "grok-4.20-0309-non-reasoning".into(),
+            fallback_models: vec!["grok-4.3".into()],
+            protocol_preference: vec![ApiProtocol::ChatCompletions, ApiProtocol::Responses],
+            timeout: Duration::from_secs(30),
             max_output_tokens: 1_800,
             enabled: true,
             route_version: version.clone(),
@@ -222,12 +223,9 @@ mod tests {
         assert!(routes.contains_key(&AiTaskType::DataQuality));
 
         let rank = routes.get(&AiTaskType::RankExplain).unwrap();
-        assert_eq!(rank.primary_model, "grok-4.3");
-        assert!(
-            rank.fallback_models
-                .contains(&"grok-4.20-0309-non-reasoning".to_owned())
-        );
-        assert_eq!(rank.protocol_preference[0], ApiProtocol::Responses);
+        assert_eq!(rank.primary_model, "grok-4.20-0309-non-reasoning");
+        assert!(rank.fallback_models.iter().any(|m| m == "grok-4.3"));
+        assert_eq!(rank.protocol_preference[0], ApiProtocol::ChatCompletions);
     }
 
     #[test]

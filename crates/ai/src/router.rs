@@ -298,12 +298,26 @@ impl TaskRouter {
                     Ok(Err(error)) => {
                         // Protocol unsupported: try next protocol before next model.
                         if is_protocol_rejection(&error) {
+                            tracing::warn!(
+                                model = %model,
+                                task = %request.task.as_str(),
+                                protocol = %protocol.as_str(),
+                                error = %error,
+                                "AI protocol attempt rejected; trying next protocol"
+                            );
                             protocol_error = Some(error);
                             continue;
                         }
                         if is_model_missing(&error) {
                             self.registry.mark_unavailable(model);
                         }
+                        tracing::warn!(
+                            model = %model,
+                            task = %request.task.as_str(),
+                            protocol = %protocol.as_str(),
+                            error = %error,
+                            "AI model attempt failed; trying next model"
+                        );
                         self.note_model_failure(model, &error);
                         last_error = error;
                         protocol_error = None;
@@ -311,6 +325,12 @@ impl TaskRouter {
                     }
                     Err(_) => {
                         let error = AiError::Timeout;
+                        tracing::warn!(
+                            model = %model,
+                            task = %request.task.as_str(),
+                            protocol = %protocol.as_str(),
+                            "AI model attempt timed out; trying next model"
+                        );
                         self.note_model_failure(model, &error);
                         last_error = error;
                         protocol_error = None;
@@ -510,9 +530,12 @@ mod tests {
             .structured_completion(base_request(AiTaskType::RankExplain))
             .await
             .unwrap();
-        assert_eq!(result.response.model, "grok-4.3");
+        assert_eq!(result.response.model, "grok-4.20-0309-non-reasoning");
         assert!(!result.used_fallback);
-        assert_eq!(result.attempted_models, vec!["grok-4.3".to_owned()]);
+        assert_eq!(
+            result.attempted_models,
+            vec!["grok-4.20-0309-non-reasoning".to_owned()]
+        );
     }
 
     #[tokio::test]
@@ -522,10 +545,8 @@ mod tests {
             ..FakeProvider::default()
         };
         let registry = Arc::new(ModelRegistry::new());
-        // Primary grok-4.3 is absent from discovery.
-        registry.seed(capabilities_from_model_ids([
-            "grok-4.20-0309-non-reasoning",
-        ]));
+        // Primary non-reasoning is absent from discovery.
+        registry.seed(capabilities_from_model_ids(["grok-4.3"]));
         let router = TaskRouter::new(
             Arc::new(provider),
             default_task_routes(),
@@ -536,7 +557,7 @@ mod tests {
             .structured_completion(base_request(AiTaskType::RankExplain))
             .await
             .unwrap();
-        assert_eq!(result.response.model, "grok-4.20-0309-non-reasoning");
+        assert_eq!(result.response.model, "grok-4.3");
         assert!(result.used_fallback);
     }
 
@@ -545,7 +566,7 @@ mod tests {
         let provider = FakeProvider {
             response: json!({"ok": true}),
             fail_models: Mutex::new(
-                [("grok-4.3".into(), AiError::RateLimited)]
+                [("grok-4.20-0309-non-reasoning".into(), AiError::RateLimited)]
                     .into_iter()
                     .collect(),
             ),
@@ -566,13 +587,13 @@ mod tests {
             .structured_completion(base_request(AiTaskType::RankExplain))
             .await
             .unwrap();
-        assert_eq!(result.response.model, "grok-4.20-0309-non-reasoning");
+        assert_eq!(result.response.model, "grok-4.3");
         assert!(result.used_fallback);
         assert_eq!(
             result.attempted_models,
             vec![
-                "grok-4.3".to_owned(),
-                "grok-4.20-0309-non-reasoning".to_owned()
+                "grok-4.20-0309-non-reasoning".to_owned(),
+                "grok-4.3".to_owned()
             ]
         );
     }
@@ -606,7 +627,7 @@ mod tests {
         let provider = FakeProvider {
             response: json!({"ok": true}),
             fail_models: Mutex::new(
-                [("grok-4.3".into(), AiError::Timeout)]
+                [("grok-4.20-0309-non-reasoning".into(), AiError::Timeout)]
                     .into_iter()
                     .collect(),
             ),
@@ -634,10 +655,7 @@ mod tests {
             .structured_completion(base_request(AiTaskType::RankExplain))
             .await
             .unwrap();
-        assert_eq!(
-            second.attempted_models,
-            vec!["grok-4.20-0309-non-reasoning".to_owned()]
-        );
+        assert_eq!(second.attempted_models, vec!["grok-4.3".to_owned()]);
     }
 
     #[tokio::test]
