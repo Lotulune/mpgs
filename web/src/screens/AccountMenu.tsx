@@ -38,7 +38,7 @@ export function AccountMenu({
 
   if (!profile) {
     return (
-      <button type="button" className="btn small" onClick={onLogin}>
+      <button type="button" className="btn small" data-testid="auth-open-login" onClick={onLogin}>
         登录
       </button>
     );

@@ -111,27 +111,23 @@ async function dismissAuthDialogIfOpen() {
 /** Feedback and play-intent require an account; anonymous clicks only open the auth gate. */
 async function ensureRegisteredAccount() {
   await dismissAuthDialogIfOpen();
-  const loginBtn = await exactButton("登录");
   // Already signed in — topbar shows avatar menu instead of 登录.
-  if (!(await loginBtn.isExisting())) return;
+  if (await $("button[aria-label='账户菜单']").isExisting()) return;
 
-  await loginBtn.click();
+  await clickTestId("auth-open-login");
   await $(".auth-dialog").waitForExist({ timeout: 15_000 });
-  // Mode tab in the dialog (not the primary submit button).
-  await (await $("//div[contains(@class,'auth-dialog')]//button[normalize-space(.)='注册']")).click();
+  await clickTestId("auth-mode-register");
   await browser.waitUntil(
-    async () => (await $("h2#auth-title").getText()).includes("注册"),
+    async () => (await $("[data-testid='auth-mode-register']").getAttribute("aria-pressed")) === "true",
     { timeout: 10_000, timeoutMsg: "expected register mode" },
   );
   const suffix = Date.now().toString(36).slice(-6);
   const username = `e2e_${suffix}`;
   const password = `E2ePass_${suffix}9x`;
-  const inputs = await $$(".auth-dialog input:not([type='radio'])");
-  // register: username, display name, password
-  await inputs[0].setValue(username);
-  await inputs[1].setValue(`E2E ${suffix}`);
-  await inputs[2].setValue(password);
-  await (await $("//div[contains(@class,'auth-dialog')]//button[@type='submit']")).click();
+  await (await $("[data-testid='auth-username']")).setValue(username);
+  await (await $("[data-testid='auth-display-name']")).setValue(`E2E ${suffix}`);
+  await (await $("[data-testid='auth-password']")).setValue(password);
+  await clickTestId("auth-submit");
   await browser.waitUntil(async () => !(await $(".modal-backdrop").isExisting()), {
     timeout: 20_000,
     timeoutMsg: "expected registration to close auth dialog",

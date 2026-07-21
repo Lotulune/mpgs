@@ -82,10 +82,22 @@ export function AuthDialog({
           </button>
         </div>
         <div className="seg auth-mode" role="tablist" aria-label="账户操作">
-          <button type="button" className="btn small" aria-pressed={mode === "login"} onClick={() => switchMode("login")}>
+          <button
+            type="button"
+            className="btn small"
+            data-testid="auth-mode-login"
+            aria-pressed={mode === "login"}
+            onClick={() => switchMode("login")}
+          >
             登录
           </button>
-          <button type="button" className="btn small" aria-pressed={mode === "register"} onClick={() => switchMode("register")}>
+          <button
+            type="button"
+            className="btn small"
+            data-testid="auth-mode-register"
+            aria-pressed={mode === "register"}
+            onClick={() => switchMode("register")}
+          >
             注册
           </button>
         </div>
@@ -94,6 +106,7 @@ export function AuthDialog({
             用户名
             <input
               ref={usernameRef}
+              data-testid="auth-username"
               value={username}
               minLength={3}
               maxLength={32}
@@ -107,6 +120,7 @@ export function AuthDialog({
             <label>
               显示名称
               <input
+                data-testid="auth-display-name"
                 value={displayName}
                 maxLength={40}
                 autoComplete="nickname"
@@ -119,6 +133,7 @@ export function AuthDialog({
             密码
             <input
               type="password"
+              data-testid="auth-password"
               value={password}
               minLength={10}
               maxLength={128}
@@ -151,7 +166,12 @@ export function AuthDialog({
             </fieldset>
           )}
           {error && <p className="form-error" role="alert">{error}</p>}
-          <button type="submit" className="btn primary" disabled={busy || (mergeRequired && !mergePreference)}>
+          <button
+            type="submit"
+            className="btn primary"
+            data-testid="auth-submit"
+            disabled={busy || (mergeRequired && !mergePreference)}
+          >
             {busy ? "处理中" : mode === "login" ? "登录" : "创建账户"}
           </button>
         </form>
