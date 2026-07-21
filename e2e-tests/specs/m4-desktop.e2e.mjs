@@ -235,6 +235,11 @@ describe("M4 native desktop journey", () => {
 
   it("serves a cached snapshot with data time after the server goes offline", async () => {
     await dismissAuthDialogIfOpen();
+    // Account registration clears the snapshot cache; warm both sections again
+    // while the seed server is still up so offline browsing has entries.
+    await clickFeedTab("popular_legacy");
+    await waitForFeed();
+    await expectVisibleText("数据更新于");
     await clickFeedTab("classic_legacy");
     await waitForFeed();
     await expectVisibleText("数据更新于");
