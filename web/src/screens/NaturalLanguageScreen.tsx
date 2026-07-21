@@ -115,15 +115,9 @@ export function NaturalLanguageScreen({ onOpenGame }: { onOpenGame: (appId: numb
                 AI 未启用
               </span>
             )}
-            {result.ai_provider && result.ai_provider !== "disabled" && (
-              <span className="chip">Provider: {result.ai_provider}</span>
-            )}
-            {result.ai_model && <span className="chip accent">模型 {result.ai_model}</span>}
-            {result.ai_multi_model && <span className="chip">多模型路由</span>}
-            {result.ai_used_model_fallback && <span className="chip warn">已走回退模型</span>}
-            {result.ai_protocol && <span className="chip">{result.ai_protocol}</span>}
-            {result.ai_latency_ms !== undefined && (
-              <span className="chip">AI 阶段 {result.ai_latency_ms} ms</span>
+            {result.ai_latency_ms !== undefined &&
+              (result.ai_status === "used" || result.ai_status === "cached") && (
+              <span className="chip">AI {result.ai_latency_ms} ms</span>
             )}
             {result.interpreted.party_size !== null && <span className="chip">{result.interpreted.party_size} 人</span>}
             {result.interpreted.session_minutes_max !== null && <span className="chip">最长 {result.interpreted.session_minutes_max} 分钟</span>}

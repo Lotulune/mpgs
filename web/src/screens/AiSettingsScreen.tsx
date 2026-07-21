@@ -327,32 +327,13 @@ export function AiSettingsScreen({ embedded = false }: { embedded?: boolean }) {
             <span className={settings.builtin.available ? "chip ok" : "chip danger"}>
               {settings.builtin.available ? "可用" : "不可用"}
             </span>
-            <span className="chip">{settings.builtin.multi_model ? "多模型路由" : "单模型"}</span>
-            {settings.builtin.provider && <span className="chip">{settings.builtin.provider}</span>}
             {settings.builtin.daily_remaining !== null && (
-              <span className="chip">剩余 {settings.builtin.daily_remaining}</span>
+              <span className="chip">今日剩余 {settings.builtin.daily_remaining} 次</span>
             )}
           </div>
-          {settings.builtin.routes && settings.builtin.routes.length > 0 && (
-            <RouteTable
-              title="内置任务模型路由"
-              note="服务端按任务自动选模型。你无需配置。"
-              routes={settings.builtin.routes
-                .filter((r) => r.enabled)
-                .map((r) => ({
-                  task: r.task,
-                  primary_model: r.primary_model,
-                  fallback_models: r.fallback_models,
-                  primary_available: r.primary_available,
-                }))}
-            />
-          )}
-          {settings.builtin.discovered_models && settings.builtin.discovered_models.length > 0 && (
-            <p className="cal-note">
-              上游已发现：{settings.builtin.discovered_models.slice(0, 12).join(", ")}
-              {settings.builtin.discovered_models.length > 12 ? "…" : ""}
-            </p>
-          )}
+          <p className="cal-note">
+            使用服务端内置 AI。模型分配与回退在后台自动完成，无需配置。
+          </p>
         </>
       )}
 
