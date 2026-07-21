@@ -1668,6 +1668,16 @@ body::before {
   gap: 0.35rem;
   font-size: 0.9rem;
 }
+.ai-route-edit {
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.ai-route-edit input {
+  flex: 1 1 8rem;
+  min-width: 6rem;
+}
+
 .ai-route-row strong {
   min-width: 7.5rem;
   font-weight: 600;

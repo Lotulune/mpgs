@@ -7,21 +7,28 @@ const LEGACY_BROWSER_KEY = "mpgs.ai.custom.session.v1";
 export interface LocalCustomAiSettings {
   userId: string;
   baseUrl: string;
-  /** Default / construction-time model (also primary for single mode). */
+  /** Default / construction-time model (also primary for single/easy mode). */
   model: string;
   apiKey: string;
-  /** easy = multi-model auto plan; single = one model for all tasks. */
+  /**
+   * easy = all tasks use one selected model
+   * advanced = per-task models (power users)
+   * single = multi_model false, one model field only
+   */
   routingPreset: CustomRoutingPreset;
   fallbackModel?: string | null;
   routes?: CustomTaskRoute[];
 }
 
+function parsePreset(value: unknown): CustomRoutingPreset {
+  if (value === "single" || value === "easy" || value === "advanced") return value;
+  return "single";
+}
+
 function parse(value: string | null, userId: string): LocalCustomAiSettings | null {
   if (!value) return null;
   try {
-    const parsed = JSON.parse(value) as Partial<LocalCustomAiSettings> & {
-      // v1 fields only had model/baseUrl/apiKey/userId
-    };
+    const parsed = JSON.parse(value) as Partial<LocalCustomAiSettings>;
     if (
       parsed.userId !== userId ||
       typeof parsed.baseUrl !== "string" ||
@@ -31,16 +38,12 @@ function parse(value: string | null, userId: string): LocalCustomAiSettings | nu
     ) {
       return null;
     }
-    const routingPreset: CustomRoutingPreset =
-      parsed.routingPreset === "single" || parsed.routingPreset === "easy"
-        ? parsed.routingPreset
-        : "easy";
     return {
       userId,
       baseUrl: parsed.baseUrl,
       model: parsed.model,
       apiKey: parsed.apiKey,
-      routingPreset,
+      routingPreset: parsePreset(parsed.routingPreset),
       fallbackModel: parsed.fallbackModel ?? null,
       routes: Array.isArray(parsed.routes) ? parsed.routes : undefined,
     };

@@ -33,8 +33,10 @@ export function NaturalLanguageScreen({ onOpenGame }: { onOpenGame: (appId: numb
                 baseUrl: custom.baseUrl,
                 model: custom.model,
                 apiKey: custom.apiKey,
-                // Custom stays single-model until we have vendor-neutral routing UX.
-                multiModel: false,
+                // easy/advanced: task routes from device; single: one model only.
+                multiModel: custom.routingPreset !== "single",
+                fallbackModel: custom.fallbackModel,
+                routes: custom.routes,
               }
             : undefined,
         ),
