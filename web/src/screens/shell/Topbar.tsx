@@ -77,8 +77,8 @@ export function Topbar({
           onAiSettings={onAiSettings}
           onLogout={onLogout}
         />
-        {/* Fixed top-right above modals so min/max/close stay clickable. */}
-        <WindowControls elevated />
+        {/* Inline chrome: part of the topbar, next to 登录 (not floating OS-style). */}
+        <WindowControls />
       </div>
     </header>
   );
