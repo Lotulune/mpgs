@@ -7,8 +7,12 @@ import type { ListView } from "./nav";
 export function useNavShortcuts(onNavigate: (view: ListView) => void): void {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
       const target = event.target as HTMLElement | null;
       if (target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) return;
+      // Don't change the feed behind an open modal / dialog.
+      if (document.querySelector("[role='dialog'][aria-modal='true']")) return;
+      if (target?.closest("[role='dialog']")) return;
       if (event.key === "/") {
         event.preventDefault();
         onNavigate({ kind: "search" });

@@ -47,7 +47,8 @@ export function Topbar({
   };
 
   return (
-    <header className="topbar" data-tauri-drag-region>
+    <header className="topbar">
+      {/* Drag only on brand — keep nav/controls free of data-tauri-drag-region. */}
       <div className="brand" data-tauri-drag-region>
         MPGS
         <small data-tauri-drag-region>熟人联机推荐</small>
@@ -66,7 +67,8 @@ export function Topbar({
           onAiSettings={onAiSettings}
           onLogout={onLogout}
         />
-        <WindowControls />
+        {/* Elevated: fixed high z-index so min/max/close stay above modals. */}
+        <WindowControls elevated />
       </div>
     </header>
   );

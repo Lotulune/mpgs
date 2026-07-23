@@ -113,11 +113,26 @@ export function CommunityScreen({ onOpenGame }: { onOpenGame: (appId: number) =>
     } catch (cause) {
       if (stale()) return;
       if (cause instanceof ApiError && cause.code === "cursor_stale") {
-        const first = await apiClient.community(sort, filters);
-        if (stale()) return;
-        apply(first.data, false);
+        // Nested try: a failing first-page refresh must not become an
+        // unhandled rejection from the outer catch.
+        try {
+          const first = await apiClient.community(sort, filters);
+          if (stale()) return;
+          apply(first.data, false);
+        } catch (refreshCause) {
+          if (stale()) return;
+          setError(
+            refreshCause instanceof ApiError && refreshCause.offline
+              ? "当前离线，无法加载社区榜单。"
+              : "无法加载更多条目。",
+          );
+        }
       } else {
-        setError("无法加载更多条目。");
+        setError(
+          cause instanceof ApiError && cause.offline
+            ? "当前离线，无法加载社区榜单。"
+            : "无法加载更多条目。",
+        );
       }
     } finally {
       loadingMoreRef.current = false;

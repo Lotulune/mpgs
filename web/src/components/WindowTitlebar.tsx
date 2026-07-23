@@ -7,15 +7,30 @@ function runWindowAction(action: () => Promise<void>): void {
   });
 }
 
-export function WindowControls({ floating = false }: { floating?: boolean }) {
+export function WindowControls({
+  floating = false,
+  elevated = false,
+}: {
+  /** Fixed top-right controls + full-width drag strip (onboarding). */
+  floating?: boolean;
+  /** Fixed top-right controls only, above modals (shell topbar). */
+  elevated?: boolean;
+}) {
   if (!isTauri()) return null;
 
   const appWindow = getCurrentWindow();
+  const className = [
+    "window-controls",
+    floating ? "floating" : "",
+    elevated && !floating ? "elevated" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   return (
     <>
       {floating && <div className="window-drag-overlay" data-tauri-drag-region aria-hidden="true" />}
-      <div className={floating ? "window-controls floating" : "window-controls"} aria-label="窗口控制">
+      <div className={className} aria-label="窗口控制">
         <button
           type="button"
           className="window-control"

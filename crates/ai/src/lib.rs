@@ -147,10 +147,13 @@ pub fn task_router_from_env() -> Result<TaskRouter, AiError> {
             let base_url =
                 env::var("MPGS_AI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".into());
             let model = env::var("MPGS_AI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
+            // Must cover the longest default route budget (Compare/Group 40s).
+            // Provider-level Timeout still counts toward per-model circuit;
+            // shared route-budget cancels do not.
             let timeout_secs: u64 = env::var("MPGS_AI_TIMEOUT_SECS")
                 .ok()
                 .and_then(|v| v.parse().ok())
-                .unwrap_or(20)
+                .unwrap_or(45)
                 .clamp(1, 120);
             let provider = OpenAiCompatProvider::new(
                 base_url,

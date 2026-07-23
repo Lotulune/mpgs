@@ -46,9 +46,10 @@ pub fn default_task_routes() -> HashMap<AiTaskType, TaskRouteConfig> {
             primary_model: primary.into(),
             fallback_models: heavy_fallbacks.clone(),
             protocol_preference: responses_first.clone(),
-            // Shared across the whole model/protocol chain. 5s was too tight for
-            // grok-4.5 Responses cold starts and starved fallbacks; 12s still
-            // keeps NL snappy while leaving room for a protocol or model retry.
+            // Total chain budget (shared). Router also caps each attempt at
+            // half of this so a hung primary still leaves room for protocol /
+            // model fallback. Raise via MPGS_AI_ROUTE_INTENT_PARSE_TIMEOUT_SECS
+            // when cold Responses latency is high.
             timeout: Duration::from_secs(12),
             max_output_tokens: 512,
             enabled: true,

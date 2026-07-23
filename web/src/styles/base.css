@@ -144,10 +144,12 @@ body::before {
   user-select: none;
 }
 
-.window-controls.floating {
+.window-controls.floating,
+.window-controls.elevated {
   position: fixed;
   top: 2px;
   right: 2px;
+  /* Above modal (400) / toast (500) so min/max/close stay usable. */
   z-index: 1101;
   background: color-mix(in srgb, var(--surface) 72%, transparent);
 }

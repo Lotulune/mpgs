@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tokio::time::{Instant, timeout};
 
@@ -285,8 +285,11 @@ impl TaskRouter {
                 if remaining.is_zero() {
                     return Err(AiError::Timeout);
                 }
+                // Cap each attempt so a single hang cannot burn the whole chain
+                // budget (still bounded by remaining shared deadline).
+                let attempt_budget = per_attempt_budget(route.timeout, remaining);
                 let result = timeout(
-                    remaining,
+                    attempt_budget,
                     self.provider.structured_completion(request.clone()),
                 )
                 .await;
@@ -336,16 +339,27 @@ impl TaskRouter {
                         break;
                     }
                     Err(_) => {
-                        // Shared route budget exhausted — do not open the
-                        // per-model circuit; the model may only have been slow
-                        // relative to remaining budget, not unhealthy.
+                        // Per-attempt budget hit. If shared deadline remains,
+                        // soft-fail and try the next protocol/model; do not
+                        // open the per-model circuit (may only have been slow).
+                        last_error = AiError::Timeout;
+                        protocol_error = None;
+                        if Instant::now() >= deadline {
+                            tracing::warn!(
+                                model = %model,
+                                task = %request.task.as_str(),
+                                protocol = %protocol.as_str(),
+                                "AI route deadline exhausted"
+                            );
+                            return Err(AiError::Timeout);
+                        }
                         tracing::warn!(
                             model = %model,
                             task = %request.task.as_str(),
                             protocol = %protocol.as_str(),
-                            "AI route deadline exhausted"
+                            "AI attempt timed out within route budget; trying next"
                         );
-                        return Err(AiError::Timeout);
+                        continue;
                     }
                 }
             }
@@ -466,6 +480,13 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// Per-attempt budget: at most half the route timeout, never more than remaining.
+/// Keeps room for at least one more protocol/model try when the primary hangs.
+fn per_attempt_budget(route_timeout: Duration, remaining: Duration) -> Duration {
+    let half = (route_timeout / 2).max(Duration::from_millis(1));
+    remaining.min(half)
 }
 
 fn is_protocol_rejection(error: &AiError) -> bool {
@@ -774,7 +795,9 @@ mod tests {
                 primary_model: "primary".into(),
                 fallback_models: vec!["fallback-1".into(), "fallback-2".into()],
                 protocol_preference: vec![ApiProtocol::Responses],
-                timeout: Duration::from_millis(20),
+                // Per-attempt cap is half of this; hung models still leave
+                // budget for the next model in the chain.
+                timeout: Duration::from_millis(80),
                 max_output_tokens: 100,
                 enabled: true,
                 route_version: "test".into(),
@@ -794,9 +817,100 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(error, AiError::Timeout);
+        // primary fails fast; each hang uses at most half remaining, so both
+        // fallbacks get attempted before the shared deadline ends.
         assert_eq!(
             *provider.attempted_models.lock().expect("lock"),
-            vec!["primary".to_owned(), "fallback-1".to_owned()]
+            vec![
+                "primary".to_owned(),
+                "fallback-1".to_owned(),
+                "fallback-2".to_owned()
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn per_attempt_cap_lets_fallback_run_after_primary_hang() {
+        #[derive(Debug, Default)]
+        struct HangPrimaryProvider {
+            attempted_models: Mutex<Vec<String>>,
+        }
+
+        #[async_trait::async_trait]
+        impl AiProvider for HangPrimaryProvider {
+            fn name(&self) -> &str {
+                "hang-primary"
+            }
+
+            fn capabilities(&self) -> crate::types::ProviderCapabilities {
+                crate::types::ProviderCapabilities {
+                    name: self.name().into(),
+                    structured_output: true,
+                    embeddings: false,
+                    max_context_tokens: 8_192,
+                    embedding_dimensions: None,
+                }
+            }
+
+            fn is_available(&self) -> bool {
+                true
+            }
+
+            async fn structured_completion(
+                &self,
+                request: StructuredRequest,
+            ) -> Result<crate::types::StructuredResponse, AiError> {
+                let model = request.model.expect("router supplies a model");
+                self.attempted_models
+                    .lock()
+                    .expect("lock")
+                    .push(model.clone());
+                if model == "primary" {
+                    std::future::pending().await
+                }
+                Ok(crate::types::StructuredResponse {
+                    provider: self.name().into(),
+                    model,
+                    content: json!({"ok": true}),
+                    usage_input: 1,
+                    usage_output: 1,
+                    prompt_cache_hit_tokens: None,
+                    prompt_cache_miss_tokens: None,
+                    latency_ms: 1,
+                    protocol: request.protocol,
+                })
+            }
+        }
+
+        let provider = Arc::new(HangPrimaryProvider::default());
+        let mut routes = default_task_routes();
+        routes.insert(
+            AiTaskType::RankExplain,
+            TaskRouteConfig {
+                task: AiTaskType::RankExplain,
+                primary_model: "primary".into(),
+                fallback_models: vec!["fallback".into()],
+                protocol_preference: vec![ApiProtocol::Responses],
+                timeout: Duration::from_millis(60),
+                max_output_tokens: 100,
+                enabled: true,
+                route_version: "test".into(),
+            },
+        );
+        let registry = Arc::new(ModelRegistry::new());
+        registry.seed(capabilities_from_model_ids(["primary", "fallback"]));
+        let router = TaskRouter::new(provider.clone(), routes, registry, RouterPolicy::default());
+
+        let result = router
+            .structured_completion(base_request(AiTaskType::RankExplain))
+            .await
+            .unwrap();
+
+        assert_eq!(result.response.model, "fallback");
+        assert!(result.used_fallback);
+        assert_eq!(
+            *provider.attempted_models.lock().expect("lock"),
+            vec!["primary".to_owned(), "fallback".to_owned()]
         );
     }
 
@@ -922,7 +1036,7 @@ mod tests {
                 primary_model: "slow-model".into(),
                 fallback_models: vec![],
                 protocol_preference: vec![ApiProtocol::Responses],
-                timeout: Duration::from_millis(20),
+                timeout: Duration::from_millis(40),
                 max_output_tokens: 100,
                 enabled: true,
                 route_version: "test".into(),
