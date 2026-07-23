@@ -650,14 +650,14 @@ pub fn resolve_display_dominant_mode(
     stored: Option<&str>,
     online_coop: Option<bool>,
 ) -> Option<String> {
-    if let Some(raw) = stored.map(str::trim).filter(|s| !s.is_empty()) {
-        if !raw.eq_ignore_ascii_case("unknown") {
-            let normalized = match raw {
-                "competitive" | "versus" | "vs" => "pvp",
-                other => other,
-            };
-            return Some(normalized.to_owned());
-        }
+    if let Some(raw) = stored.map(str::trim).filter(|s| !s.is_empty())
+        && !raw.eq_ignore_ascii_case("unknown")
+    {
+        let normalized = match raw {
+            "competitive" | "versus" | "vs" => "pvp",
+            other => other,
+        };
+        return Some(normalized.to_owned());
     }
     if online_coop == Some(true) {
         return Some("coop".to_owned());
