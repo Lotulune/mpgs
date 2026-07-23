@@ -12,6 +12,7 @@ export async function readRuntime() {
 export async function stopSeedServer() {
   const runtime = await readRuntime();
   if (runtime.serverStopped) return;
+  const healthUrl = runtime.serverHealthUrl ?? "http://127.0.0.1:8080/health/live";
 
   try {
     process.kill(runtime.serverPid, "SIGTERM");
@@ -22,7 +23,7 @@ export async function stopSeedServer() {
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
     try {
-      await fetch("http://127.0.0.1:8080/health/live", {
+      await fetch(healthUrl, {
         signal: AbortSignal.timeout(500),
       });
     } catch {

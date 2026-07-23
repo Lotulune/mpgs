@@ -13,7 +13,7 @@ use crate::error::AiError;
 use crate::types::{AiTaskType, ApiProtocol, TaskRouteConfig};
 
 /// Shared route table version. Bump when default policy changes.
-pub const DEFAULT_ROUTE_VERSION: &str = "m8-route-v3";
+pub const DEFAULT_ROUTE_VERSION: &str = "m8-route-v6";
 
 /// Build the default multi-model route table from PRD suggestions.
 ///
@@ -23,24 +23,33 @@ pub fn default_task_routes() -> HashMap<AiTaskType, TaskRouteConfig> {
     let version = DEFAULT_ROUTE_VERSION.to_owned();
     let mut routes = HashMap::new();
 
-    // Fast path stays on chat-fast; heavier tasks try grok-4.5 (Responses-first).
-    let heavy_fallbacks = vec!["grok-4.20-0309-non-reasoning".into(), "grok-4.3".into()];
-    let reasoning_fallbacks = vec![
-        "grok-4.20-0309-reasoning".into(),
+    // Primary: grok-4.5 (currently the most reliable path on sub2api-gcp).
+    // Fallbacks cover 4.20 non-reasoning / 4.3 when 4.5 is unavailable.
+    let primary = "grok-4.5";
+    let heavy_fallbacks = vec![
         "grok-4.20-0309-non-reasoning".into(),
+        "grok-4.20-non-reasoning".into(),
         "grok-4.3".into(),
     ];
-    // grok-4.5 is known to prefer Responses on Grok2API / OpenAI-compatible proxies.
+    let reasoning_fallbacks = vec![
+        "grok-4.20-0309-non-reasoning".into(),
+        "grok-4.20-0309-reasoning".into(),
+        "grok-4.3".into(),
+    ];
+    // Prefer Responses when available; chat completions is a solid fallback.
     let responses_first = vec![ApiProtocol::Responses, ApiProtocol::ChatCompletions];
 
     routes.insert(
         AiTaskType::IntentParse,
         TaskRouteConfig {
             task: AiTaskType::IntentParse,
-            primary_model: "grok-chat-fast".into(),
-            fallback_models: vec!["grok-4.20-0309-non-reasoning".into(), "grok-4.5".into()],
-            protocol_preference: vec![ApiProtocol::ChatCompletions, ApiProtocol::Responses],
-            timeout: Duration::from_secs(8),
+            primary_model: primary.into(),
+            fallback_models: heavy_fallbacks.clone(),
+            protocol_preference: responses_first.clone(),
+            // Shared across the whole model/protocol chain. 5s was too tight for
+            // grok-4.5 Responses cold starts and starved fallbacks; 12s still
+            // keeps NL snappy while leaving room for a protocol or model retry.
+            timeout: Duration::from_secs(12),
             max_output_tokens: 512,
             enabled: true,
             route_version: version.clone(),
@@ -51,7 +60,7 @@ pub fn default_task_routes() -> HashMap<AiTaskType, TaskRouteConfig> {
         AiTaskType::RankExplain,
         TaskRouteConfig {
             task: AiTaskType::RankExplain,
-            primary_model: "grok-4.5".into(),
+            primary_model: primary.into(),
             fallback_models: heavy_fallbacks.clone(),
             protocol_preference: responses_first.clone(),
             timeout: Duration::from_secs(35),
@@ -65,7 +74,7 @@ pub fn default_task_routes() -> HashMap<AiTaskType, TaskRouteConfig> {
         AiTaskType::GameSummary,
         TaskRouteConfig {
             task: AiTaskType::GameSummary,
-            primary_model: "grok-4.5".into(),
+            primary_model: primary.into(),
             fallback_models: heavy_fallbacks.clone(),
             protocol_preference: responses_first.clone(),
             timeout: Duration::from_secs(35),
@@ -79,7 +88,7 @@ pub fn default_task_routes() -> HashMap<AiTaskType, TaskRouteConfig> {
         AiTaskType::CompareGames,
         TaskRouteConfig {
             task: AiTaskType::CompareGames,
-            primary_model: "grok-4.5".into(),
+            primary_model: primary.into(),
             fallback_models: reasoning_fallbacks.clone(),
             protocol_preference: responses_first.clone(),
             timeout: Duration::from_secs(40),
@@ -93,7 +102,7 @@ pub fn default_task_routes() -> HashMap<AiTaskType, TaskRouteConfig> {
         AiTaskType::GroupAdvice,
         TaskRouteConfig {
             task: AiTaskType::GroupAdvice,
-            primary_model: "grok-4.5".into(),
+            primary_model: primary.into(),
             fallback_models: reasoning_fallbacks,
             protocol_preference: responses_first.clone(),
             timeout: Duration::from_secs(40),
@@ -107,9 +116,9 @@ pub fn default_task_routes() -> HashMap<AiTaskType, TaskRouteConfig> {
         AiTaskType::DataQuality,
         TaskRouteConfig {
             task: AiTaskType::DataQuality,
-            primary_model: "grok-4.20-0309-non-reasoning".into(),
-            fallback_models: vec!["grok-4.5".into()],
-            protocol_preference: vec![ApiProtocol::ChatCompletions, ApiProtocol::Responses],
+            primary_model: primary.into(),
+            fallback_models: heavy_fallbacks,
+            protocol_preference: responses_first,
             timeout: Duration::from_secs(20),
             max_output_tokens: 1_200,
             enabled: true,
@@ -235,7 +244,7 @@ mod tests {
         assert!(
             rank.fallback_models
                 .iter()
-                .any(|m| m == "grok-4.20-0309-non-reasoning")
+                .any(|m| m.contains("4.20") || m == "grok-4.3")
         );
         assert_eq!(rank.protocol_preference[0], ApiProtocol::Responses);
         let compare = routes.get(&AiTaskType::CompareGames).unwrap();
@@ -244,12 +253,20 @@ mod tests {
     }
 
     #[test]
-    fn intent_parse_uses_fast_primary() {
+    fn grok_45_routes_prefer_responses_and_intent_has_a_bounded_deadline() {
         let routes = default_task_routes();
         let intent = routes.get(&AiTaskType::IntentParse).unwrap();
-        assert_eq!(intent.primary_model, "grok-chat-fast");
-        assert!(intent.timeout <= Duration::from_secs(10));
+        assert_eq!(intent.primary_model, "grok-4.5");
+        assert_eq!(intent.protocol_preference[0], ApiProtocol::Responses);
+        assert_eq!(intent.timeout, Duration::from_secs(12));
         assert!(intent.max_output_tokens <= 1_024);
+        // Intent stays shorter than heavy generation tasks.
+        let rank = routes.get(&AiTaskType::RankExplain).unwrap();
+        assert!(intent.timeout < rank.timeout);
+
+        let data_quality = routes.get(&AiTaskType::DataQuality).unwrap();
+        assert_eq!(data_quality.primary_model, "grok-4.5");
+        assert_eq!(data_quality.protocol_preference[0], ApiProtocol::Responses);
     }
 
     #[test]

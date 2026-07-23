@@ -11,6 +11,10 @@ const runtimeRoot = path.join(packageDir, ".runtime");
 const runtimeFile = path.join(runtimeRoot, "current.json");
 const artifactDir = path.resolve(process.env.MPGS_E2E_ARTIFACT_DIR ?? path.join(packageDir, "artifacts"));
 const executableSuffix = process.platform === "win32" ? ".exe" : "";
+const seedServerHost = process.env.MPGS_E2E_SERVER_HOST ?? "127.0.0.1";
+const seedServerPort = 18080;
+const seedServerUrlHost = seedServerHost.includes(":") ? `[${seedServerHost}]` : seedServerHost;
+const seedServerOrigin = `http://${seedServerUrlHost}:${seedServerPort}`;
 
 function configuredPath(envName, fallback) {
   const configured = process.env[envName];
@@ -45,6 +49,19 @@ function requireFile(file, label) {
   }
 }
 
+async function requirePortAvailable(host, port) {
+  await new Promise((resolve, reject) => {
+    const probe = net.createServer();
+    probe.unref();
+    probe.once("error", (error) => {
+      reject(new Error(`required E2E port ${port} is unavailable: ${error.message}`));
+    });
+    probe.listen({ host, port, exclusive: true }, () => {
+      probe.close(resolve);
+    });
+  });
+}
+
 function stopProcess(child) {
   if (!child || child.exitCode !== null || child.killed) return;
   try {
@@ -68,6 +85,36 @@ async function waitForHttp(url, timeoutMs) {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   throw new Error(`timed out waiting for ${url}: ${lastError?.message ?? "unknown error"}`);
+}
+
+async function waitForProcessHttp(child, url, timeoutMs) {
+  let onExit;
+  const earlyExit = new Promise((_, reject) => {
+    onExit = (code, signal) => {
+      reject(new Error(`mpgs-server exited before readiness (code=${code}, signal=${signal})`));
+    };
+    child.once("exit", onExit);
+  });
+  try {
+    await Promise.race([waitForHttp(url, timeoutMs), earlyExit]);
+    await new Promise((resolve, reject) => {
+      if (child.exitCode !== null) {
+        reject(new Error(`mpgs-server exited after readiness (code=${child.exitCode})`));
+        return;
+      }
+      const onStabilityExit = (code, signal) => {
+        clearTimeout(timer);
+        reject(new Error(`mpgs-server exited after readiness (code=${code}, signal=${signal})`));
+      };
+      const timer = setTimeout(() => {
+        child.off("exit", onStabilityExit);
+        resolve();
+      }, 250);
+      child.once("exit", onStabilityExit);
+    });
+  } finally {
+    child.off("exit", onExit);
+  }
 }
 
 async function waitForPort(port, timeoutMs) {
@@ -141,6 +188,7 @@ export const config = {
     requireFile(application, "Tauri application");
     requireFile(serverBinary, "mpgs-server");
     requireFile(tauriDriverBinary, "tauri-driver");
+    await requirePortAvailable(seedServerHost, seedServerPort);
     mkdirSync(runtimeRoot, { recursive: true });
     mkdirSync(artifactDir, { recursive: true });
     runtimeDir = mkdtempSync(path.join(os.tmpdir(), "mpgs-e2e-"));
@@ -155,20 +203,23 @@ export const config = {
         MPGS_DATABASE_PATH: path.join(runtimeDir, "server.sqlite3"),
         MPGS_SEED_DEMO: "true",
         MPGS_RATE_LIMIT_ENABLED: "false",
-        MPGS_BIND_ADDR: "127.0.0.1:8080",
+        MPGS_BIND_ADDR: `${seedServerUrlHost}:${seedServerPort}`,
       },
       stdio: ["ignore", serverLogFd, serverLogFd],
       windowsHide: true,
     });
     writeFileSync(
       runtimeFile,
-      JSON.stringify({ runtimeDir, desktopDataDir, serverPid: serverProcess.pid, serverStopped: false }),
+      JSON.stringify({
+        runtimeDir,
+        desktopDataDir,
+        serverPid: serverProcess.pid,
+        serverHealthUrl: `${seedServerOrigin}/health/live`,
+        serverStopped: false,
+      }),
       "utf8",
     );
-    await waitForHttp("http://127.0.0.1:8080/health/ready", 20_000);
-    if (serverProcess.exitCode !== null) {
-      throw new Error(`mpgs-server exited early with code ${serverProcess.exitCode}; port 8080 may already be occupied`);
-    }
+    await waitForProcessHttp(serverProcess, `${seedServerOrigin}/health/ready`, 20_000);
   },
 
   beforeSession: async (_wdioConfig, capabilities) => {

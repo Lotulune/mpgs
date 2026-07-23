@@ -1,6 +1,7 @@
 // First-run onboarding: pick a theme (live, per-card skinned), then set core
 // preferences. Preferences are pushed via PUT /v1/preferences; failures keep
 // the user local-only and are surfaced without blocking browsing.
+// Styles: styles/screens/settings.css（.onboarding 作用域）+ base.css 共享类。
 
 import { useMemo, useRef, useState } from "react";
 import { ApiError } from "../api/client";
@@ -8,21 +9,17 @@ import { apiClient, markOnboarded } from "../app/runtime";
 import {
   flushPendingPreferencePatch,
   queuePreferencePatch,
+  SESSION_OPTIONS,
   type PendingPreferencesPatch,
 } from "../app/preferences";
 import { useTheme } from "../app/ThemeProvider";
 import { useToast } from "../app/ToastProvider";
 import { THEME_ORDER, THEMES } from "../theme/registry";
 import type { ThemeId } from "../theme/types";
+import { Button } from "../components/Button";
+import { Panel } from "../components/Panel";
 
 const PARTY_CHOICES = [2, 3, 4, 5, 6, 8];
-
-const SESSION_CHOICES: { label: string; min: number; max: number }[] = [
-  { label: "30–60 分钟", min: 30, max: 60 },
-  { label: "1–2 小时", min: 60, max: 120 },
-  { label: "2–3 小时", min: 60, max: 180 },
-  { label: "不设限", min: 15, max: 480 },
-];
 
 const BUDGET_CHOICES: { label: string; minor: number | null }[] = [
   { label: "¥50 以内", minor: 5_000 },
@@ -31,6 +28,27 @@ const BUDGET_CHOICES: { label: string; minor: number | null }[] = [
   { label: "¥300 以内", minor: 30_000 },
   { label: "不限", minor: null },
 ];
+
+const STEP_LABELS = ["界面风格", "联机偏好"] as const;
+
+function StepIndicator({ step }: { step: 0 | 1 }) {
+  return (
+    <ol className="onboarding-steps" aria-label="引导进度">
+      {STEP_LABELS.map((label, idx) => (
+        <li
+          key={label}
+          className={idx === step ? "current" : idx < step ? "done" : ""}
+          aria-current={idx === step ? "step" : undefined}
+        >
+          <span className="step-index" aria-hidden="true">
+            {idx + 1}
+          </span>
+          {label}
+        </li>
+      ))}
+    </ol>
+  );
+}
 
 function ThemePickerCard({
   id,
@@ -83,7 +101,7 @@ export function OnboardingScreen({ onDone }: { onDone: () => void }) {
 
   const finish = async () => {
     setSaving(true);
-    const session = SESSION_CHOICES[sessionIdx] ?? SESSION_CHOICES[1]!;
+    const session = SESSION_OPTIONS[sessionIdx] ?? SESSION_OPTIONS[1]!;
     const budget = BUDGET_CHOICES[budgetIdx] ?? BUDGET_CHOICES[2]!;
     const patch: PendingPreferencesPatch = {
       party_size: party,
@@ -118,8 +136,11 @@ export function OnboardingScreen({ onDone }: { onDone: () => void }) {
   if (step === 0) {
     return (
       <div className="onboarding">
-        <h1>选择你的界面风格</h1>
-        <p className="sub">每种主题都有自己的动态特效与点击反馈，随时可在顶栏切换。</p>
+        <StepIndicator step={0} />
+        <header className="onboarding-head">
+          <h1>选择你的界面风格</h1>
+          <p className="sub">每种主题都有自己的动态特效与点击反馈，随时可在顶栏切换。</p>
+        </header>
         <div className="theme-grid">
           {THEME_ORDER.map((id) => (
             <ThemePickerCard
@@ -131,9 +152,9 @@ export function OnboardingScreen({ onDone }: { onDone: () => void }) {
           ))}
         </div>
         <div className="onboarding-actions">
-          <button type="button" className="btn primary" onClick={() => setStep(1)}>
+          <Button variant="primary" onClick={() => setStep(1)}>
             继续 →
-          </button>
+          </Button>
         </div>
       </div>
     );
@@ -141,103 +162,101 @@ export function OnboardingScreen({ onDone }: { onDone: () => void }) {
 
   return (
     <div className="onboarding">
-      <h1>你们通常怎么玩？</h1>
-      <p className="sub">这些偏好驱动四个分区的排序，之后可以随时调整。</p>
-      <div className="prefs-form">
-        <div className="pref-row">
-          <label htmlFor="party-seg">常用人数</label>
-          <div className="seg" id="party-seg" role="group" aria-label="常用人数">
-            {PARTY_CHOICES.map((n) => (
-              <button
-                key={n}
-                type="button"
-                className="btn"
-                aria-pressed={party === n}
-                onClick={() => setParty(n)}
-              >
-                {n} 人
-              </button>
-            ))}
+      <StepIndicator step={1} />
+      <header className="onboarding-head">
+        <h1>你们通常怎么玩？</h1>
+        <p className="sub">这些偏好驱动四个分区的排序，之后可以随时调整。</p>
+      </header>
+      <Panel className="onboarding-prefs-panel">
+        <div className="prefs-form">
+          <div className="pref-row">
+            <label htmlFor="party-seg">常用人数</label>
+            <div className="seg" id="party-seg" role="group" aria-label="常用人数">
+              {PARTY_CHOICES.map((n) => (
+                <Button
+                  key={n}
+                  aria-pressed={party === n}
+                  onClick={() => setParty(n)}
+                >
+                  {n} 人
+                </Button>
+              ))}
+            </div>
+          </div>
+
+          <div className="pref-row">
+            <label htmlFor="coop-range">
+              合作 ↔ 竞技
+              <output>{coopLabel}</output>
+            </label>
+            <input
+              id="coop-range"
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={coopCompetitive}
+              onChange={(event) => setCoopCompetitive(Number(event.target.value))}
+            />
+          </div>
+
+          <div className="pref-row">
+            <label htmlFor="session-seg">单次游玩时长</label>
+            <div className="seg" id="session-seg" role="group" aria-label="单次游玩时长">
+              {SESSION_OPTIONS.map((choice, idx) => (
+                <Button
+                  key={choice.label}
+                  aria-pressed={sessionIdx === idx}
+                  onClick={() => setSessionIdx(idx)}
+                >
+                  {choice.label}
+                </Button>
+              ))}
+            </div>
+          </div>
+
+          <div className="pref-row">
+            <label htmlFor="budget-seg">每人预算</label>
+            <div className="seg" id="budget-seg" role="group" aria-label="每人预算">
+              {BUDGET_CHOICES.map((choice, idx) => (
+                <Button
+                  key={choice.label}
+                  aria-pressed={budgetIdx === idx}
+                  onClick={() => setBudgetIdx(idx)}
+                >
+                  {choice.label}
+                </Button>
+              ))}
+            </div>
+          </div>
+
+          <div className="pref-row">
+            <label htmlFor="host-range">
+              自建服务器意愿
+              <output>
+                {selfHosting >= 0.7 ? "愿意折腾" : selfHosting >= 0.4 ? "看情况" : "最好免配置"}
+              </output>
+            </label>
+            <input
+              id="host-range"
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={selfHosting}
+              onChange={(event) => setSelfHosting(Number(event.target.value))}
+            />
           </div>
         </div>
-
-        <div className="pref-row">
-          <label htmlFor="coop-range">
-            合作 ↔ 竞技
-            <output>{coopLabel}</output>
-          </label>
-          <input
-            id="coop-range"
-            type="range"
-            min={0}
-            max={1}
-            step={0.05}
-            value={coopCompetitive}
-            onChange={(event) => setCoopCompetitive(Number(event.target.value))}
-          />
-        </div>
-
-        <div className="pref-row">
-          <label htmlFor="session-seg">单次游玩时长</label>
-          <div className="seg" id="session-seg" role="group" aria-label="单次游玩时长">
-            {SESSION_CHOICES.map((choice, idx) => (
-              <button
-                key={choice.label}
-                type="button"
-                className="btn"
-                aria-pressed={sessionIdx === idx}
-                onClick={() => setSessionIdx(idx)}
-              >
-                {choice.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="pref-row">
-          <label htmlFor="budget-seg">每人预算</label>
-          <div className="seg" id="budget-seg" role="group" aria-label="每人预算">
-            {BUDGET_CHOICES.map((choice, idx) => (
-              <button
-                key={choice.label}
-                type="button"
-                className="btn"
-                aria-pressed={budgetIdx === idx}
-                onClick={() => setBudgetIdx(idx)}
-              >
-                {choice.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="pref-row">
-          <label htmlFor="host-range">
-            自建服务器意愿
-            <output>
-              {selfHosting >= 0.7 ? "愿意折腾" : selfHosting >= 0.4 ? "看情况" : "最好免配置"}
-            </output>
-          </label>
-          <input
-            id="host-range"
-            type="range"
-            min={0}
-            max={1}
-            step={0.05}
-            value={selfHosting}
-            onChange={(event) => setSelfHosting(Number(event.target.value))}
-          />
-        </div>
-      </div>
+      </Panel>
 
       <div className="onboarding-actions">
-        <button type="button" className="btn ghost" onClick={() => setStep(0)}>
+        <Button variant="ghost" onClick={() => setStep(0)}>
           ← 换个主题
-        </button>
-        <button
+        </Button>
+        <Button
           ref={doneBtnRef}
-          type="button"
-          className="btn primary"
+          variant="primary"
           disabled={saving}
           onClick={() => void finish()}
         >
@@ -248,7 +267,7 @@ export function OnboardingScreen({ onDone }: { onDone: () => void }) {
           ) : (
             "开始探索"
           )}
-        </button>
+        </Button>
       </div>
     </div>
   );

@@ -1,0 +1,142 @@
+/* 阶段 5 · NaturalLanguageScreen（描述推荐）
+   本页全部新增样式与共享类覆盖都在此文件；覆盖共享类（.nl-query /
+   .nl-examples / .feed-grid / .state-box / .cal-note）时一律以页面根容器
+   .nl-screen 限定作用域，只消费主题 token，不写主题相关选择器。 */
+
+.nl-screen {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+/* ---------- 查询输入区（hero 面板） ---------- */
+
+.nl-screen .nl-query {
+  max-width: none;
+  margin-bottom: 0;
+  gap: 12px;
+  padding: 22px 24px;
+  border: var(--bw) solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+
+.nl-screen .nl-query > label {
+  font-family: var(--font-display);
+  font-size: 20px;
+  color: var(--ink);
+  letter-spacing: var(--heading-spacing);
+  text-transform: var(--heading-transform);
+}
+
+.nl-query-hint {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink-muted);
+}
+
+.nl-input-row {
+  display: flex;
+  gap: 10px;
+}
+
+.nl-input-row input {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-body);
+  font-size: 16px;
+  color: var(--ink);
+  background: var(--surface-2);
+  border: var(--bw) solid var(--border-strong);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  outline: none;
+  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+
+.nl-input-row input::placeholder {
+  color: var(--ink-faint);
+}
+
+.nl-input-row input:focus {
+  border-color: var(--accent);
+  box-shadow: var(--glow);
+}
+
+.nl-input-row .btn {
+  align-self: stretch;
+}
+
+.nl-screen .nl-examples {
+  align-items: center;
+  gap: 8px;
+}
+
+.nl-examples-label {
+  font-size: 12.5px;
+  color: var(--ink-faint);
+}
+
+/* ---------- 理解结果面板（AI 状态 + 识别到的条件 + 数据新鲜度） ---------- */
+
+.nl-analysis {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 18px;
+  border: var(--bw) solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.nl-analysis-row {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.nl-analysis-label {
+  flex: 0 0 6em;
+  font-size: 12px;
+  color: var(--ink-faint);
+}
+
+.nl-constraints-empty {
+  font-size: 12.5px;
+  color: var(--ink-faint);
+}
+
+/* ---------- 共享类间距覆盖（页面根 flex 已提供间距） ---------- */
+
+.nl-screen .feed-grid {
+  margin-top: 0;
+}
+
+.nl-screen .state-box {
+  margin-top: 0;
+}
+
+.nl-screen .cal-note {
+  margin: -6px 0 0;
+}
+
+/* ---------- 窄屏 ---------- */
+
+@media (max-width: 640px) {
+  .nl-screen .nl-query {
+    padding: 16px;
+  }
+
+  .nl-input-row {
+    flex-direction: column;
+  }
+
+  .nl-input-row .btn {
+    justify-content: center;
+  }
+
+  .nl-analysis-row {
+    flex-direction: column;
+    gap: 4px;
+  }
+}

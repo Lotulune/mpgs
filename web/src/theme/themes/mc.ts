@@ -1,6 +1,7 @@
-// MC 风 (blocky sandbox): procedural dirt/stone/plank tiles, chunky bevel UI,
-// block-break particle physics, floating pickup-style hearts and XP orbs.
-// All textures are generated at runtime — no copyrighted assets.
+// MC 风 (blocky sandbox): procedural stone-brick grid backdrop, grass-block
+// topbar edge, chunky bevel UI, block-break particle physics, floating
+// pickup-style hearts and XP orbs. All textures are generated at runtime —
+// no copyrighted assets.
 
 import { makeTexture, mulberry32 } from "../proc";
 import type { ParticleEmitter, ThemeFx } from "../../fx/types";
@@ -10,16 +11,54 @@ import type { ThemeDefinition } from "../types";
 const DIRT = ["#79553a", "#8a6142", "#6d4c34", "#7d5b3e", "#5f4229"];
 const STONE = ["#7f7f7f", "#8c8c8c", "#747474", "#838383", "#6b6b6b"];
 const GRASS = ["#5d9c3f", "#6aad4a", "#548f39", "#63a344", "#4c8433"];
-const PLANK = ["#9c7f4e", "#a8894f", "#8f7344", "#a2834b"];
 
-function tileTexture(palette: string[], seed: number, px = 16, cell = 4): string {
-  const rng = mulberry32(seed);
-  return makeTexture(px * cell, (ctx) => {
-    for (let ix = 0; ix < px; ix += 1) {
-      for (let iy = 0; iy < px; iy += 1) {
-        const idx = Math.floor(rng() * palette.length);
-        ctx.fillStyle = palette[idx] ?? palette[0] ?? "#777";
-        ctx.fillRect(ix * cell, iy * cell, cell, cell);
+// Dark stone-brick backdrop: distinguishable 8px blocks with grout lines and
+// a top-left bevel highlight, so the background reads as laid blocks rather
+// than random noise.
+function stoneGridTexture(): string {
+  const rng = mulberry32(11);
+  const palette = ["#2b2b30", "#2f2f35", "#27272c", "#323238", "#242428"];
+  const block = 8;
+  const blocks = 16;
+  return makeTexture(block * blocks, (ctx) => {
+    for (let bx = 0; bx < blocks; bx += 1) {
+      for (let by = 0; by < blocks; by += 1) {
+        const x = bx * block;
+        const y = by * block;
+        ctx.fillStyle = palette[Math.floor(rng() * palette.length)] ?? "#2b2b30";
+        ctx.fillRect(x, y, block, block);
+        // Sparse in-block noise.
+        for (let px = 0; px < block; px += 2) {
+          for (let py = 0; py < block; py += 2) {
+            if (rng() < 0.3) {
+              ctx.fillStyle = rng() < 0.5 ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.13)";
+              ctx.fillRect(x + px, y + py, 2, 2);
+            }
+          }
+        }
+        // Grout: dark bottom/right edges, faint top/left bevel.
+        ctx.fillStyle = "rgba(0,0,0,0.38)";
+        ctx.fillRect(x, y + block - 1, block, 1);
+        ctx.fillRect(x + block - 1, y, 1, block);
+        ctx.fillStyle = "rgba(255,255,255,0.05)";
+        ctx.fillRect(x, y, block, 1);
+        ctx.fillRect(x, y, 1, block);
+      }
+    }
+  });
+}
+
+// Grass-block side profile for the topbar edge: grass cap with a ragged
+// bottom over dirt. Drawn in a square tile, displayed squashed 2:1.
+function grassEdgeTexture(): string {
+  const rng = mulberry32(21);
+  return makeTexture(16, (ctx, size) => {
+    for (let x = 0; x < size; x += 1) {
+      const grassDepth = 5 + Math.floor(rng() * 3); // 5–7 px of grass
+      for (let y = 0; y < size; y += 1) {
+        const palette = y < grassDepth ? GRASS : DIRT;
+        ctx.fillStyle = palette[Math.floor(rng() * palette.length)] ?? "#5d9c3f";
+        ctx.fillRect(x, y, 1, 1);
       }
     }
   });
@@ -153,9 +192,7 @@ export const mcTheme: ThemeDefinition = {
   fx,
   onActivate(root) {
     // Generate tiling textures once and expose them to the CSS skin.
-    root.style.setProperty("--mc-dirt", `url(${tileTexture(DIRT, 1)})`);
-    root.style.setProperty("--mc-stone", `url(${tileTexture(STONE, 2)})`);
-    root.style.setProperty("--mc-grass", `url(${tileTexture(GRASS, 3)})`);
-    root.style.setProperty("--mc-plank", `url(${tileTexture(PLANK, 4)})`);
+    root.style.setProperty("--mc-stone-grid", `url(${stoneGridTexture()})`);
+    root.style.setProperty("--mc-grass-edge", `url(${grassEdgeTexture()})`);
   },
 };

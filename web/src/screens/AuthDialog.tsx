@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { ApiError } from "../api/client";
 import { apiClient } from "../app/runtime";
+import { Button } from "../components/Button";
+import { Modal } from "../components/Modal";
 
 type Mode = "login" | "register";
 
@@ -67,115 +69,113 @@ export function AuthDialog({
   };
 
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
-      <section
-        className="modal auth-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="auth-title"
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        <div className="modal-head">
-          <h2 id="auth-title">{mode === "login" ? "登录" : "注册"}</h2>
-          <button type="button" className="icon-btn" aria-label="关闭" onClick={onClose}>
-            ×
-          </button>
-        </div>
-        <div className="seg auth-mode" role="tablist" aria-label="账户操作">
-          <button
-            type="button"
-            className="btn small"
-            data-testid="auth-mode-login"
-            aria-pressed={mode === "login"}
-            onClick={() => switchMode("login")}
-          >
-            登录
-          </button>
-          <button
-            type="button"
-            className="btn small"
-            data-testid="auth-mode-register"
-            aria-pressed={mode === "register"}
-            onClick={() => switchMode("register")}
-          >
-            注册
-          </button>
-        </div>
-        <form className="stack-form" onSubmit={(event) => void submit(event)}>
+    <Modal
+      title={mode === "login" ? "登录" : "注册"}
+      titleId="auth-title"
+      onClose={onClose}
+      className="auth-dialog"
+    >
+      <div className="seg auth-mode" role="tablist" aria-label="账户操作">
+        <Button
+          size="small"
+          data-testid="auth-mode-login"
+          aria-pressed={mode === "login"}
+          onClick={() => switchMode("login")}
+        >
+          登录
+        </Button>
+        <Button
+          size="small"
+          data-testid="auth-mode-register"
+          aria-pressed={mode === "register"}
+          onClick={() => switchMode("register")}
+        >
+          注册
+        </Button>
+      </div>
+      <p className="auth-subtitle">
+        {mode === "login"
+          ? "登录后云端保存偏好与反馈，换设备不丢。"
+          : "注册只需用户名与密码，本机偏好会在首次登录时合并。"}
+      </p>
+      <form className="stack-form" onSubmit={(event) => void submit(event)}>
+        <label>
+          用户名
+          <input
+            ref={usernameRef}
+            data-testid="auth-username"
+            value={username}
+            minLength={3}
+            maxLength={32}
+            pattern="[A-Za-z0-9_]+"
+            autoComplete="username"
+            onChange={(event) => setUsername(event.target.value)}
+            required
+          />
+        </label>
+        {mode === "register" && (
           <label>
-            用户名
+            显示名称
             <input
-              ref={usernameRef}
-              data-testid="auth-username"
-              value={username}
-              minLength={3}
-              maxLength={32}
-              pattern="[A-Za-z0-9_]+"
-              autoComplete="username"
-              onChange={(event) => setUsername(event.target.value)}
+              data-testid="auth-display-name"
+              value={displayName}
+              maxLength={40}
+              autoComplete="nickname"
+              onChange={(event) => setDisplayName(event.target.value)}
               required
             />
           </label>
-          {mode === "register" && (
+        )}
+        <label>
+          密码
+          <input
+            type="password"
+            data-testid="auth-password"
+            value={password}
+            minLength={10}
+            maxLength={128}
+            autoComplete={mode === "login" ? "current-password" : "new-password"}
+            onChange={(event) => setPassword(event.target.value)}
+            required
+          />
+        </label>
+        {mergeRequired && mode === "login" && (
+          <fieldset className="choice-fieldset auth-merge">
+            <legend>保留哪份偏好设置？</legend>
             <label>
-              显示名称
               <input
-                data-testid="auth-display-name"
-                value={displayName}
-                maxLength={40}
-                autoComplete="nickname"
-                onChange={(event) => setDisplayName(event.target.value)}
-                required
+                type="radio"
+                name="merge-preference"
+                checked={mergePreference === "account"}
+                onChange={() => setMergePreference("account")}
               />
+              保留账户偏好（云端）
             </label>
-          )}
-          <label>
-            密码
-            <input
-              type="password"
-              data-testid="auth-password"
-              value={password}
-              minLength={10}
-              maxLength={128}
-              autoComplete={mode === "login" ? "current-password" : "new-password"}
-              onChange={(event) => setPassword(event.target.value)}
-              required
-            />
-          </label>
-          {mergeRequired && mode === "login" && (
-            <fieldset className="choice-fieldset">
-              <legend>偏好设置</legend>
-              <label>
-                <input
-                  type="radio"
-                  name="merge-preference"
-                  checked={mergePreference === "account"}
-                  onChange={() => setMergePreference("account")}
-                />
-                保留账户偏好
-              </label>
-              <label>
-                <input
-                  type="radio"
-                  name="merge-preference"
-                  checked={mergePreference === "anonymous"}
-                  onChange={() => setMergePreference("anonymous")}
-                />
-                保留本机偏好
-              </label>
-            </fieldset>
-          )}
-          {error && <p className="form-error" role="alert">{error}</p>}
-          <button
-            type="submit"
-            className="btn primary"
-            data-testid="auth-submit"
-            disabled={busy || (mergeRequired && !mergePreference)}
-          >
-            {busy ? "处理中" : mode === "login" ? "登录" : "创建账户"}
-          </button>
-        </form>
-      </section>
-    </div>
+            <label>
+              <input
+                type="radio"
+                name="merge-preference"
+                checked={mergePreference === "anonymous"}
+                onChange={() => setMergePreference("anonymous")}
+              />
+              保留本机偏好（当前设备）
+            </label>
+          </fieldset>
+        )}
+        {error && (
+          <p className="form-error" role="alert">
+            {error}
+          </p>
+        )}
+        <Button
+          type="submit"
+          variant="primary"
+          data-testid="auth-submit"
+          disabled={busy || (mergeRequired && !mergePreference)}
+        >
+          {busy ? "处理中" : mode === "login" ? "登录" : "创建账户"}
+        </Button>
+      </form>
+    </Modal>
   );
 }

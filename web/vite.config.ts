@@ -5,6 +5,7 @@ import react from "@vitejs/plugin-react";
 const PACKAGED_API_BASES = new Set([
   "http://127.0.0.1:8080",
   "http://localhost:8080",
+  "http://127.0.0.1:18080",
 ]);
 
 // Browser dev server proxies API calls to the local mpgs-server so the web app
@@ -12,10 +13,9 @@ const PACKAGED_API_BASES = new Set([
 // server directly (the server keeps an explicit CORS allowlist for that origin).
 export default defineConfig(({ command, mode }) => {
   const env = loadEnv(mode, process.cwd(), "VITE_");
-  const configuredApiBase = env.VITE_MPGS_API_BASE?.replace(
-    /\/$/,
-    "",
-  );
+  const configuredApiBase =
+    env.VITE_MPGS_API_BASE?.replace(/\/$/, "") ??
+    (mode === "e2e" ? "http://127.0.0.1:18080" : undefined);
   const devApiProxyTarget =
     env.VITE_MPGS_DEV_PROXY_TARGET?.replace(/\/$/, "") ?? "http://127.0.0.1:8080";
   if (command === "build" && configuredApiBase && !PACKAGED_API_BASES.has(configuredApiBase)) {
@@ -27,6 +27,9 @@ export default defineConfig(({ command, mode }) => {
 
   return {
     plugins: [react()],
+    define: configuredApiBase
+      ? { "import.meta.env.VITE_MPGS_API_BASE": JSON.stringify(configuredApiBase) }
+      : undefined,
     server: {
       port: 5173,
       strictPort: true,

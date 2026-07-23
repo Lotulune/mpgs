@@ -1,5 +1,6 @@
 // Settings: durable preference editing, theme + FX controls,
 // cache management, and sync/offline status.
+// Styles: styles/screens/settings.css（.settings-screen 作用域）+ base.css 共享类。
 
 import { useEffect, useRef, useState } from "react";
 import { ApiError } from "../api/client";
@@ -19,10 +20,15 @@ import {
   PLATFORM_OPTIONS,
   preferencesChanged,
   queuePreferencePatch,
+  SESSION_OPTIONS,
   toggleMember,
 } from "../app/preferences";
 import { THEME_ORDER, THEMES } from "../theme/registry";
 import type { FxIntensity } from "../fx/types";
+import { Button } from "../components/Button";
+import { Chip } from "../components/Chip";
+import { Panel } from "../components/Panel";
+import { Skeleton } from "../components/Skeleton";
 import { AiSettingsScreen } from "./AiSettingsScreen";
 
 const PARTY_CHOICES = [2, 3, 4, 5, 6, 8];
@@ -55,15 +61,14 @@ function MultiToggle({
       <legend>{legend}</legend>
       <div className="seg">
         {options.map((opt) => (
-          <button
+          <Button
             key={opt.id}
-            type="button"
-            className="btn small"
+            size="small"
             aria-pressed={selected.includes(opt.id)}
             onClick={() => onToggle(opt.id)}
           >
             {opt.label}
-          </button>
+          </Button>
         ))}
       </div>
     </fieldset>
@@ -85,6 +90,7 @@ export function SettingsScreen() {
   const [accountAuthenticated, setAccountAuthenticated] = useState(() =>
     apiClient.isAccountAuthenticated(),
   );
+  const [pendingFeedback, setPendingFeedback] = useState(() => feedbackQueue.pendingCount());
   const saveBtnRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
@@ -114,6 +120,12 @@ export function SettingsScreen() {
 
   useEffect(
     () => apiClient.subscribeAuth(() => setAccountAuthenticated(apiClient.isAccountAuthenticated())),
+    [],
+  );
+
+  // Keep the "pending feedback" chip live as the queue syncs.
+  useEffect(
+    () => feedbackQueue.subscribe(() => setPendingFeedback(feedbackQueue.pendingCount())),
     [],
   );
 
@@ -185,25 +197,28 @@ export function SettingsScreen() {
   const coopLabel =
     draft.coop_competitive <= 0.25 ? "偏合作" : draft.coop_competitive >= 0.75 ? "偏竞技" : "均衡";
 
+  const sessionIdx = SESSION_OPTIONS.findIndex(
+    (choice) =>
+      choice.min === draft.session_minutes_min && choice.max === draft.session_minutes_max,
+  );
+
   return (
-    <section aria-label="设置" className="settings">
+    <section aria-label="设置" className="settings settings-screen">
       <h2 className="settings-title">设置</h2>
 
-      <div className="panel">
-        <h4>外观</h4>
+      <Panel title="外观">
         <div className="pref-row">
           <label>主题</label>
           <div className="seg">
             {THEME_ORDER.map((id) => (
-              <button
+              <Button
                 key={id}
-                type="button"
-                className="btn small"
+                size="small"
                 aria-pressed={themeId === id}
                 onClick={() => setTheme(id)}
               >
                 {THEMES[id].label}
-              </button>
+              </Button>
             ))}
           </div>
         </div>
@@ -211,41 +226,40 @@ export function SettingsScreen() {
           <label>动态特效强度</label>
           <div className="seg">
             {FX_CHOICES.map((choice) => (
-              <button
+              <Button
                 key={choice.id}
-                type="button"
-                className="btn small"
+                size="small"
                 aria-pressed={intensity === choice.id}
                 onClick={() => setIntensity(choice.id)}
               >
                 {choice.label}
-              </button>
+              </Button>
             ))}
           </div>
         </div>
-      </div>
+      </Panel>
 
-      <div className="panel">
-        <h4>推荐偏好</h4>
+      <Panel title="推荐偏好">
         {loading ? (
-          <div className="skeleton" style={{ height: 220 }} />
+          <Skeleton height={220} />
         ) : (
           <div className="prefs-form">
-            {loadError && <p className="cal-note">{loadError}</p>}
+            {loadError && <p className="cal-note settings-note">{loadError}</p>}
+
+            <h5 className="pref-group-title">联机方式</h5>
 
             <div className="pref-row">
               <label>常用人数</label>
               <div className="seg">
                 {PARTY_CHOICES.map((n) => (
-                  <button
+                  <Button
                     key={n}
-                    type="button"
-                    className="btn small"
+                    size="small"
                     aria-pressed={draft.party_size === n}
                     onClick={() => patch({ party_size: n })}
                   >
                     {n} 人
-                  </button>
+                  </Button>
                 ))}
               </div>
             </div>
@@ -263,6 +277,48 @@ export function SettingsScreen() {
                 value={draft.coop_competitive}
                 onChange={(e) => patch({ coop_competitive: Number(e.target.value) })}
               />
+            </div>
+
+            <div className="pref-row">
+              <label>单次游玩时长</label>
+              <div className="seg">
+                {SESSION_OPTIONS.map((choice, idx) => (
+                  <Button
+                    key={choice.label}
+                    size="small"
+                    aria-pressed={sessionIdx === idx}
+                    onClick={() =>
+                      patch({
+                        session_minutes_min: choice.min,
+                        session_minutes_max: choice.max,
+                      })
+                    }
+                  >
+                    {choice.label}
+                  </Button>
+                ))}
+                {sessionIdx === -1 && (
+                  <Button size="small" aria-pressed="true" disabled>
+                    {draft.session_minutes_min}–{draft.session_minutes_max} 分钟
+                  </Button>
+                )}
+              </div>
+            </div>
+
+            <div className="pref-row">
+              <label>每人预算</label>
+              <div className="seg">
+                {BUDGET_CHOICES.map((choice) => (
+                  <Button
+                    key={choice.label}
+                    size="small"
+                    aria-pressed={draft.budget_max_each_minor === choice.minor}
+                    onClick={() => patch({ budget_max_each_minor: choice.minor })}
+                  >
+                    {choice.label}
+                  </Button>
+                ))}
+              </div>
             </div>
 
             <div className="pref-row">
@@ -287,22 +343,7 @@ export function SettingsScreen() {
               />
             </div>
 
-            <div className="pref-row">
-              <label>每人预算</label>
-              <div className="seg">
-                {BUDGET_CHOICES.map((choice) => (
-                  <button
-                    key={choice.label}
-                    type="button"
-                    className="btn small"
-                    aria-pressed={draft.budget_max_each_minor === choice.minor}
-                    onClick={() => patch({ budget_max_each_minor: choice.minor })}
-                  >
-                    {choice.label}
-                  </button>
-                ))}
-              </div>
-            </div>
+            <h5 className="pref-group-title">平台与内容</h5>
 
             <MultiToggle
               legend="平台"
@@ -323,11 +364,10 @@ export function SettingsScreen() {
               onToggle={(id) => patch({ excluded_modes: toggleMember(draft.excluded_modes, id) })}
             />
 
-            <div className="onboarding-actions" style={{ justifyContent: "flex-start" }}>
-              <button
+            <div className="settings-actions">
+              <Button
                 ref={saveBtnRef}
-                type="button"
-                className="btn primary"
+                variant="primary"
                 disabled={saving || !dirty}
                 onClick={() => void save()}
               >
@@ -340,54 +380,56 @@ export function SettingsScreen() {
                 ) : (
                   "已保存"
                 )}
-              </button>
+              </Button>
+              {!accountAuthenticated && (
+                <p className="cal-note settings-note">保存到云端需要登录，点击保存将先打开登录。</p>
+              )}
             </div>
           </div>
         )}
-      </div>
+      </Panel>
 
-      <div className="panel">
-        <h4>数据与缓存</h4>
-        <div className="statusline" style={{ marginBottom: 12 }}>
-          <span className={navigator.onLine ? "chip ok" : "chip danger"}>
+      <Panel title="数据与缓存">
+        <div className="statusline settings-statusline">
+          <Chip tone={navigator.onLine ? "ok" : "danger"}>
             {navigator.onLine ? "在线" : "离线"}
-          </span>
-          {feedbackQueue.pendingCount() > 0 && (
-            <span className="chip warn">{feedbackQueue.pendingCount()} 条反馈待同步</span>
+          </Chip>
+          {pendingFeedback > 0 && (
+            <Chip tone="warn">{pendingFeedback} 条反馈待同步</Chip>
           )}
-          {pendingPreferences && <span className="chip warn">偏好待同步</span>}
+          {pendingPreferences && <Chip tone="warn">偏好待同步</Chip>}
         </div>
         <div className="seg">
-          <button type="button" className="btn small" onClick={clearCache}>
+          <Button size="small" onClick={clearCache}>
             清除缓存快照
-          </button>
-          <button type="button" className="btn small" onClick={() => void feedbackQueue.flush()}>
+          </Button>
+          <Button size="small" onClick={() => void feedbackQueue.flush()}>
             立即同步反馈
-          </button>
+          </Button>
           {pendingPreferences && (
-            <button
-              type="button"
-              className="btn small"
+            <Button
+              size="small"
               disabled={syncingPreferences}
               onClick={() => void syncPendingPreferences()}
             >
               {syncingPreferences ? "同步中" : "立即同步偏好"}
-            </button>
+            </Button>
           )}
         </div>
-        <p className="cal-note">清除缓存不会删除尚未同步的反馈。</p>
-      </div>
+        <p className="cal-note settings-note">清除缓存不会删除尚未同步的反馈。</p>
+      </Panel>
 
       {accountAuthenticated ? (
         <AiSettingsScreen embedded />
       ) : (
-        <div className="panel" aria-label="AI 设置">
-          <h4>AI 设置</h4>
-          <p className="cal-note">登录后可选择内置 AI、自定义 OpenAI 兼容 API，或关闭 AI。</p>
-          <button type="button" className="btn primary" onClick={requestAccountSignIn}>
+        <Panel title="AI 设置" aria-label="AI 设置">
+          <p className="cal-note settings-note">
+            登录后可选择内置 AI、自定义 OpenAI 兼容 API，或关闭 AI。
+          </p>
+          <Button variant="primary" onClick={requestAccountSignIn}>
             登录后配置
-          </button>
-        </div>
+          </Button>
+        </Panel>
       )}
     </section>
   );

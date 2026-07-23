@@ -239,5 +239,17 @@ export function evidenceValueLabel(value: unknown): string {
   if (value === false) return "否";
   if (value === null || value === undefined) return "未知";
   if (typeof value === "number" || typeof value === "string") return String(value);
+  // Review-summary objects (positive/total[/wilson_lower]) get a readable
+  // rendering instead of raw JSON; anything else stays verbatim JSON.
+  if (typeof value === "object") {
+    const summary = value as { positive?: unknown; total?: unknown; wilson_lower?: unknown };
+    if (typeof summary.positive === "number" && typeof summary.total === "number") {
+      const wilson =
+        typeof summary.wilson_lower === "number"
+          ? ` · 加权好评率约 ${Math.round(summary.wilson_lower * 100)}%`
+          : "";
+      return `${summary.positive}/${summary.total} 好评${wilson}`;
+    }
+  }
   return JSON.stringify(value);
 }

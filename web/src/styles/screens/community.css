@@ -1,0 +1,101 @@
+/* CommunityScreen（大家想玩）页面布局。
+   全部规则以页面根容器 .community-screen 限定作用域；对 base.css 中已有共享类
+   （.community-filters / .community-row / .community-copy 等）的覆盖同样加此前缀，
+   依靠更高特异性生效，不影响其他页面。仅使用主题 token，5 套主题均可读。 */
+
+.community-screen {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* ---- 工具带：标题 + 排序 ---- */
+
+.community-screen .community-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px 16px;
+}
+
+.community-screen .community-toolbar-head h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 24px;
+}
+
+.community-screen .community-updated {
+  margin: 4px 0 0;
+  color: var(--ink-muted);
+  font-size: 13px;
+}
+
+.community-screen .community-sort {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.community-screen .community-toolbar-label {
+  color: var(--ink-muted);
+  font-size: 12px;
+}
+
+/* ---- 筛选带：独立面板，与列表视觉分层 ---- */
+
+.community-screen .community-filters {
+  margin: 0;
+  padding: 10px 12px;
+  border: var(--bw) solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+/* ---- 骨架：按真实行高分条占位 ---- */
+
+.community-screen .community-skeleton-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* ---- 列表项信息层级：封面 > 名称+日期 > 票数+facepile > VoteButton ---- */
+
+.community-screen .community-copy {
+  gap: 2px;
+}
+
+.community-screen .community-name {
+  font-size: 15px;
+}
+
+.community-screen .community-social {
+  gap: 14px;
+}
+
+/* ---- 行内错误（加载更多失败等，列表仍在）---- */
+
+.community-screen .community-error-note {
+  margin: 0;
+  color: var(--danger);
+  font-size: 13px;
+}
+
+/* ---- 加载更多 ---- */
+
+.community-screen .community-more {
+  display: flex;
+  justify-content: center;
+}
+
+@media (max-width: 780px) {
+  .community-screen .community-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .community-screen .community-sort {
+    justify-content: flex-start;
+  }
+}

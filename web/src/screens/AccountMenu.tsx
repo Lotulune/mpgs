@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import type { AccountProfile } from "../api/types";
 import { apiClient } from "../app/runtime";
 import { useToast } from "../app/ToastProvider";
+import { Avatar } from "../components/Avatar";
+import { Button } from "../components/Button";
 
 export function AccountMenu({
   profile,
@@ -17,15 +19,9 @@ export function AccountMenu({
   onLogout: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [imageFailed, setImageFailed] = useState(false);
   const [busy, setBusy] = useState(false);
   const toast = useToast();
   const rootRef = useRef<HTMLDivElement>(null);
-
-  // After a successful avatar change, reset the error latch so the new URL can render.
-  useEffect(() => {
-    setImageFailed(false);
-  }, [profile?.avatar_url]);
 
   useEffect(() => {
     if (!open) return;
@@ -38,13 +34,12 @@ export function AccountMenu({
 
   if (!profile) {
     return (
-      <button type="button" className="btn small" data-testid="auth-open-login" onClick={onLogin}>
+      <Button size="small" data-testid="auth-open-login" onClick={onLogin}>
         登录
-      </button>
+      </Button>
     );
   }
 
-  const initial = profile.display_name.trim().slice(0, 1).toUpperCase() || "?";
   const logout = async (all: boolean) => {
     setOpen(false);
     setBusy(true);
@@ -68,11 +63,7 @@ export function AccountMenu({
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
       >
-        {!imageFailed ? (
-          <img src={profile.avatar_url} alt="" onError={() => setImageFailed(true)} />
-        ) : (
-          <span aria-hidden="true">{initial}</span>
-        )}
+        <Avatar src={profile.avatar_url} name={profile.display_name} />
       </button>
       {open && (
         <div className="account-popover" role="menu" aria-label="账户菜单">

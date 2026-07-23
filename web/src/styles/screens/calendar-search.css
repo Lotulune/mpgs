@@ -1,0 +1,180 @@
+/* CalendarScreen + SearchScreen 页面布局。
+   全部规则以页面根容器 .calendar-screen / .search-screen 限定作用域；对 base.css
+   中已有共享类（.cal-month / .cal-row / .search-bar / .search-row 等）的覆盖同样
+   加此前缀，依靠更高特异性生效，不影响其他页面。仅使用主题 token，5 套主题均可读。 */
+
+/* ==================== 发售日历 ==================== */
+
+.calendar-screen {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* ---- 工具带：标题 + 数据时效 ---- */
+
+.calendar-screen .calendar-head {
+  margin-bottom: 0;
+  align-items: flex-start;
+}
+
+.calendar-screen .calendar-head-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+/* ---- 筛选带：独立面板，与月份卡片视觉分层 ---- */
+
+.calendar-screen .calendar-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 28px;
+  padding: 10px 14px;
+  border: var(--bw) solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.calendar-screen .calendar-filter-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.calendar-screen .calendar-filter-label {
+  color: var(--ink-muted);
+  font-size: 12px;
+}
+
+/* ---- 骨架：按真实行高分条占位 ---- */
+
+.calendar-screen .calendar-skeleton-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* ---- 月份卡片：每月一张卡，标题行 + 条目数 ---- */
+
+.calendar-screen .cal-month {
+  margin-top: 0;
+  padding: 14px 16px 16px;
+  border: var(--bw) solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+}
+
+.calendar-screen .cal-month-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.calendar-screen .cal-month-title {
+  margin: 0;
+  padding-bottom: 0;
+  border-bottom: none;
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-size: 15.5px;
+  letter-spacing: var(--heading-spacing);
+  text-transform: var(--heading-transform);
+}
+
+.calendar-screen .cal-month-count {
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.calendar-screen .cal-note {
+  margin: -2px 0 10px;
+}
+
+/* ---- 条目行：日期 > 封面 > 名称 > 标签 ---- */
+
+.calendar-screen .cal-row {
+  grid-template-columns: 96px 68px minmax(0, 1fr) auto;
+  background: var(--surface-2);
+}
+
+.calendar-screen .cal-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ==================== 搜索 ==================== */
+
+.search-screen {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* ---- 工具带：标题 + 结果计数 ---- */
+
+.search-screen .search-head {
+  margin-bottom: 0;
+  align-items: flex-end;
+}
+
+.search-screen .search-count {
+  color: var(--ink-muted);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+/* ---- 搜索框 ---- */
+
+.search-screen .search-bar {
+  margin: 0;
+}
+
+/* ---- 结果行：封面 + 名称/标签，整行可键盘进入详情 ---- */
+
+.search-screen .search-results {
+  gap: 10px;
+}
+
+.search-screen .search-row {
+  justify-content: flex-start;
+  padding: 10px 14px;
+}
+
+.search-screen .search-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.search-screen .search-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.search-screen .search-meta {
+  flex-wrap: wrap;
+  flex-shrink: 1;
+}
+
+/* ---- 窄屏：日历行折行 ---- */
+
+@media (max-width: 720px) {
+  .calendar-screen .cal-row {
+    grid-template-columns: 68px minmax(0, 1fr);
+  }
+
+  .calendar-screen .cal-day,
+  .calendar-screen .cal-tags {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+}

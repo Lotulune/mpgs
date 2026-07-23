@@ -33,6 +33,13 @@ export const EXCLUDED_MODE_OPTIONS: { id: string; label: string }[] = [
   { id: "pvp_only", label: "纯 PvP" },
 ];
 
+export const SESSION_OPTIONS: { label: string; min: number; max: number }[] = [
+  { label: "30–60 分钟", min: 30, max: 60 },
+  { label: "1–2 小时", min: 60, max: 120 },
+  { label: "2–3 小时", min: 120, max: 180 },
+  { label: "不设限", min: 15, max: 480 },
+];
+
 export function defaultPreferences(): UserPreferences {
   return {
     version: 1,

@@ -9,6 +9,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { Button } from "../components/Button";
 
 export interface Toast {
   id: number;
@@ -64,16 +65,15 @@ export function ToastProvider({ children }: { children: ReactNode }) {
           <div key={toast.id} className="toast">
             <span>{toast.text}</span>
             {toast.actionLabel && (
-              <button
-                type="button"
-                className="btn small"
+              <Button
+                size="small"
                 onClick={() => {
                   toast.onAction?.();
                   dismiss(toast.id);
                 }}
               >
                 {toast.actionLabel}
-              </button>
+              </Button>
             )}
           </div>
         ))}

@@ -214,6 +214,7 @@ pub struct TaskRouteConfig {
     pub fallback_models: Vec<String>,
     /// Protocol preference order for this task. Empty means "use model capability order".
     pub protocol_preference: Vec<ApiProtocol>,
+    /// Total deadline shared by every model and protocol attempt in this route.
     pub timeout: Duration,
     pub max_output_tokens: u32,
     pub enabled: bool,

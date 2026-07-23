@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   dominantModeLabel,
+  evidenceValueLabel,
   formatPrice,
   hasConcretePartySize,
   isStale,
@@ -55,5 +56,17 @@ describe("format helpers", () => {
     const now = 1_000_000_000_000;
     expect(isStale(now, now)).toBe(false);
     expect(isStale(now - STALE_AFTER_MS - 1, now)).toBe(true);
+  });
+
+  it("renders review-summary evidence readably, never raw JSON", () => {
+    expect(
+      evidenceValueLabel({ positive: 4500, total: 5000, wilson_lower: 0.8913748542115199 }),
+    ).toBe("4500/5000 好评 · 加权好评率约 89%");
+    expect(evidenceValueLabel({ positive: 3, total: 10 })).toBe("3/10 好评");
+    expect(evidenceValueLabel(true)).toBe("是");
+    expect(evidenceValueLabel(null)).toBe("未知");
+    expect(evidenceValueLabel("coop")).toBe("coop");
+    // Unknown object shapes stay verbatim JSON.
+    expect(evidenceValueLabel({ foo: 1 })).toBe('{"foo":1}');
   });
 });

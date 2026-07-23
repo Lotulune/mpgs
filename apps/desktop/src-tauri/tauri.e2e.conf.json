@@ -1,4 +1,7 @@
 {
+  "build": {
+    "beforeBuildCommand": "pnpm --dir ../../.. --filter mpgs-web build --mode e2e"
+  },
   "app": {
     "windows": [
       {
@@ -6,8 +9,10 @@
         "title": "MPGS — 熟人联机游戏推荐",
         "width": 1280,
         "height": 800,
-        "minWidth": 1024,
-        "minHeight": 640,
+        "minWidth": 820,
+        "minHeight": 520,
+        "decorations": false,
+        "shadow": true,
         "center": true,
         "additionalBrowserArgs": "--remote-debugging-port=0 --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required"
       }

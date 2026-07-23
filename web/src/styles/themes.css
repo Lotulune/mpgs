@@ -190,21 +190,23 @@
 }
 
 /* =====================================================================
-   MC 方块 mc — procedural tile textures (set by the theme module as
-   --mc-* variables), chunky 3D bevel buttons, pixel display type feel.
+   MC 方块 mc — stone-brick grid backdrop + grass-block topbar edge
+   (procedural, set by the theme module as --mc-* variables), chunky 3D
+   bevel buttons, monospace display type. Hard offset text shadow is kept
+   on display elements only — body text stays clean to avoid eye strain.
    ===================================================================== */
 
 [data-theme="mc"] {
-  --bg: #2e2e2e;
-  --bg-layer: var(--mc-dirt, none);
-  --surface: rgba(20, 20, 20, 0.82);
-  --surface-2: #6f6f6f;
-  --surface-hover: rgba(40, 40, 40, 0.85);
-  --border: #1a1a1a;
+  --bg: #202024;
+  --bg-layer: var(--mc-stone-grid, none);
+  --surface: rgba(19, 19, 22, 0.92);
+  --surface-2: #2c2c31;
+  --surface-hover: rgba(52, 52, 58, 0.9);
+  --border: #0d0d10;
   --border-strong: #000000;
-  --ink: #ffffff;
-  --ink-muted: #c6c6c6;
-  --ink-faint: #8f8f8f;
+  --ink: #f2f2f2;
+  --ink-muted: #b9b9bf;
+  --ink-faint: #83838a;
   --accent: #7dfc4a;
   --accent-ink: #123307;
   --accent-2: #f43b3b;
@@ -213,7 +215,7 @@
   --danger: #f43b3b;
 
   --font-display: "Courier New", "Cascadia Mono", monospace;
-  --text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.75);
+  --text-shadow: none;
   --heading-transform: none;
   --heading-spacing: 0.02em;
 
@@ -231,17 +233,75 @@
   --press-scale: 1;
 }
 
-/* Dirt background dimmed like the pause menu. */
+/* Stone-brick backdrop; the texture itself is dark, no extra dimming. */
 [data-theme="mc"] body::before {
-  background: var(--mc-dirt, none);
-  background-size: 96px 96px;
+  background: var(--mc-stone-grid, none);
+  background-size: 128px 128px;
   image-rendering: pixelated;
-  filter: brightness(0.42);
+}
+
+[data-theme="mc"] {
+  scrollbar-color: #96969e #151518;
+}
+
+[data-theme="mc"] ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+[data-theme="mc"] ::-webkit-scrollbar-track,
+[data-theme="mc"] ::-webkit-scrollbar-corner {
+  background: #151518;
+  box-shadow: inset 1px 0 #3c3c42;
+}
+
+[data-theme="mc"] ::-webkit-scrollbar-thumb {
+  border: 2px solid #151518;
+  border-radius: 0;
+  background: #96969e;
+  box-shadow: inset 1px 1px #c1c1c6, inset -1px -1px #55555c;
+}
+
+[data-theme="mc"] ::-webkit-scrollbar-thumb:hover {
+  background: #63bf49;
+}
+
+/* MC 式硬阴影只落在展示元素上，正文不挂阴影 */
+[data-theme="mc"] .brand,
+[data-theme="mc"] h1,
+[data-theme="mc"] h2,
+[data-theme="mc"] h3,
+[data-theme="mc"] .tab,
+[data-theme="mc"] .btn,
+[data-theme="mc"] .score-badge {
+  text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.55);
 }
 
 [data-theme="mc"] .topbar {
-  background: rgba(12, 12, 12, 0.8);
+  background: rgba(13, 13, 15, 0.96);
   border-bottom-color: #000;
+  margin-bottom: 10px;
+}
+
+/* Grass-block edge under the topbar, like standing on the surface. */
+[data-theme="mc"] .topbar::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -10px;
+  height: 10px;
+  background: var(--mc-grass-edge, none);
+  background-size: 16px 10px;
+  background-repeat: repeat-x;
+  image-rendering: pixelated;
+  pointer-events: none;
+}
+
+/* Everything square: chips, pills, inputs lose their round caps. */
+[data-theme="mc"] .chip,
+[data-theme="mc"] .pill {
+  border-radius: 0;
 }
 
 /* Classic bevel: light top/left, dark bottom/right. */
@@ -274,21 +334,85 @@
   color: #ffd83d;
 }
 
+/* 深一点的草绿，白字 + 柔化的硬阴影，不再晃眼 */
 [data-theme="mc"] .btn.primary {
-  background: #4c9a2f;
-  border-color: #83d95f #2a5a18 #2a5a18 #83d95f;
+  background: #3f9927;
+  border-color: #7dd455 #256315 #256315 #7dd455;
   color: #ffffff;
 }
 
 [data-theme="mc"] .btn.primary:hover {
-  background: #56ad36;
+  background: #4ab32e;
+  border-color: #8ee065 #2c711a #2c711a #8ee065;
   filter: none;
 }
 
+[data-theme="mc"] .btn.primary,
+[data-theme="mc"] .btn.accent {
+  text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.4);
+}
+
+[data-theme="mc"] .theme-menu-kicker,
+[data-theme="mc"] .theme-menu-name,
+[data-theme="mc"] .theme-menu-chevron,
+[data-theme="mc"] .theme-menu-popover button[role="option"] {
+  font-family: var(--font-display);
+  text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.55);
+}
+
+[data-theme="mc"] .theme-menu-trigger {
+  border: 2px solid;
+  border-color: #a8a8a8 #3a3a3a #3a3a3a #a8a8a8;
+  border-radius: 0;
+  background: #55555b;
+  box-shadow: 0 3px 0 rgba(0, 0, 0, 0.5);
+}
+
+[data-theme="mc"] .theme-menu-trigger:hover {
+  border-color: #c0c0dd #45455a #45455a #c0c0dd;
+  background: #666674;
+}
+
+[data-theme="mc"] .theme-menu-trigger:focus-visible,
+[data-theme="mc"] .theme-menu-trigger[aria-expanded="true"] {
+  border-color: #d8d8a8 #4a4a2e #4a4a2e #d8d8a8;
+  box-shadow: 0 3px 0 rgba(0, 0, 0, 0.5);
+}
+
+[data-theme="mc"] .theme-menu-popover {
+  border: 2px solid;
+  border-color: #a8a8a8 #3a3a3a #3a3a3a #a8a8a8;
+  border-radius: 0;
+  background: #4a4a52;
+  box-shadow: 0 4px 0 rgba(0, 0, 0, 0.55);
+}
+
+[data-theme="mc"] .theme-menu-popover button[role="option"].is-selected {
+  background: #3d5c2e;
+}
+
+/* Selected settings use a quieter grass tone. The generic accent is kept
+   vivid for small indicators, but a full button surface needs lower glare. */
+[data-theme="mc"] .seg .btn[aria-pressed="true"] {
+  background: #3f792e;
+  border-color: #78ad62 #23451b #23451b #78ad62;
+  color: #ffffff;
+  text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.55);
+}
+
+[data-theme="mc"] .seg .btn[aria-pressed="true"]:hover {
+  background: #4a8737;
+  border-color: #8abd72 #2b5121 #2b5121 #8abd72;
+}
+
+[data-theme="mc"] .settings-screen input[type="range"] {
+  accent-color: #58b83e;
+}
+
 [data-theme="mc"] .card {
-  background: rgba(16, 16, 16, 0.78);
+  background: rgba(17, 17, 19, 0.9);
   border: 2px solid #000;
-  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.08), 0 4px 0 rgba(0, 0, 0, 0.45);
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.07), 0 4px 0 rgba(0, 0, 0, 0.45);
 }
 
 [data-theme="mc"] .card:hover {
@@ -297,15 +421,14 @@
 }
 
 [data-theme="mc"] .panel {
-  background: rgba(16, 16, 16, 0.78);
+  background: rgba(17, 17, 19, 0.9);
   border: 2px solid #000;
-  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.07);
 }
 
 [data-theme="mc"] .score-badge {
   color: #ffd83d;
   border-color: rgba(255, 216, 61, 0.5);
-  text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.75);
 }
 
 /* =====================================================================
@@ -388,44 +511,46 @@
 }
 
 /* =====================================================================
-   樱枫和风 wafu — washi paper (procedural --wafu-washi), sumi ink text,
-   vermilion accents, serif display type, paper-cut softness.
+   樱树和风 wafu 2.0 — 生成り washi paper (procedural --wafu-washi), sumi
+   ink text, vermilion (朱) primary + sakura (桜) secondary, a single gold
+   hairline over a quiet seigaiha band under the topbar, hanko score badge,
+   serif display type. Sakura takes the lead; maple has retired.
    ===================================================================== */
 
 [data-theme="wafu"] {
-  --bg: #f2ead8;
+  --bg: #faf5eb;
   --bg-layer: var(--wafu-washi, none);
-  --surface: rgba(255, 252, 244, 0.9);
-  --surface-2: #ede3cd;
-  --surface-hover: #f5eee0;
-  --border: #d8cbae;
-  --border-strong: #b8a888;
-  --ink: #3d3a37;
-  --ink-muted: #7a7266;
-  --ink-faint: #a89e8d;
-  --accent: #c73e3a;
+  --surface: rgba(255, 253, 248, 0.94);
+  --surface-2: #f0e9da;
+  --surface-hover: #fbf6ea;
+  --border: #e5ddc8;
+  --border-strong: #cfc4a8;
+  --ink: #211d17;
+  --ink-muted: #6e6353;
+  --ink-faint: #a99e89;
+  --accent: #c53a2a;
   --accent-ink: #fbf6ea;
-  --accent-2: #ef93ab;
-  --ok: #5a7d4f;
-  --warn: #b07d2a;
-  --danger: #a63a1e;
+  --accent-2: #be6e84;
+  --ok: #5f7d4f;
+  --warn: #c49a4a;
+  --danger: #b22222;
 
   --font-display: "Noto Serif SC", "SimSun", "Yu Mincho", serif;
   --text-shadow: none;
   --heading-transform: none;
   --heading-spacing: 0.12em;
 
-  --radius-sm: 4px;
-  --radius: 8px;
-  --radius-lg: 14px;
+  --radius-sm: 2px;
+  --radius: 4px;
+  --radius-lg: 8px;
 
-  --shadow-card: 0 2px 8px rgba(90, 70, 40, 0.12);
+  --shadow-card: 0 1px 4px rgba(90, 70, 40, 0.1), 0 6px 18px rgba(90, 70, 40, 0.08);
   --shadow-pop: 0 12px 32px rgba(90, 70, 40, 0.18);
   --glow: none;
 
   --tab-active-ink: var(--accent);
   --card-border-hover: var(--accent);
-  --press-scale: 0.985;
+  --press-scale: 0.99;
 }
 
 [data-theme="wafu"] body::before {
@@ -433,10 +558,45 @@
 }
 
 [data-theme="wafu"] .topbar {
-  background: rgba(247, 242, 231, 0.9);
+  background: rgba(253, 250, 241, 0.96);
+  border-bottom: 1px solid var(--border-strong);
+  margin-bottom: 13px;
 }
 
-/* Ink-brush underline for the active tab. */
+/* 顶栏下沿：一线金 + 安静的青海波纹带 */
+[data-theme="wafu"] .topbar::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -13px;
+  height: 13px;
+  background:
+    linear-gradient(90deg, transparent, rgba(184, 146, 74, 0.85) 18%, rgba(184, 146, 74, 0.85) 82%, transparent) center top / 100% 1px no-repeat,
+    var(--wafu-seigaiha, none) center bottom / 56px 24px repeat-x;
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+/* 面板标题前的朱色小菱 */
+[data-theme="wafu"] .panel h4 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-transform: none;
+  letter-spacing: 0.14em;
+}
+
+[data-theme="wafu"] .panel h4::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  background: var(--accent);
+  transform: rotate(45deg);
+}
+
+/* Vermilion-to-sakura brush stroke under the active tab. */
 [data-theme="wafu"] .tab[aria-selected="true"] {
   background: transparent;
   border-color: transparent;
@@ -451,8 +611,8 @@
   bottom: 1px;
   height: 3px;
   border-radius: 2px 6px 3px 5px;
-  background: linear-gradient(90deg, transparent, var(--ink) 12%, var(--ink) 88%, transparent);
-  opacity: 0.85;
+  background: linear-gradient(90deg, transparent, var(--accent) 18%, var(--accent-2) 82%, transparent);
+  opacity: 0.9;
 }
 
 /* Cards feel like layered paper with a vermilion corner seal on hover. */
@@ -468,9 +628,10 @@
   justify-content: center;
   font-family: var(--font-display);
   font-size: 13px;
-  color: #fbf6ea;
+  color: var(--accent-ink);
   background: var(--accent);
-  border-radius: 4px;
+  border-radius: 3px;
+  box-shadow: 0 1px 3px rgba(90, 40, 30, 0.35), inset 0 0 0 1.5px rgba(251, 246, 234, 0.28);
   opacity: 0;
   transform: scale(1.5) rotate(-8deg);
   transition: opacity var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
@@ -482,11 +643,26 @@
   transform: scale(1) rotate(-4deg);
 }
 
+/* 朱漆按钮（urushi 漆面：顶部一道高光） */
 [data-theme="wafu"] .btn.primary {
-  background: var(--accent);
-  border-color: #9c2f2c;
+  background: linear-gradient(180deg, #c94030 0%, #a82e21 100%);
+  border-color: #8e2418;
+  color: var(--accent-ink);
+  box-shadow: inset 0 1px 0 rgba(255, 235, 220, 0.22), 0 1px 2px rgba(90, 40, 30, 0.2);
 }
 
+[data-theme="wafu"] .btn.primary:hover {
+  background: linear-gradient(180deg, #d04938 0%, #b03325 100%);
+}
+
+/* 适配分做成方形朱印（带印泥白边） */
 [data-theme="wafu"] .score-badge {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border: none;
+  border-radius: 2px;
   font-family: var(--font-display);
+  letter-spacing: 0.02em;
+  box-shadow: 0 1px 3px rgba(90, 40, 30, 0.3), inset 0 0 0 1.5px rgba(251, 246, 234, 0.28);
+  transform: rotate(-3deg);
 }

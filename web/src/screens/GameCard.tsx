@@ -1,4 +1,6 @@
 // One recommendation card: large cover, release/review stats, reasons, feedback.
+// Information priority is fixed: cover > title+score > meta chips > want-to-play
+// > reasons > cautions > feedback actions.
 
 import { useEffect, useRef, useState } from "react";
 import type { FeedItem, FeedbackType } from "../api/types";
@@ -11,14 +13,16 @@ import {
   FEEDBACK_LABELS,
   formatCount,
   formatReleaseDate,
-  formatPercent,
   hasConcretePartySize,
   partyLabel,
   positiveRate,
 } from "../app/format";
 import type { PendingFeedback } from "../api/feedbackQueue";
-import { VoteButton } from "./VoteButton";
-import { GameMedia } from "./GameMedia";
+import { Button } from "../components/Button";
+import { Chip } from "../components/Chip";
+import { ScoreBadge } from "../components/ScoreBadge";
+import { VoteButton } from "../components/VoteButton";
+import { GameMedia } from "../components/GameMedia";
 
 const QUICK_ACTIONS: { type: FeedbackType; label: string }[] = [
   { type: "like", label: "喜欢" },
@@ -88,35 +92,44 @@ export function GameCard({
       aria-label={`查看 ${item.name} 详情`}
       onClick={() => onOpen(item.app_id)}
       onKeyDown={(event) => {
-        if (event.key === "Enter") onOpen(item.app_id);
+        if (event.target !== event.currentTarget) return;
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onOpen(item.app_id);
+        }
       }}
     >
       <GameMedia coverUrl={item.cover_url} name={item.name} appId={item.app_id} />
       <div className="card-body">
         <div className="card-title">
           <h3>{item.name}</h3>
-          <span className="score-badge" title="综合适配分">
-            {formatPercent(item.score)}
-          </span>
+          <ScoreBadge score={item.score} />
         </div>
         <div className="card-meta">
-          <span className="chip accent">{dominantModeLabel(mode)}</span>
-          {showParty && <span className="chip">{partyLabel(partyMin, partyMax)}</span>}
-          {releaseLabel !== "日期未定" && <span className="chip">{releaseLabel}</span>}
-          {reviewLabel && <span className="chip">{reviewLabel}</span>}
-          {hasCcu && <span className="chip">约 {formatCount(ccu)} 在线</span>}
-          {item.confidence < 0.5 && <span className="chip warn">低置信数据</span>}
-          <span className="card-meta-spacer" />
-          <span onClick={(event) => event.stopPropagation()}>
-            <VoteButton appId={item.app_id} intent={item.play_intent} />
-          </span>
+          <Chip tone="accent">{dominantModeLabel(mode)}</Chip>
+          {showParty && <Chip>{partyLabel(partyMin, partyMax)}</Chip>}
+          {releaseLabel !== "日期未定" && <Chip>{releaseLabel}</Chip>}
+          {reviewLabel && <Chip>{reviewLabel}</Chip>}
+          {hasCcu && <Chip>约 {formatCount(ccu)} 在线</Chip>}
+          {item.confidence < 0.5 && <Chip tone="warn">低置信数据</Chip>}
+        </div>
+        <div
+          className="card-vote"
+          onClick={(event) => event.stopPropagation()}
+          onKeyDown={(event) => event.stopPropagation()}
+        >
+          <VoteButton appId={item.app_id} intent={item.play_intent} />
+          <span className="card-vote-hint">想玩的朋友越多，推荐越靠前</span>
         </div>
         {item.ai_reasons && item.ai_reasons.length > 0 && (
-          <ul className="reason-list">
-            {item.ai_reasons.slice(0, 3).map((reason) => (
-              <li key={`ai-${reason}`}>{reason}</li>
-            ))}
-          </ul>
+          <div className="reason-block">
+            <span className="reason-tag">AI 分析</span>
+            <ul className="reason-list">
+              {item.ai_reasons.slice(0, 3).map((reason) => (
+                <li key={`ai-${reason}`}>{reason}</li>
+              ))}
+            </ul>
+          </div>
         )}
         {item.reasons && item.reasons.length > 0 ? (
           <ul className="reason-list">
@@ -151,10 +164,10 @@ export function GameCard({
           {active && !active.cancelled && !active.undone ? (
             <span className="feedback-state">
               已反馈：{FEEDBACK_LABELS[active.type] ?? active.type}
-              {active.feedbackId === null && <span className="chip warn">待同步</span>}
-              <button
-                type="button"
-                className="btn small ghost"
+              {active.feedbackId === null && <Chip tone="warn">待同步</Chip>}
+              <Button
+                size="small"
+                variant="ghost"
                 onClick={(event) => {
                   const entry = active;
                   fireAction("dismiss", event.currentTarget);
@@ -164,18 +177,18 @@ export function GameCard({
                 }}
               >
                 撤销
-              </button>
+              </Button>
             </span>
           ) : (
             QUICK_ACTIONS.map((action) => (
-              <button
+              <Button
                 key={action.type}
-                type="button"
-                className="btn small ghost"
+                size="small"
+                variant="ghost"
                 onClick={(event) => submit(action.type, event.currentTarget)}
               >
                 {action.label}
-              </button>
+              </Button>
             ))
           )}
         </div>

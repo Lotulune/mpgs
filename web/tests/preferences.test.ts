@@ -8,6 +8,7 @@ import {
   PLATFORM_OPTIONS,
   preferencesChanged,
   queuePreferencePatch,
+  SESSION_OPTIONS,
   toggleMember,
 } from "../src/app/preferences";
 
@@ -23,6 +24,14 @@ function memoryStorage() {
 describe("preference helpers", () => {
   it("uses the normalized macOS platform identifier", () => {
     expect(PLATFORM_OPTIONS.find((option) => option.label === "macOS")?.id).toBe("macos");
+  });
+
+  it("maps the 2–3 hour session option to 120–180 minutes", () => {
+    expect(SESSION_OPTIONS.find((option) => option.label === "2–3 小时")).toEqual({
+      label: "2–3 小时",
+      min: 120,
+      max: 180,
+    });
   });
 
   it("reports no change for an identical copy", () => {

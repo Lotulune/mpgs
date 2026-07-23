@@ -1,4 +1,7 @@
-// Game detail: multiplayer profile, availability, reviews/CCU, evidence, Steam link.
+// Game detail: hero (cover/title/status/想玩/Steam link), info panels
+// (multiplayer profile, availability, reviews/CCU, evidence) and the
+// expandable popular-review wall. Page-specific styles live in
+// styles/screens/game-detail.css, scoped under .detail-screen.
 
 import { useEffect, useRef, useState } from "react";
 import { ApiError } from "../api/client";
@@ -22,13 +25,28 @@ import {
 } from "../app/format";
 import { apiClient } from "../app/runtime";
 import { useTheme } from "../app/ThemeProvider";
-import { GameMedia } from "./GameMedia";
-import { VoteButton } from "./VoteButton";
+import { Button } from "../components/Button";
+import { Chip } from "../components/Chip";
+import { EmptyState } from "../components/EmptyState";
+import { GameMedia } from "../components/GameMedia";
+import { Panel } from "../components/Panel";
+import { Skeleton } from "../components/Skeleton";
+import { VoteButton } from "../components/VoteButton";
 
 function boolLabel(value: boolean | null): string {
   if (value === true) return "支持";
   if (value === false) return "不支持";
   return "未知";
+}
+
+/** At-a-glance capability chip in the hero. Unknown stays neutral, never red. */
+function CapabilityChip({ label, value }: { label: string; value: boolean | null }) {
+  const tone = value === true ? "ok" : value === false ? "warn" : undefined;
+  return (
+    <Chip tone={tone} title={value === null ? "暂无证据，尚未确认" : undefined}>
+      {label}：{boolLabel(value)}
+    </Chip>
+  );
 }
 
 function fallbackSummary(game: GameDetail): string {
@@ -66,9 +84,9 @@ function PopularReviewCard({ review }: { review: PopularReview }) {
   return (
     <article className="steam-review-card">
       <div className="steam-review-head">
-        <span className={review.voted_up ? "chip ok" : "chip danger"}>
+        <Chip tone={review.voted_up ? "ok" : "danger"}>
           {review.voted_up ? "👍 推荐" : "👎 不推荐"}
-        </span>
+        </Chip>
         {review.author_profile_url ? (
           <a href={review.author_profile_url} target="_blank" rel="noreferrer noopener">
             {review.author_name || "Steam 玩家"} ↗
@@ -82,6 +100,8 @@ function PopularReviewCard({ review }: { review: PopularReview }) {
         <span>{reviewDate(review.created_at_ms)}</span>
         {playtime && <span>{playtime}</span>}
         <span>{formatCount(review.votes_up)} 人觉得有用</span>
+        {review.votes_funny > 0 && <span>{formatCount(review.votes_funny)} 人觉得欢乐</span>}
+        {review.comment_count > 0 && <span>{formatCount(review.comment_count)} 条评论</span>}
         {review.written_during_early_access && <span>抢先体验期间撰写</span>}
       </div>
       <p className={expanded ? "steam-review-text expanded" : "steam-review-text"}>
@@ -149,7 +169,10 @@ export function GameDetailScreen({ appId, onBack }: { appId: number; onBack: () 
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onBack();
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      // Modal owns Escape while open (stops propagation); still guard for other dialogs.
+      if (document.querySelector("[role='dialog'][aria-modal='true']")) return;
+      onBack();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -157,16 +180,23 @@ export function GameDetailScreen({ appId, onBack }: { appId: number; onBack: () 
 
   if (state.loading) {
     return (
-      <div className="detail" aria-busy="true">
+      <div className="detail-screen" aria-busy="true">
         <div className="backbar">
-          <button type="button" className="btn small" onClick={onBack}>
+          <Button size="small" onClick={onBack}>
             ← 返回 (Esc)
-          </button>
+          </Button>
         </div>
-        <div className="skeleton" style={{ height: 90 }} />
+        <div className="detail-hero">
+          <Skeleton height={220} />
+          <div className="detail-hero-body">
+            <Skeleton height={34} />
+            <Skeleton height={26} />
+            <Skeleton height={90} />
+          </div>
+        </div>
         <div className="detail-grid">
-          <div className="skeleton" style={{ height: 220 }} />
-          <div className="skeleton" style={{ height: 220 }} />
+          <Skeleton height={200} />
+          <Skeleton height={200} />
         </div>
       </div>
     );
@@ -174,20 +204,19 @@ export function GameDetailScreen({ appId, onBack }: { appId: number; onBack: () 
 
   if (state.error || !state.detail) {
     return (
-      <div className="detail">
+      <div className="detail-screen">
         <div className="backbar">
-          <button type="button" className="btn small" onClick={onBack}>
+          <Button size="small" onClick={onBack}>
             ← 返回 (Esc)
-          </button>
+          </Button>
         </div>
-        <div className="state-box" role="alert">
-          <span className="big">!</span>
+        <EmptyState glyph="!" alert>
           <span>
             {state.error?.code === "not_found"
               ? "没有找到这个游戏。"
               : `详情加载失败：${state.error?.message ?? "未知错误"}`}
           </span>
-        </div>
+        </EmptyState>
       </div>
     );
   }
@@ -202,45 +231,55 @@ export function GameDetailScreen({ appId, onBack }: { appId: number; onBack: () 
     : "待同步 Steam 国区价格";
 
   return (
-    <div className="detail">
+    <div className="detail-screen">
       <div className="backbar">
-        <button type="button" className="btn small" onClick={onBack}>
+        <Button size="small" onClick={onBack}>
           ← 返回 (Esc)
-        </button>
-        {state.fromOfflineCache && <span className="chip danger">离线快照</span>}
-        <span className={isStale(game.data_updated_at_ms) ? "chip warn" : "chip"}>
+        </Button>
+        {state.fromOfflineCache && <Chip tone="danger">离线快照</Chip>}
+        <Chip tone={isStale(game.data_updated_at_ms) ? "warn" : undefined}>
           数据更新于 {formatAgo(game.data_updated_at_ms)}
-        </span>
+        </Chip>
       </div>
 
-      <div className="detail-hero">
+      <header className="detail-hero">
         <div className="detail-cover">
           <GameMedia coverUrl={game.cover_url} name={game.name} appId={game.app_id} />
         </div>
         <div className="detail-hero-body">
-          <div className="detail-head">
-            <div>
-              <h2>{game.name}</h2>
-              <div className="card-meta" style={{ marginTop: 8 }}>
-                <span className="chip accent">{dominantModeLabel(mp.dominant_mode)}</span>
-                <span className="chip">{releaseStateLabel(game.release_state)}</span>
-                <span className="chip">{formatReleaseDate(game.release_date, game.release_date_raw, game.release_date_precision)}</span>
-                {av.has_demo && <span className="chip ok">有 Demo</span>}
-              </div>
-            </div>
-            <div className="detail-actions">
-              <VoteButton appId={game.app_id} intent={game.play_intent} size="large" />
-              <a
-                ref={steamBtnRef}
-                className="btn primary"
-                href={game.steam_url}
-                target="_blank"
-                rel="noreferrer noopener"
-                onClick={() => fireAction("confirm", steamBtnRef.current)}
-              >
-                在 Steam 打开 ↗
-              </a>
-            </div>
+          <h2 className="detail-title">{game.name}</h2>
+          <div className="detail-tags">
+            <Chip tone="accent">{dominantModeLabel(mp.dominant_mode)}</Chip>
+            <Chip>{releaseStateLabel(game.release_state)}</Chip>
+            <Chip>{formatReleaseDate(game.release_date, game.release_date_raw, game.release_date_precision)}</Chip>
+            {av.has_demo && <Chip tone="ok">有 Demo</Chip>}
+          </div>
+          <div className="detail-actions">
+            <VoteButton appId={game.app_id} intent={game.play_intent} size="large" />
+            <a
+              ref={steamBtnRef}
+              className="btn primary"
+              href={game.steam_url}
+              target="_blank"
+              rel="noreferrer noopener"
+              onClick={() => fireAction("confirm", steamBtnRef.current)}
+            >
+              在 Steam 打开 ↗
+            </a>
+          </div>
+          <div className="detail-capabilities" aria-label="联机能力速览">
+            <CapabilityChip label="私人房间" value={mp.private_session} />
+            <CapabilityChip label="在线合作" value={mp.online_coop} />
+            <CapabilityChip label="自建服务器" value={mp.self_hosted_server} />
+            <Chip
+              title={
+                partySizeLabel === "人数未定"
+                  ? "商店分类仅能确认多人，无法可靠得到小队人数区间"
+                  : undefined
+              }
+            >
+              推荐人数：{partySizeLabel}
+            </Chip>
           </div>
           <section className="detail-summary" aria-label={shortDescription ? "商店简介" : "联机速览"}>
             <h3>{shortDescription ? "商店简介" : "联机速览"}</h3>
@@ -248,23 +287,21 @@ export function GameDetailScreen({ appId, onBack }: { appId: number; onBack: () 
             <span>{shortDescription ? "来源：Steam 商店" : "来源：已入库联机资料"}</span>
           </section>
         </div>
-      </div>
+      </header>
 
       <div className="detail-grid">
-        <section className="panel">
-          <h4>联机方式</h4>
+        <Panel as="section" title="联机方式">
           <dl className="kv">
             <dt>推荐人数</dt>
             <dd>
               {partySizeLabel}
               {partySizeLabel === "人数未定" && (
-                <span
-                  className="chip warn"
-                  style={{ marginLeft: 8 }}
+                <Chip
+                  tone="warn"
                   title="商店分类仅能确认多人，无法可靠得到小队人数区间"
                 >
                   仅分类弱信号
-                </span>
+                </Chip>
               )}
             </dd>
             <dt>私人房间</dt>
@@ -277,16 +314,13 @@ export function GameDetailScreen({ appId, onBack }: { appId: number; onBack: () 
             <dd>
               {formatPercent(mp.profile_confidence)}
               {mp.profile_confidence !== null && mp.profile_confidence < 0.5 && (
-                <span className="chip warn" style={{ marginLeft: 8 }}>
-                  低置信
-                </span>
+                <Chip tone="warn">低置信</Chip>
               )}
             </dd>
           </dl>
-        </section>
+        </Panel>
 
-        <section className="panel">
-          <h4>可用性</h4>
+        <Panel as="section" title="可用性">
           <dl className="kv">
             <dt>平台</dt>
             <dd>{av.platforms.length > 0 ? platformLabels(av.platforms) : "待同步 Steam 商店资料"}</dd>
@@ -301,10 +335,9 @@ export function GameDetailScreen({ appId, onBack }: { appId: number; onBack: () 
             <dt>价格</dt>
             <dd>{price}</dd>
           </dl>
-        </section>
+        </Panel>
 
-        <section className="panel">
-          <h4>评价与活跃度</h4>
+        <Panel as="section" title="评价与活跃度">
           <dl className="kv">
             <dt>累计评价</dt>
             <dd>{formatCount(game.reviews.total)}</dd>
@@ -313,30 +346,36 @@ export function GameDetailScreen({ appId, onBack }: { appId: number; onBack: () 
             <dt>当前在线</dt>
             <dd>{game.latest_ccu !== null ? formatCount(game.latest_ccu) : "未知"}</dd>
           </dl>
-        </section>
+        </Panel>
 
-        <section className="panel">
-          <h4>特征证据</h4>
+        <Panel as="section" title="特征证据" className="evidence-panel">
           {state.evidence.length === 0 ? (
-            <span style={{ fontSize: 13, color: "var(--ink-muted)" }}>
-              暂无公开证据记录。
-            </span>
+            <span className="evidence-empty">暂无公开证据记录。</span>
           ) : (
-            state.evidence.slice(0, 8).map((item) => (
-              <div key={item.evidence_id} className="evidence-item">
-                <span>
-                  {featureLabel(item.feature)} = {evidenceValueLabel(item.value)}
-                </span>
-                <span className="src">
-                  {sourceTypeLabel(item.source_type)} · 置信 {formatPercent(item.confidence)} ·{" "}
-                  {formatAgo(item.observed_at_ms)}
-                </span>
+            <>
+              <div className="evidence-grid">
+                {state.evidence.slice(0, 8).map((item) => (
+                  <div key={item.evidence_id} className="evidence-item">
+                    <span>
+                      {featureLabel(item.feature)} = {evidenceValueLabel(item.value)}
+                    </span>
+                    <span className="src">
+                      {sourceTypeLabel(item.source_type)} · 置信 {formatPercent(item.confidence)} ·{" "}
+                      {formatAgo(item.observed_at_ms)}
+                    </span>
+                  </div>
+                ))}
               </div>
-            ))
+              {state.evidence.length > 8 && (
+                <span className="evidence-more">
+                  仅显示前 8 条，共 {state.evidence.length} 条公开证据。
+                </span>
+              )}
+            </>
           )}
-        </section>
+        </Panel>
 
-        <section className="panel review-panel">
+        <Panel as="section" className="review-panel">
           <div className="review-panel-title">
             <div>
               <h4>Steam 热门评价</h4>
@@ -352,7 +391,7 @@ export function GameDetailScreen({ appId, onBack }: { appId: number; onBack: () 
               ))}
             </div>
           )}
-        </section>
+        </Panel>
       </div>
     </div>
   );

@@ -11,9 +11,9 @@ export function coverCandidates(appId: number, coverUrl?: string | null): string
   push(coverUrl);
   if (appId > 0) {
     // Stable public CDN paths. Hashed shared-asset filenames need appdetails.
+    // Only *.steamstatic.com hosts — matches desktop CSP img-src.
     push(`https://cdn.akamai.steamstatic.com/steam/apps/${appId}/header.jpg`);
     push(`https://cdn.cloudflare.steamstatic.com/steam/apps/${appId}/header.jpg`);
-    push(`https://steamcdn-a.akamaihd.net/steam/apps/${appId}/header.jpg`);
     push(`https://cdn.akamai.steamstatic.com/steam/apps/${appId}/capsule_616x353.jpg`);
     push(`https://cdn.akamai.steamstatic.com/steam/apps/${appId}/capsule_231x87.jpg`);
   }

@@ -1,0 +1,293 @@
+/* ---------- GameDetailScreen（阶段 4） ----------
+   本页全部新增/覆盖样式。所有选择器以页面根容器 .detail-screen 限定
+   作用域；对共享类（.backbar / .kv / .panel / .evidence-item /
+   .steam-review-* / .review-expand）的覆盖只在本页面生效。
+   只使用主题 token（var(--*)），不写死颜色。 */
+
+.detail-screen {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* 返回行：去掉共享样式的下外边距，由 .detail-screen 的 gap 统一节奏 */
+.detail-screen .backbar {
+  margin-bottom: 0;
+}
+
+/* ---------- Hero ---------- */
+
+.detail-screen .detail-hero {
+  display: grid;
+  grid-template-columns: minmax(260px, 400px) minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+
+.detail-screen .detail-cover {
+  min-width: 0;
+}
+
+/* 封面在详情页是视觉主角：描边加粗、统一圆角与卡片阴影 */
+.detail-screen .detail-cover .game-media {
+  border-color: var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+}
+
+.detail-screen .detail-hero-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.detail-screen .detail-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 28px;
+  line-height: 1.25;
+  letter-spacing: var(--heading-spacing);
+  text-transform: var(--heading-transform);
+  overflow-wrap: anywhere;
+}
+
+.detail-screen .detail-tags,
+.detail-screen .detail-actions,
+.detail-screen .detail-capabilities {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+}
+
+/* 联机能力速览与 tag 行稍作区分：字号略小 */
+.detail-screen .detail-capabilities .chip {
+  font-size: 11.5px;
+}
+
+/* 简介 / 联机速览：强调色左边线引用块 */
+.detail-screen .detail-summary {
+  padding: 12px 0 0 14px;
+  border-left: 3px solid var(--accent);
+}
+
+.detail-screen .detail-summary h3 {
+  margin: 0 0 7px;
+  font-family: var(--font-display);
+  font-size: 14px;
+  letter-spacing: 0;
+}
+
+.detail-screen .detail-summary p {
+  margin: 0;
+  color: var(--ink);
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
+.detail-screen .detail-summary span {
+  display: block;
+  margin-top: 8px;
+  color: var(--ink-muted);
+  font-size: 12px;
+}
+
+/* ---------- 资料区面板 ---------- */
+
+.detail-screen .detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+/* 热门评价面板占满整行 */
+.detail-screen .review-panel {
+  grid-column: 1 / -1;
+}
+
+/* kv 定义列表：值列允许内嵌 chip 并垂直居中（替代旧的内联 margin） */
+.detail-screen .kv {
+  display: grid;
+  grid-template-columns: minmax(90px, auto) 1fr;
+  gap: 6px 16px;
+  font-size: 13.5px;
+  align-items: center;
+}
+
+.detail-screen .kv dt {
+  color: var(--ink-muted);
+}
+
+.detail-screen .kv dd {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  overflow-wrap: anywhere;
+}
+
+/* 特征证据面板占满整行，条目多列铺开，避免半空行 */
+.detail-screen .evidence-panel {
+  grid-column: 1 / -1;
+}
+
+.detail-screen .evidence-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 10px 20px;
+}
+
+/* 特征证据条目 */
+.detail-screen .evidence-item {
+  padding: 4px 0 4px 10px;
+  border-left: 2px solid var(--border-strong);
+  font-size: 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.detail-screen .evidence-item > span {
+  overflow-wrap: anywhere;
+}
+
+.detail-screen .evidence-item .src {
+  color: var(--ink-muted);
+  font-size: 12px;
+}
+
+.detail-screen .evidence-empty,
+.detail-screen .evidence-more {
+  color: var(--ink-muted);
+  font-size: 12.5px;
+}
+
+.detail-screen .evidence-more {
+  display: block;
+  margin-top: 8px;
+}
+
+/* ---------- 热门评价 ---------- */
+
+.detail-screen .review-panel-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.detail-screen .review-panel-title h4 {
+  margin-bottom: 3px;
+}
+
+.detail-screen .review-panel-title span,
+.detail-screen .review-empty {
+  color: var(--ink-muted);
+  font-size: 12px;
+}
+
+.detail-screen .steam-review-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+
+.detail-screen .steam-review-card {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) * 0.75);
+  background: var(--surface-raised, var(--surface));
+}
+
+.detail-screen .steam-review-card:hover {
+  border-color: var(--card-border-hover);
+}
+
+.detail-screen .steam-review-head,
+.detail-screen .steam-review-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px 10px;
+}
+
+.detail-screen .steam-review-head a,
+.detail-screen .steam-review-head strong {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.detail-screen .steam-review-rank {
+  margin-left: auto;
+  color: var(--ink-muted);
+  font-size: 12px;
+}
+
+.detail-screen .steam-review-meta {
+  margin-top: 9px;
+  color: var(--ink-muted);
+  font-size: 11.5px;
+}
+
+.detail-screen .steam-review-text {
+  display: -webkit-box;
+  margin: 12px 0 0;
+  overflow: hidden;
+  color: var(--ink);
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 7;
+}
+
+.detail-screen .steam-review-text.expanded {
+  display: block;
+  overflow: visible;
+}
+
+.detail-screen .review-expand {
+  margin-top: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.detail-screen .review-expand:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ---------- 窄屏 ---------- */
+
+@media (max-width: 760px) {
+  .detail-screen .detail-hero {
+    grid-template-columns: 1fr;
+  }
+
+  .detail-screen .detail-cover {
+    max-width: 520px;
+  }
+}
+
+@media (max-width: 560px) {
+  .detail-screen .steam-review-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .detail-screen .detail-title {
+    font-size: 22px;
+  }
+}

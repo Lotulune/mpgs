@@ -3,6 +3,11 @@ import { createRoot } from "react-dom/client";
 import { initializeClientStorage } from "./api/storage";
 import "./styles/base.css";
 import "./styles/themes.css";
+import "./styles/screens/game-detail.css";
+import "./styles/screens/nl.css";
+import "./styles/screens/community.css";
+import "./styles/screens/calendar-search.css";
+import "./styles/screens/settings.css";
 
 const container = document.getElementById("root");
 if (!container) {

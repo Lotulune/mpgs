@@ -67,15 +67,16 @@ pnpm exec tauri build --config apps/desktop/src-tauri/tauri.conf.json --ci --no-
 打包构建默认把 API 基址设为 `http://127.0.0.1:8080`，服务端 CORS 白名单已包含
 `http://tauri.localhost` / `tauri://localhost`（Windows/其他平台的 webview 源）。
 可用 `MPGS_CORS_ALLOWED_ORIGINS` 覆盖。`web/.env` 的 `VITE_MPGS_API_BASE` 仅可设为
-`http://127.0.0.1:8080` 或 `http://localhost:8080`；桌面 CSP 只允许这两个本机源，构建会拒绝
-其他值，避免生成运行后必然被 CSP 阻断的客户端。
+`http://127.0.0.1:8080` 或 `http://localhost:8080`；桌面 E2E 模式另使用
+`http://127.0.0.1:18080` 隔离本机开发服务。桌面 CSP 只允许这三个本机源，构建会拒绝其他值，
+避免生成运行后必然被 CSP 阻断的客户端。
 
 浏览器开发模式保持 `VITE_MPGS_API_BASE` 为空时会走同源 `/v1` 代理。可选的
 `VITE_MPGS_DEV_PROXY_TARGET` 可将该代理指向其他本机服务端端口，仅用于开发和本地验收。
 
 ## 主题与特效
 
-五个主题：复古电子、极简白线、MC 方块、Steam 商店、樱枫和风。每个主题提供一套
+五个主题：复古电子、极简白线、MC 方块、Steam 商店、樱树和风。每个主题提供一套
 设计 token 皮肤（`themes.css` 的 `[data-theme]`）与一个特效模块（环境层动画、点击
 反馈、`like/dismiss/confirm/error` 语义动作）。特效走单 rAF 循环 + 有界粒子池，
 标签页隐藏时暂停，尊重 `prefers-reduced-motion`，可在顶栏切换 全/低/关。所有贴图

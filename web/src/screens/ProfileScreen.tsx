@@ -1,9 +1,14 @@
+// Styles: styles/screens/settings.css（.profile-screen 作用域）+ base.css 共享类。
+
 import { useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
 import { ApiError } from "../api/client";
 import type { AccountProfile } from "../api/types";
 import { apiClient } from "../app/runtime";
 import { useToast } from "../app/ToastProvider";
+import { Button } from "../components/Button";
+import { Panel } from "../components/Panel";
+import { Avatar } from "../components/Avatar";
 
 export function ProfileScreen({
   profile,
@@ -99,50 +104,103 @@ export function ProfileScreen({
   return (
     <section className="settings profile-screen" aria-label="个人资料">
       <h2 className="settings-title">个人资料</h2>
-      <div className="profile-layout">
-        <div className="profile-avatar-large">
-          <img
-            key={profile.avatar_url}
-            src={profile.avatar_url}
-            alt={`${profile.display_name} 的头像`}
-          />
+
+      <Panel title="头像" className="profile-identity-panel">
+        <div className="profile-layout">
+          <div className="profile-avatar-large">
+            <Avatar
+              key={profile.avatar_url}
+              src={profile.avatar_url}
+              name={profile.display_name}
+              alt={`${profile.display_name} 的头像`}
+            />
+          </div>
+          <div className="profile-identity">
+            <strong>{profile.display_name}</strong>
+            <span>{profile.username}</span>
+            <div className="profile-avatar-actions">
+              <label className="btn small ghost file-button">
+                更换头像
+                <input
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                  onChange={(event) => void upload(event)}
+                />
+              </label>
+              <Button size="small" variant="ghost" onClick={() => void removeAvatar()}>
+                使用默认头像
+              </Button>
+            </div>
+            <p className="cal-note settings-note">支持 JPEG / PNG / WebP，不超过 2 MiB。</p>
+          </div>
         </div>
-        <div className="profile-identity">
-          <strong>{profile.display_name}</strong>
-          <span>{profile.username}</span>
-          <label className="btn small ghost file-button">
-            更换头像
-            <input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => void upload(event)} />
-          </label>
-          <button type="button" className="btn small ghost" onClick={() => void removeAvatar()}>
-            使用默认头像
-          </button>
-        </div>
-      </div>
-      <form className="panel stack-form" onSubmit={(event) => void saveName(event)}>
-        <h4>公开资料</h4>
+      </Panel>
+
+      <Panel
+        as="form"
+        title="公开资料"
+        className="stack-form"
+        onSubmit={(event) => void saveName(event)}
+      >
         <label>
           显示名称
-          <input value={displayName} maxLength={40} onChange={(event) => setDisplayName(event.target.value)} required />
+          <input
+            value={displayName}
+            maxLength={40}
+            onChange={(event) => setDisplayName(event.target.value)}
+            required
+          />
         </label>
-        <button type="submit" className="btn primary" disabled={saving}>保存</button>
-      </form>
-      <form className="panel stack-form" onSubmit={(event) => void savePassword(event)}>
-        <h4>密码</h4>
+        <div className="settings-actions">
+          <Button type="submit" variant="primary" disabled={saving}>
+            保存
+          </Button>
+        </div>
+      </Panel>
+
+      <Panel
+        as="form"
+        title="密码"
+        className="stack-form"
+        onSubmit={(event) => void savePassword(event)}
+      >
         <label>
           当前密码
-          <input type="password" value={oldPassword} autoComplete="current-password" onChange={(event) => setOldPassword(event.target.value)} required />
+          <input
+            type="password"
+            value={oldPassword}
+            autoComplete="current-password"
+            onChange={(event) => setOldPassword(event.target.value)}
+            required
+          />
         </label>
         <label>
           新密码
-          <input type="password" value={newPassword} minLength={10} maxLength={128} autoComplete="new-password" onChange={(event) => setNewPassword(event.target.value)} required />
+          <input
+            type="password"
+            value={newPassword}
+            minLength={10}
+            maxLength={128}
+            autoComplete="new-password"
+            onChange={(event) => setNewPassword(event.target.value)}
+            required
+          />
         </label>
-        <button type="submit" className="btn primary">更新密码</button>
-      </form>
-      <div className="panel danger-zone">
-        <h4>账户</h4>
-        <button type="button" className="btn danger" onClick={() => void removeAccount()}>注销账户</button>
-      </div>
+        <div className="settings-actions">
+          <Button type="submit" variant="primary">
+            更新密码
+          </Button>
+        </div>
+      </Panel>
+
+      <Panel title="危险操作" className="danger-zone">
+        <p className="danger-note">
+          注销账户将删除云端资料与偏好，且无法撤销。请确认不再需要该账户后再操作。
+        </p>
+        <Button variant="danger" onClick={() => void removeAccount()}>
+          注销账户
+        </Button>
+      </Panel>
     </section>
   );
 }

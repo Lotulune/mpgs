@@ -1,12 +1,99 @@
+// Natural-language recommendations: describe the session in plain words, see
+// what the server understood (interpreted constraints + ai_status), and browse
+// deterministic results even when AI is disabled or fell back to rules.
+//
+// Load-bearing copy (asserted by E2E / product contract, do not reword):
+// - submit button "推荐", input id "nl-input"
+// - fallback chip "规则解析模式"
+// - note "当前由确定性规则理解输入；无法识别的条件不会被伪造成已理解。"
+// - offline error "离线时无法生成新的自然语言推荐。"
+
 import { useEffect, useState, type FormEvent } from "react";
 import { ApiError } from "../api/client";
 import type { NaturalLanguageRecommendationResponse } from "../api/types";
-import { formatAgo, isStale } from "../app/format";
+import { formatAgo, formatPrice, isStale, platformLabels } from "../app/format";
 import { apiClient, feedbackQueue } from "../app/runtime";
 import { loadLocalCustomAiSettings } from "../app/localAiSettings";
+import { Button } from "../components/Button";
+import { Chip } from "../components/Chip";
+import { EmptyState } from "../components/EmptyState";
+import { Skeleton } from "../components/Skeleton";
 import { GameCard } from "./GameCard";
 
 const EXAMPLES = ["4 人合作，单局一小时以内", "想找能自建服务器的长期联机游戏", "两个人轻松玩，不要太竞技"];
+
+function AiStatusChip({ result }: { result: NaturalLanguageRecommendationResponse }) {
+  const reason = result.fallback_reason ?? undefined;
+  switch (result.ai_status) {
+    case "pending":
+      return (
+        <Chip tone="accent" title={reason}>
+          AI 增强中
+        </Chip>
+      );
+    case "used":
+      return <Chip tone="accent">AI 已增强</Chip>;
+    case "cached":
+      return <Chip tone="accent">AI 缓存命中</Chip>;
+    case "fallback":
+      return (
+        <Chip tone="warn" title={reason}>
+          规则解析模式
+        </Chip>
+      );
+    case "disabled":
+      return (
+        <Chip tone="warn" title={reason}>
+          AI 未启用
+        </Chip>
+      );
+    default:
+      return (
+        <Chip tone="warn" title={reason}>
+          AI 状态未知
+        </Chip>
+      );
+  }
+}
+
+/** Human-readable chips for the constraints the server actually understood. */
+function constraintLabels(result: NaturalLanguageRecommendationResponse): string[] {
+  const interpreted = result.interpreted;
+  const hard = new Set(interpreted.hard_constraints ?? []);
+  const represented = new Set<string>();
+  const labels: string[] = [];
+  const add = (field: string, label: string) => {
+    represented.add(field);
+    labels.push(hard.has(field) ? `${label}（硬性）` : label);
+  };
+  if (interpreted.party_size !== null) add("party_size", `${interpreted.party_size} 人`);
+  if (interpreted.session_minutes_max !== null) {
+    add("session_minutes", `最长 ${interpreted.session_minutes_max} 分钟`);
+  }
+  if (interpreted.coop_competitive !== null) {
+    labels.push(interpreted.coop_competitive < 0.5 ? "偏合作" : "偏竞技");
+  }
+  if (interpreted.self_hosting_willingness != null && interpreted.self_hosting_willingness >= 0.5) {
+    add("self_hosting", "自建服优先");
+  }
+  if (interpreted.platforms && interpreted.platforms.length > 0) {
+    add("platforms", platformLabels(interpreted.platforms));
+  }
+  if (interpreted.max_price_minor != null && interpreted.currency) {
+    add(
+      "budget",
+      `预算 ≤ ${formatPrice(interpreted.max_price_minor, interpreted.currency, false)}`,
+    );
+  }
+  const hardOnlyLabels: Record<string, string> = {
+    demo_required: "必须提供 Demo",
+    self_hosting: "必须支持自建服",
+  };
+  for (const field of hard) {
+    if (!represented.has(field) && hardOnlyLabels[field]) labels.push(hardOnlyLabels[field]);
+  }
+  return labels;
+}
 
 export function NaturalLanguageScreen({ onOpenGame }: { onOpenGame: (appId: number) => void }) {
   const [query, setQuery] = useState("");
@@ -62,11 +149,17 @@ export function NaturalLanguageScreen({ onOpenGame }: { onOpenGame: (appId: numb
     return feedbackQueue.subscribeRankingChanged(() => void run(result.query));
   }, [result?.query]);
 
+  const aiEnhanced = result !== null && (result.ai_status === "used" || result.ai_status === "cached");
+  const constraints = result ? constraintLabels(result) : [];
+
   return (
-    <section aria-label="自然语言推荐">
+    <section className="nl-screen" aria-label="自然语言推荐">
       <form className="nl-query" onSubmit={submit}>
         <label htmlFor="nl-input">描述这次想玩的游戏</label>
-        <div className="search-row">
+        <p className="nl-query-hint">
+          说说人数、合作还是对抗、单局时长或预算；想自己开服也可以直接写。匿名可用，无需登录。
+        </p>
+        <div className="nl-input-row">
           <input
             id="nl-input"
             value={query}
@@ -74,65 +167,76 @@ export function NaturalLanguageScreen({ onOpenGame }: { onOpenGame: (appId: numb
             placeholder="例如：4 人合作，单局一小时以内，不要太竞技"
             onChange={(event) => setQuery(event.target.value)}
           />
-          <button type="submit" className="btn accent" disabled={loading || !query.trim()}>
+          <Button type="submit" variant="accent" disabled={loading || !query.trim()}>
             {loading ? "分析中" : "推荐"}
-          </button>
+          </Button>
         </div>
         {!result && (
           <div className="nl-examples">
+            <span className="nl-examples-label">试试：</span>
             {EXAMPLES.map((example) => (
-              <button key={example} type="button" className="btn small ghost" onClick={() => void run(example)}>
+              <Button key={example} size="small" variant="ghost" onClick={() => void run(example)}>
                 {example}
-              </button>
+              </Button>
             ))}
           </div>
         )}
       </form>
 
-      {error && (
-        <div className="state-box" role="alert">
-          <span className="big">!</span>
-          <span>{error.offline ? "离线时无法生成新的自然语言推荐。" : `推荐失败：${error.message}`}</span>
+      {loading && !result && (
+        <div className="feed-grid" aria-hidden="true">
+          <Skeleton />
+          <Skeleton />
+          <Skeleton />
         </div>
+      )}
+
+      {error && (
+        <EmptyState glyph="!" alert>
+          <span>
+            {error.offline
+              ? "离线时无法生成新的自然语言推荐。请检查网络连接后重试。"
+              : `推荐失败：${error.message}`}
+          </span>
+          <Button size="small" disabled={loading} onClick={() => void run()}>
+            重试
+          </Button>
+        </EmptyState>
       )}
 
       {result && !error && (
         <>
-          <div className="statusline">
-            {result.ai_status === "pending" && (
-              <span className="chip accent" title={result.fallback_reason ?? undefined}>
-                AI 增强中
-              </span>
-            )}
-            {result.ai_status === "used" && <span className="chip accent">AI 已增强</span>}
-            {result.ai_status === "cached" && <span className="chip accent">AI 缓存命中</span>}
-            {result.ai_status === "fallback" && (
-              <span className="chip warn" title={result.fallback_reason ?? undefined}>
-                规则解析模式
-              </span>
-            )}
-            {result.ai_status === "disabled" && (
-              <span className="chip warn" title={result.fallback_reason ?? undefined}>
-                AI 未启用
-              </span>
-            )}
-            {result.ai_latency_ms !== undefined &&
-              (result.ai_status === "used" || result.ai_status === "cached") && (
-              <span className="chip">AI {result.ai_latency_ms} ms</span>
-            )}
-            {result.interpreted.party_size !== null && <span className="chip">{result.interpreted.party_size} 人</span>}
-            {result.interpreted.session_minutes_max !== null && <span className="chip">最长 {result.interpreted.session_minutes_max} 分钟</span>}
-            {result.interpreted.coop_competitive !== null && (
-              <span className="chip">{result.interpreted.coop_competitive < 0.5 ? "偏合作" : "偏竞技"}</span>
-            )}
-            {result.interpreted.self_hosting_willingness != null &&
-              result.interpreted.self_hosting_willingness >= 0.5 && (
-                <span className="chip">自建服优先</span>
-              )}
-            <span className={isStale(result.data_updated_at_ms) ? "chip warn" : "chip"}>
-              数据更新于 {formatAgo(result.data_updated_at_ms)}
-            </span>
-          </div>
+          <section className="nl-analysis" aria-label="对本次描述的理解">
+            <div className="nl-analysis-row">
+              <span className="nl-analysis-label">AI 状态</span>
+              <div className="statusline">
+                <AiStatusChip result={result} />
+                {result.ai_latency_ms !== undefined && aiEnhanced && (
+                  <Chip>AI {result.ai_latency_ms} ms</Chip>
+                )}
+                {aiEnhanced && result.ai_model && <Chip>{result.ai_model}</Chip>}
+              </div>
+            </div>
+            <div className="nl-analysis-row">
+              <span className="nl-analysis-label">识别到的条件</span>
+              <div className="statusline">
+                {constraints.length > 0 ? (
+                  constraints.map((label, index) => <Chip key={`${label}-${index}`}>{label}</Chip>)
+                ) : (
+                  <span className="nl-constraints-empty">未识别出明确条件，按整体偏好匹配</span>
+                )}
+              </div>
+            </div>
+            <div className="nl-analysis-row">
+              <span className="nl-analysis-label">数据</span>
+              <div className="statusline">
+                <Chip tone={isStale(result.data_updated_at_ms) ? "warn" : undefined}>
+                  数据更新于 {formatAgo(result.data_updated_at_ms)}
+                </Chip>
+              </div>
+            </div>
+          </section>
+
           {(result.ai_status === "fallback" ||
             result.ai_status === "disabled" ||
             result.ai_status === "pending") && (
@@ -143,11 +247,8 @@ export function NaturalLanguageScreen({ onOpenGame }: { onOpenGame: (appId: numb
               </p>
             </>
           )}
-          {(result.ai_status === "used" || result.ai_status === "cached") &&
-            result.fallback_reason && (
-              <p className="cal-note">{result.fallback_reason}</p>
-            )}
-          {(result.ai_status === "used" || result.ai_status === "cached") && result.ai_summary && (
+          {aiEnhanced && result.fallback_reason && <p className="cal-note">{result.fallback_reason}</p>}
+          {aiEnhanced && result.ai_summary && (
             <p
               className="cal-note"
               title={result.ai_summary_evidence_ids?.length ? result.ai_summary_evidence_ids.join(", ") : undefined}
@@ -155,10 +256,13 @@ export function NaturalLanguageScreen({ onOpenGame }: { onOpenGame: (appId: numb
               {result.ai_summary}
             </p>
           )}
+
           {result.items.length === 0 ? (
-            <div className="state-box"><span className="big">∅</span><span>没有找到满足已识别条件的候选。</span></div>
+            <EmptyState glyph="∅">
+              <span>没有找到满足已识别条件的候选。换个说法或减少条件试试。</span>
+            </EmptyState>
           ) : (
-            <div className="feed-grid">
+            <div className="feed-grid" aria-busy={loading}>
               {result.items.map((item) => (
                 <GameCard key={item.app_id} item={item} onOpen={onOpenGame} />
               ))}

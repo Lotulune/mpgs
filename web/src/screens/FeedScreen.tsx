@@ -7,94 +7,15 @@ import { FEED_SORT_OPTIONS } from "../api/types";
 import { formatAgo, isStale, SECTION_META } from "../app/format";
 import { feedbackQueue } from "../app/runtime";
 import { defaultOrderForSort, useFeed } from "../app/useFeed";
+import { Button } from "../components/Button";
+import { Chip } from "../components/Chip";
+import { EmptyState } from "../components/EmptyState";
+import { Pagination } from "../components/Pagination";
+import { Skeleton } from "../components/Skeleton";
 import { GameCard } from "./GameCard";
 
-function PaginationBar({
-  page,
-  totalPages,
-  total,
-  loading,
-  onPage,
-}: {
-  page: number;
-  totalPages: number;
-  total: number;
-  loading: boolean;
-  onPage: (page: number) => void;
-}) {
-  if (totalPages <= 1) {
-    return total > 0 ? (
-      <div className="pagination" aria-label="分页">
-        <span className="pagination-meta">共 {total} 款</span>
-      </div>
-    ) : null;
-  }
-
-  const windowSize = 5;
-  let start = Math.max(1, page - Math.floor(windowSize / 2));
-  let end = Math.min(totalPages, start + windowSize - 1);
-  start = Math.max(1, end - windowSize + 1);
-  const pages: number[] = [];
-  for (let p = start; p <= end; p += 1) pages.push(p);
-
-  return (
-    <div className="pagination" aria-label="分页">
-      <span className="pagination-meta">
-        第 {page}/{totalPages} 页 · 共 {total} 款
-      </span>
-      <div className="pagination-controls">
-        <button
-          type="button"
-          className="btn small"
-          disabled={loading || page <= 1}
-          onClick={() => onPage(page - 1)}
-        >
-          上一页
-        </button>
-        {start > 1 && (
-          <>
-            <button type="button" className="btn small ghost" disabled={loading} onClick={() => onPage(1)}>
-              1
-            </button>
-            {start > 2 && <span className="pagination-ellipsis">…</span>}
-          </>
-        )}
-        {pages.map((p) => (
-          <button
-            key={p}
-            type="button"
-            className={`btn small${p === page ? " primary" : " ghost"}`}
-            disabled={loading || p === page}
-            aria-current={p === page ? "page" : undefined}
-            onClick={() => onPage(p)}
-          >
-            {p}
-          </button>
-        ))}
-        {end < totalPages && (
-          <>
-            {end < totalPages - 1 && <span className="pagination-ellipsis">…</span>}
-            <button
-              type="button"
-              className="btn small ghost"
-              disabled={loading}
-              onClick={() => onPage(totalPages)}
-            >
-              {totalPages}
-            </button>
-          </>
-        )}
-        <button
-          type="button"
-          className="btn small"
-          disabled={loading || page >= totalPages}
-          onClick={() => onPage(page + 1)}
-        >
-          下一页
-        </button>
-      </div>
-    </div>
-  );
+function defaultSortFor(section: FeedSection): FeedSort {
+  return section === "upcoming" ? "release_date" : "recommended";
 }
 
 function RankedFeedPanel({
@@ -104,21 +25,15 @@ function RankedFeedPanel({
   section: FeedSection;
   onOpenGame: (appId: number) => void;
 }) {
-  const [sort, setSort] = useState<FeedSort>(
-    section === "upcoming" ? "release_date" : "recommended",
-  );
+  // Parent remounts this panel with key={section}, so sort/order always match
+  // the active tab without a mid-render reset.
+  const [sort, setSort] = useState<FeedSort>(() => defaultSortFor(section));
   const [order, setOrder] = useState<FeedSortOrder>(() =>
-    defaultOrderForSort(section === "upcoming" ? "release_date" : "recommended", section),
+    defaultOrderForSort(defaultSortFor(section), section),
   );
+
   const feed = useFeed(section, sort, order);
   const meta = SECTION_META[section];
-
-  useEffect(() => {
-    // Reset sort when switching tabs so "即将发售" defaults to release date.
-    const nextSort: FeedSort = section === "upcoming" ? "release_date" : "recommended";
-    setSort(nextSort);
-    setOrder(defaultOrderForSort(nextSort, section));
-  }, [section]);
 
   useEffect(() => feedbackQueue.subscribeRankingChanged(feed.reload), [feed.reload]);
 
@@ -131,56 +46,62 @@ function RankedFeedPanel({
     setOrder((current) => (current === "asc" ? "desc" : "asc"));
   };
 
+  const changePage = (p: number) => {
+    feed.goToPage(p);
+    document.querySelector<HTMLElement>("main.main")?.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
   return (
     <section aria-label={meta.label}>
-      <div className="statusline">
-        <span>{meta.hint}</span>
-        {section === "upcoming" && (
-          <span className="chip">按推荐流展示；完整按日日历见「日历」页</span>
-        )}
-        {feed.dataUpdatedAtMs !== null && (
-          <span className={isStale(feed.dataUpdatedAtMs) ? "chip warn" : "chip"}>
-            数据更新于 {formatAgo(feed.dataUpdatedAtMs)}
-          </span>
-        )}
-        {feed.fromOfflineCache && <span className="chip danger">离线快照</span>}
-        {feed.algorithmVersion && <span className="chip">{feed.algorithmVersion}</span>}
-      </div>
+      <header className="feed-head">
+        <div className="statusline">
+          <span>{meta.hint}</span>
+          {section === "upcoming" && (
+            <Chip>按推荐流展示；完整按日日历见「日历」页</Chip>
+          )}
+          {feed.dataUpdatedAtMs !== null && (
+            <Chip tone={isStale(feed.dataUpdatedAtMs) ? "warn" : undefined}>
+              数据更新于 {formatAgo(feed.dataUpdatedAtMs)}
+            </Chip>
+          )}
+          {feed.fromOfflineCache && <Chip tone="danger">离线快照</Chip>}
+          {feed.algorithmVersion && <Chip>{feed.algorithmVersion}</Chip>}
+        </div>
 
-      <div className="feed-sortbar" role="toolbar" aria-label="排序">
-        {FEED_SORT_OPTIONS.map((option) => (
-          <button
-            key={option.id}
-            type="button"
-            className={`btn small${sort === option.id ? " primary" : " ghost"}`}
-            aria-pressed={sort === option.id}
-            onClick={() => onSelectSort(option.id)}
+        <div className="feed-sortbar" role="toolbar" aria-label="排序">
+          {FEED_SORT_OPTIONS.map((option) => (
+            <Button
+              key={option.id}
+              size="small"
+              variant={sort === option.id ? "primary" : "ghost"}
+              aria-pressed={sort === option.id}
+              onClick={() => onSelectSort(option.id)}
+            >
+              {option.label}
+            </Button>
+          ))}
+          <Button
+            size="small"
+            variant="ghost"
+            onClick={toggleOrder}
+            title={order === "asc" ? "升序" : "降序"}
+            aria-label={order === "asc" ? "当前升序，点击切换为降序" : "当前降序，点击切换为升序"}
           >
-            {option.label}
-          </button>
-        ))}
-        <button
-          type="button"
-          className="btn small ghost"
-          onClick={toggleOrder}
-          title={order === "asc" ? "升序" : "降序"}
-          aria-label={order === "asc" ? "当前升序，点击切换为降序" : "当前降序，点击切换为升序"}
-        >
-          {order === "asc" ? "升序 ↑" : "降序 ↓"}
-        </button>
-      </div>
+            {order === "asc" ? "升序 ↑" : "降序 ↓"}
+          </Button>
+        </div>
+      </header>
 
       {feed.loading && (
         <div className="feed-grid" aria-busy="true">
           {Array.from({ length: 6 }, (_, i) => (
-            <div key={i} className="skeleton" />
+            <Skeleton key={i} />
           ))}
         </div>
       )}
 
       {!feed.loading && feed.error && (
-        <div className="state-box" role="alert">
-          <span className="big">{feed.error.offline ? "⌁" : "!"}</span>
+        <EmptyState glyph={feed.error.offline ? "⌁" : "!"} alert>
           <span>
             {feed.error.offline
               ? "网络不可用，且本地没有可用的缓存快照。"
@@ -189,49 +110,41 @@ function RankedFeedPanel({
           {feed.error.requestId && (
             <span style={{ fontSize: 11, opacity: 0.6 }}>request_id: {feed.error.requestId}</span>
           )}
-          <button type="button" className="btn" onClick={feed.reload}>
-            重试
-          </button>
-        </div>
+          <Button onClick={feed.reload}>重试</Button>
+        </EmptyState>
       )}
 
       {!feed.loading && !feed.error && feed.items.length === 0 && (
-        <div className="state-box">
-          <span className="big">∅</span>
+        <EmptyState glyph="∅">
           <span>
             {section === "upcoming"
               ? "暂无符合条件的即将发售多人候选。可在「日历」页查看发售窗口，或等待商店采集写入 coming soon 记录。"
               : "该分区暂时没有符合条件的候选。数据允许时会如实展示，不会伪造推荐。"}
           </span>
-          <button type="button" className="btn" onClick={feed.reload}>
-            刷新
-          </button>
-        </div>
+          <Button onClick={feed.reload}>刷新</Button>
+        </EmptyState>
       )}
 
       {feed.items.length > 0 && (
         <>
-          <PaginationBar
+          <Pagination
             page={feed.page}
             totalPages={feed.totalPages}
             total={feed.total}
             loading={feed.loading}
-            onPage={feed.goToPage}
+            onPage={changePage}
           />
           <div className="feed-grid">
             {feed.items.map((item) => (
               <GameCard key={item.app_id} item={item} onOpen={onOpenGame} />
             ))}
           </div>
-          <PaginationBar
+          <Pagination
             page={feed.page}
             totalPages={feed.totalPages}
             total={feed.total}
             loading={feed.loading}
-            onPage={(p) => {
-              feed.goToPage(p);
-              window.scrollTo({ top: 0, behavior: "smooth" });
-            }}
+            onPage={changePage}
           />
         </>
       )}
@@ -246,5 +159,5 @@ export function FeedScreen({
   section: FeedSection;
   onOpenGame: (appId: number) => void;
 }) {
-  return <RankedFeedPanel section={section} onOpenGame={onOpenGame} />;
+  return <RankedFeedPanel key={section} section={section} onOpenGame={onOpenGame} />;
 }

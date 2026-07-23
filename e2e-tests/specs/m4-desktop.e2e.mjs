@@ -70,8 +70,8 @@ async function assertNoCriticalOverflow(width, height) {
   await browser.saveScreenshot(path.join(artifactDir, `layout-${width}x${height}.png`));
   const layout = await browser.execute(() => {
     const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
     const root = document.documentElement;
-    // Tabs intentionally scroll horizontally; only brand/controls must stay in view.
     const selectors = ["header.topbar", ".brand", ".topbar-controls", "main.main"];
     const outside = selectors.flatMap((selector) =>
       Array.from(document.querySelectorAll(selector))
@@ -81,15 +81,57 @@ async function assertNoCriticalOverflow(width, height) {
         })
         .map((element) => element.className || element.tagName),
     );
+    const clippedTabs = Array.from(document.querySelectorAll(".tabs .tab"))
+      .filter((element) => {
+        const nav = element.closest(".tabs");
+        if (!nav) return true;
+        const rect = element.getBoundingClientRect();
+        const navRect = nav.getBoundingClientRect();
+        return rect.left < navRect.left - 1 || rect.right > navRect.right + 1;
+      })
+      .map((element) => element.getAttribute("data-testid") ?? element.textContent?.trim());
+    const frame = document.querySelector(".window-frame")?.getBoundingClientRect();
+    const topbar = document.querySelector(".topbar")?.getBoundingClientRect();
+    const main = document.querySelector("main.main");
+    const mainRect = main?.getBoundingClientRect();
+    const firstRowCards = Array.from(document.querySelectorAll("article.card"))
+      .map((card) => ({ card, rect: card.getBoundingClientRect() }))
+      .filter(({ rect }, _index, cards) => Math.abs(rect.top - (cards[0]?.rect.top ?? rect.top)) <= 1);
+    const actionBottoms = firstRowCards
+      .map(({ card }) => card.querySelector(".card-actions")?.getBoundingClientRect().bottom)
+      .filter((bottom) => typeof bottom === "number");
     return {
       viewportWidth,
       documentOverflow: root.scrollWidth - viewportWidth,
+      documentVerticalOverflow: root.scrollHeight - viewportHeight,
       outside,
+      clippedTabs,
+      frameCoversViewport:
+        frame != null &&
+        frame.left <= 1 &&
+        frame.top <= 1 &&
+        frame.right >= viewportWidth - 1 &&
+        frame.bottom >= viewportHeight - 1,
+      mainOwnsScroll:
+        main != null &&
+        mainRect != null &&
+        topbar != null &&
+        getComputedStyle(main).overflowY === "auto" &&
+        mainRect.top >= topbar.bottom - 1 &&
+        mainRect.bottom >= viewportHeight - 1 &&
+        mainRect.bottom <= viewportHeight + 1,
+      cardActionBottomSpread:
+        actionBottoms.length > 1 ? Math.max(...actionBottoms) - Math.min(...actionBottoms) : 0,
     };
   });
-  // Allow minor scrollbar/subpixel slack; tabs use overflow-x:auto inside the topbar.
+  // Allow minor scrollbar/subpixel slack from the native WebView.
   expect(layout.documentOverflow).toBeLessThanOrEqual(8);
+  expect(layout.documentVerticalOverflow).toBeLessThanOrEqual(1);
   expect(layout.outside).toEqual([]);
+  expect(layout.clippedTabs).toEqual([]);
+  expect(layout.frameCoversViewport).toBe(true);
+  expect(layout.mainOwnsScroll).toBe(true);
+  expect(layout.cardActionBottomSpread).toBeLessThanOrEqual(1);
 }
 
 async function dismissAuthDialogIfOpen() {
@@ -143,6 +185,13 @@ async function ensureRegisteredAccount() {
 }
 
 describe("M4 native desktop journey", () => {
+  it("provides usable controls for the frameless window", async () => {
+    await expect($("[aria-label='窗口控制']")).toBeDisplayed();
+    await expect($("button[aria-label='最小化窗口']")).toBeDisplayed();
+    await expect($("button[aria-label='最大化或还原窗口']")).toBeDisplayed();
+    await expect($("button[aria-label='关闭窗口']")).toBeDisplayed();
+  });
+
   it("completes first-run onboarding and persists preferences", async () => {
     await browser.setWindowSize(1280, 800);
     await expect($("h1=选择你的界面风格")).toBeDisplayed();
@@ -154,6 +203,21 @@ describe("M4 native desktop journey", () => {
     await (await exactButton("¥150 以内")).click();
     await (await exactButton("开始探索")).click();
     await expect($("nav[aria-label='主导航']")).toBeDisplayed();
+    // Theme control is a custom menu (full-hit trigger), not a native <select>.
+    const themeTrigger = await $("header.topbar .theme-menu-trigger");
+    await expect(themeTrigger).toBeDisplayed();
+    const themeAria = await themeTrigger.getAttribute("aria-label");
+    expect(themeAria ?? "").toContain("当前主题");
+    await expectVisibleText("极简白线", "header.topbar .theme-menu-trigger");
+    await themeTrigger.click();
+    await expect($(".theme-menu-popover")).toBeDisplayed();
+    await expectVisibleText("极简白线", ".theme-menu-popover [role='option'][aria-selected='true']");
+    // Close the menu so later cases are not blocked by the popover.
+    await browser.keys("Escape");
+    await browser.waitUntil(async () => !(await $(".theme-menu-popover").isExisting()), {
+      timeout: 5_000,
+      timeoutMsg: "expected Escape to close theme menu",
+    });
     await waitForFeed();
 
     // A new native WebDriver session relaunches the app. Reaching the shell
@@ -175,6 +239,22 @@ describe("M4 native desktop journey", () => {
     }
   });
 
+  it("closes account login with Escape without leaving game detail", async () => {
+    await clickFeedTab("recent_release");
+    await waitForFeed();
+    await (await $("article.card h3")).click();
+    await expect($(".detail-screen")).toBeDisplayed();
+    await (await $(".detail-screen .vote-btn")).click();
+    await expect($(".auth-dialog")).toBeDisplayed();
+
+    await browser.keys("Escape");
+    await browser.waitUntil(async () => !(await $(".auth-dialog").isExisting()), {
+      timeout: 10_000,
+      timeoutMsg: "expected Escape to close the account dialog",
+    });
+    await expect($(".detail-screen")).toBeDisplayed();
+  });
+
   it("uses the explicit natural-language fallback flow", async () => {
     await clickAuxTab("natural-language");
     const input = await $("#nl-input");
@@ -191,6 +271,9 @@ describe("M4 native desktop journey", () => {
     );
     await waitForFeed();
     await expectVisibleText("当前由确定性规则理解输入");
+    const bodyText = await $("body").getText();
+    expect(bodyText).not.toContain("party_size");
+    expect(bodyText).not.toContain("session_minutes");
   });
 
   it("shows upcoming and recent calendar entries with honest early-data context", async () => {
@@ -229,8 +312,19 @@ describe("M4 native desktop journey", () => {
 
   it("has no horizontal or critical topbar overflow at supported minimum sizes", async () => {
     await dismissAuthDialogIfOpen();
+    await assertNoCriticalOverflow(820, 520);
     await assertNoCriticalOverflow(1024, 640);
     await assertNoCriticalOverflow(1280, 800);
+  });
+
+  it("keeps the full settings page reachable in a compact window", async () => {
+    await browser.setWindowSize(820, 520);
+    await clickAuxTab("settings");
+    await expect($("section[aria-label='设置']")).toBeDisplayed();
+    const cacheHeading = await $("h4=数据与缓存");
+    await cacheHeading.scrollIntoView({ block: "center" });
+    await expect(cacheHeading).toBeDisplayed();
+    await browser.setWindowSize(1280, 800);
   });
 
   it("serves a cached snapshot with data time after the server goes offline", async () => {

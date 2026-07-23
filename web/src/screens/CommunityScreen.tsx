@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "../api/client";
 import type {
   CommunityFilters,
@@ -10,9 +10,12 @@ import type {
 } from "../api/types";
 import { apiClient, playIntentStore } from "../app/runtime";
 import { formatAgo, formatCount, formatReleaseDate, releaseStateLabel } from "../app/format";
-import { Facepile } from "./Facepile";
-import { GameMedia } from "./GameMedia";
-import { VoteButton } from "./VoteButton";
+import { Button } from "../components/Button";
+import { EmptyState } from "../components/EmptyState";
+import { Facepile } from "../components/Facepile";
+import { GameMedia } from "../components/GameMedia";
+import { Skeleton } from "../components/Skeleton";
+import { VoteButton } from "../components/VoteButton";
 
 export function CommunityScreen({ onOpenGame }: { onOpenGame: (appId: number) => void }) {
   const [sort, setSort] = useState<CommunitySort>("trending");
@@ -24,7 +27,13 @@ export function CommunityScreen({ onOpenGame }: { onOpenGame: (appId: number) =>
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [updatedAt, setUpdatedAt] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Generation guard for loadMore: bumped on filter/sort change and unmount so
+  // an in-flight "load more" request can't apply stale items after the view
+  // moved on.
+  const loadMoreGen = useRef(0);
+  const loadingMoreRef = useRef(false);
   const filters = useMemo<CommunityFilters>(() => ({
     ...(releaseState ? { releaseState } : {}),
     ...(demoOnly ? { demoOnly: true } : {}),
@@ -35,7 +44,11 @@ export function CommunityScreen({ onOpenGame }: { onOpenGame: (appId: number) =>
   }), [demoOnly, partySize, platform, releaseState]);
 
   const apply = (response: CommunityResponse, append: boolean) => {
-    setItems((current) => (append ? [...current, ...response.items] : response.items));
+    setItems((current) => {
+      if (!append) return response.items;
+      const seen = new Set(current.map((item) => item.app_id));
+      return [...current, ...response.items.filter((item) => !seen.has(item.app_id))];
+    });
     setNextCursor(response.next_cursor);
     setUpdatedAt(response.data_updated_at_ms);
   };
@@ -61,39 +74,72 @@ export function CommunityScreen({ onOpenGame }: { onOpenGame: (appId: number) =>
     };
   }, [filters, sort]);
 
-  useEffect(() => playIntentStore.subscribe(() => {
-    // The authoritative response invalidates cached community snapshots after
-    // a successful optimistic vote. A no-op observer keeps this screen fresh.
-    if (!playIntentStore.pendingCount()) void apiClient.community(sort, filters).then((result) => apply(result.data, false)).catch(() => undefined);
-  }), [filters, sort]);
+  useEffect(() => {
+    let cancelled = false;
+    const unsubscribe = playIntentStore.subscribe(() => {
+      // The authoritative response invalidates cached community snapshots after
+      // a successful optimistic vote. A no-op observer keeps this screen fresh.
+      if (playIntentStore.pendingCount()) return;
+      void apiClient
+        .community(sort, filters)
+        .then((result) => {
+          if (!cancelled) apply(result.data, false);
+        })
+        .catch(() => undefined);
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [filters, sort]);
+
+  // Invalidate any in-flight "load more" when the query changes or on unmount.
+  useEffect(() => {
+    return () => {
+      loadMoreGen.current += 1;
+    };
+  }, [filters, sort]);
 
   const loadMore = async () => {
-    if (!nextCursor) return;
+    if (!nextCursor || loadingMoreRef.current) return;
+    loadingMoreRef.current = true;
+    setLoadingMore(true);
+    const gen = loadMoreGen.current;
+    const stale = () => gen !== loadMoreGen.current;
     try {
       const result = await apiClient.community(sort, filters, nextCursor);
+      if (stale()) return;
       apply(result.data, true);
     } catch (cause) {
+      if (stale()) return;
       if (cause instanceof ApiError && cause.code === "cursor_stale") {
         const first = await apiClient.community(sort, filters);
+        if (stale()) return;
         apply(first.data, false);
       } else {
         setError("无法加载更多条目。");
       }
+    } finally {
+      loadingMoreRef.current = false;
+      setLoadingMore(false);
     }
   };
 
   return (
     <section className="community-screen" aria-label="大家想玩">
-      <div className="screen-head">
-        <div>
+      <header className="community-toolbar">
+        <div className="community-toolbar-head">
           <h2>大家想玩</h2>
-          {updatedAt !== null && <p>数据更新于 {formatAgo(updatedAt)}</p>}
+          {updatedAt !== null && <p className="community-updated">数据更新于 {formatAgo(updatedAt)}</p>}
         </div>
-        <div className="seg" aria-label="社区排序">
-          <button type="button" className="btn small" aria-pressed={sort === "trending"} onClick={() => setSort("trending")}>正在升温</button>
-          <button type="button" className="btn small" aria-pressed={sort === "most_voted"} onClick={() => setSort("most_voted")}>最多人想玩</button>
+        <div className="community-sort">
+          <span className="community-toolbar-label" aria-hidden="true">排序</span>
+          <div className="seg" aria-label="社区排序">
+            <Button size="small" aria-pressed={sort === "trending"} onClick={() => setSort("trending")}>正在升温</Button>
+            <Button size="small" aria-pressed={sort === "most_voted"} onClick={() => setSort("most_voted")}>最多人想玩</Button>
+          </div>
         </div>
-      </div>
+      </header>
       <div className="community-filters" aria-label="社区筛选">
         <label>
           <span>发售状态</span>
@@ -131,17 +177,31 @@ export function CommunityScreen({ onOpenGame }: { onOpenGame: (appId: number) =>
           <span>仅 Demo</span>
         </label>
       </div>
-      {loading && <div className="skeleton" style={{ height: 220 }} />}
-      {error && <p className="cal-note">{error}</p>}
-      {!loading && !error && items.length === 0 && <p className="empty-state">还没有公开的想玩投票。</p>}
+      {loading && (
+        <div className="community-skeleton-list" aria-busy="true">
+          {Array.from({ length: 4 }, (_, i) => (
+            <Skeleton key={i} height={106} />
+          ))}
+        </div>
+      )}
+      {!loading && error && items.length === 0 && (
+        <EmptyState glyph="!" alert>
+          <span>{error}</span>
+        </EmptyState>
+      )}
+      {!loading && !error && items.length === 0 && (
+        <EmptyState glyph="∅">
+          <span>还没有公开的想玩投票。</span>
+        </EmptyState>
+      )}
       <div className="community-list">
         {items.map((item) => (
           <article key={item.app_id} className="community-row">
             <button type="button" className="community-main" onClick={() => onOpenGame(item.app_id)}>
               <GameMedia coverUrl={item.cover_url} name={item.name} appId={item.app_id} compact />
               <span className="community-copy">
-                <strong>{item.name}</strong>
-                <span>{releaseStateLabel(item.release_state)} · {formatReleaseDate(item.release_date, item.release_date_raw, item.release_date_precision)}</span>
+                <strong className="community-name">{item.name}</strong>
+                <span className="community-meta">{releaseStateLabel(item.release_state)} · {formatReleaseDate(item.release_date, item.release_date_raw, item.release_date_precision)}</span>
                 <span className="community-trend">{sort === "trending" ? `近 7 天 ${formatCount(item.trending_count)} 人加入` : `${formatCount(item.play_intent.count)} 人想玩`}</span>
               </span>
             </button>
@@ -152,7 +212,16 @@ export function CommunityScreen({ onOpenGame }: { onOpenGame: (appId: number) =>
           </article>
         ))}
       </div>
-      {nextCursor && <button type="button" className="btn" onClick={() => void loadMore()}>加载更多</button>}
+      {error && items.length > 0 && (
+        <p className="community-error-note" role="alert">{error}</p>
+      )}
+      {nextCursor && (
+        <div className="community-more">
+          <Button onClick={() => void loadMore()} disabled={loadingMore}>
+            {loadingMore ? "加载中…" : "加载更多"}
+          </Button>
+        </div>
+      )}
     </section>
   );
 }
