@@ -52,7 +52,7 @@ export function Topbar({
       <div className="brand" data-tauri-drag-region>
         <img
           className="brand-icon"
-          src="/app-icon-192.png"
+          src="/app-icon-192.png?v=transparent-v1"
           alt=""
           aria-hidden="true"
           draggable={false}

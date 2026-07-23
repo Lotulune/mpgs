@@ -102,7 +102,7 @@ export function ConnectScreen({
       <header className="onboarding-head">
         <img
           className="onboarding-logo"
-          src="/app-icon-192.png"
+          src="/app-icon-192.png?v=transparent-v1"
           alt=""
           aria-hidden="true"
           draggable={false}
