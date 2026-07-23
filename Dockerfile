@@ -6,9 +6,11 @@ ARG VITE_MPGS_API_BASE=""
 ENV VITE_MPGS_API_BASE=${VITE_MPGS_API_BASE}
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY web/package.json web/package.json
+# Workspace lists e2e-tests; its package.json must exist for frozen install.
+COPY e2e-tests/package.json e2e-tests/package.json
 RUN corepack enable \
     && corepack prepare pnpm@9.15.9 --activate \
-    && pnpm install --frozen-lockfile
+    && pnpm install --frozen-lockfile --filter mpgs-web...
 COPY web ./web
 RUN pnpm --dir web build
 

@@ -925,9 +925,7 @@ mod tests {
                 [
                     (
                         ("primary".into(), ApiProtocol::ChatCompletions),
-                        AiError::ProviderRejected(
-                            "protocol chat/completions not supported".into(),
-                        ),
+                        AiError::ProviderRejected("protocol chat/completions not supported".into()),
                     ),
                     (
                         ("fallback".into(), ApiProtocol::Responses),
@@ -974,10 +972,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.response.model, "fallback");
-        assert_eq!(
-            result.response.protocol,
-            Some(ApiProtocol::ChatCompletions)
-        );
+        assert_eq!(result.response.protocol, Some(ApiProtocol::ChatCompletions));
         assert!(result.used_fallback);
         assert_eq!(
             result.attempted_models,
@@ -1019,10 +1014,7 @@ mod tests {
                 request: StructuredRequest,
             ) -> Result<crate::types::StructuredResponse, AiError> {
                 let model = request.model.expect("router supplies a model");
-                self.attempted_models
-                    .lock()
-                    .expect("lock")
-                    .push(model);
+                self.attempted_models.lock().expect("lock").push(model);
                 std::future::pending().await
             }
         }
