@@ -94,7 +94,7 @@ describe("ConnectScreen (PRD §5.1 first connect)", () => {
     });
 
     expect(onConnected).not.toHaveBeenCalled();
-    expect(host.querySelector("[role='alert']")?.textContent).toContain("不是 MPGS Server");
+    expect(host.querySelector("[role='alert']")?.textContent).toContain("不是 LobbyTally Server");
   });
 
   it("shows the maintenance copy when readiness returns 503", async () => {

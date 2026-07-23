@@ -17,7 +17,7 @@ import urllib.request
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-UA = "MPGS-Server/0.1 (+https://github.com/Lotulune/mpgs; research)"
+UA = "LobbyTally-Server/0.1 (+https://github.com/Lotulune/lobbytally; research)"
 STORE = "https://store.steampowered.com"
 MONTHS = {
     "jan": 1,

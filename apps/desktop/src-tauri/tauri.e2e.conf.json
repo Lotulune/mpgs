@@ -1,12 +1,12 @@
 {
   "build": {
-    "beforeBuildCommand": "pnpm --dir ../../.. --filter mpgs-web build --mode e2e"
+    "beforeBuildCommand": "pnpm --dir ../../.. --filter lobbytally-web build --mode e2e"
   },
   "app": {
     "windows": [
       {
         "label": "main",
-        "title": "MPGS — 熟人联机游戏推荐",
+        "title": "LobbyTally — 熟人联机游戏推荐",
         "width": 1280,
         "height": 800,
         "minWidth": 820,

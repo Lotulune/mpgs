@@ -656,7 +656,7 @@ export class ApiClient {
         username: args.username,
         display_name: args.displayName,
         password: args.password,
-        device_label: args.deviceLabel ?? "MPGS web",
+        device_label: args.deviceLabel ?? "LobbyTally web",
       },
     });
     const accountSession = { ...session, account: true };
@@ -676,7 +676,7 @@ export class ApiClient {
       body: {
         username: args.username,
         password: args.password,
-        device_label: args.deviceLabel ?? "MPGS web",
+        device_label: args.deviceLabel ?? "LobbyTally web",
         merge_preference: args.mergePreference,
       },
     });

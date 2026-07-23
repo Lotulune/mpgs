@@ -50,8 +50,18 @@ export function Topbar({
     <header className="topbar">
       {/* Drag only on brand — keep nav/controls free of data-tauri-drag-region. */}
       <div className="brand" data-tauri-drag-region>
-        MPGS
-        <small data-tauri-drag-region>熟人联机推荐</small>
+        <img
+          className="brand-icon"
+          src="/app-icon-192.png"
+          alt=""
+          aria-hidden="true"
+          draggable={false}
+          data-tauri-drag-region
+        />
+        <span className="brand-copy" data-tauri-drag-region>
+          LobbyTally
+          <small data-tauri-drag-region>熟人联机推荐</small>
+        </span>
       </div>
       <NavTabs view={view} onNavigate={onNavigate} />
       <div className="topbar-controls">

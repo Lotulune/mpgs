@@ -10,7 +10,7 @@ COPY web/package.json web/package.json
 COPY e2e-tests/package.json e2e-tests/package.json
 RUN corepack enable \
     && corepack prepare pnpm@9.15.9 --activate \
-    && pnpm install --frozen-lockfile --filter mpgs-web...
+    && pnpm install --frozen-lockfile --filter lobbytally-web...
 COPY web ./web
 RUN pnpm --dir web build
 

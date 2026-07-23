@@ -31,7 +31,7 @@
 
 本记录证明 **Windows 本机** 原生桌面 E2E。跨平台补充：
 
-- CI commit `5e0274b` 上 **Native desktop E2E (Windows)** 与 **Native desktop E2E (Linux)** 均 success，见 [`M4_CI_RUN.md`](M4_CI_RUN.md) 与 run [29497583493](https://github.com/Lotulune/mpgs/actions/runs/29497583493)。
+- CI commit `5e0274b` 上 **Native desktop E2E (Windows)** 与 **Native desktop E2E (Linux)** 均 success，见 [`M4_CI_RUN.md`](M4_CI_RUN.md) 与 run [29497583493](https://github.com/Lotulune/lobbytally/actions/runs/29497583493)。
 - 制品 `desktop-e2e-Windows` / `desktop-e2e-Linux` 已上传（含诊断与截图）。
 - macOS 不做 WebDriver GUI E2E；APP bundle 见 CI `Tauri bundle smoke (macOS)`。
 - 安装器安装后启动见 [`M4_INSTALLER_LAUNCH_RUN.md`](M4_INSTALLER_LAUNCH_RUN.md)。

@@ -1,4 +1,4 @@
-# MPGS 桌面客户端（M4）
+# LobbyTally 桌面客户端（M4）
 
 Tauri 2 + React + TypeScript 客户端。前端在 `web/`，Tauri 壳在 `apps/desktop/src-tauri/`。
 
@@ -29,15 +29,15 @@ apps/desktop/src-tauri/  Tauri 2 壳（独立 cargo workspace，最小权限）
 pnpm install
 # 另开一个终端启动服务端（带演示数据）：
 #   $env:MPGS_SEED_DEMO='true'; cargo run -p mpgs-server
-pnpm --filter mpgs-web dev     # http://localhost:5173，/v1 代理到 127.0.0.1:17880
+pnpm --filter lobbytally-web dev     # http://localhost:5173，/v1 代理到 127.0.0.1:17880
 ```
 
 ## 校验
 
 ```powershell
-pnpm --filter mpgs-web typecheck
-pnpm --filter mpgs-web test
-pnpm --filter mpgs-web build
+pnpm --filter lobbytally-web typecheck
+pnpm --filter lobbytally-web test
+pnpm --filter lobbytally-web build
 # 仓库根：M4 API 级验收（含临时 demo 服务端）
 #   .\scripts\m4_acceptance.ps1
 # 或：pnpm m4:accept
@@ -49,15 +49,15 @@ pnpm --filter mpgs-web build
 
 ```powershell
 # 仓库根已声明 @tauri-apps/cli；首次：pnpm install
-pnpm --filter mpgs-web build
+pnpm --filter lobbytally-web build
 pnpm exec tauri dev --config apps/desktop/src-tauri/tauri.conf.json
 # 安装包（Windows x64，未签名）：
 pnpm exec tauri build --config apps/desktop/src-tauri/tauri.conf.json --ci --no-sign -b nsis
 pnpm exec tauri build --config apps/desktop/src-tauri/tauri.conf.json --ci --no-sign -b msi
 # 产物：
-#   apps/desktop/src-tauri/target/release/mpgs-desktop.exe
-#   apps/desktop/src-tauri/target/release/bundle/nsis/MPGS_0.1.0_x64-setup.exe
-#   apps/desktop/src-tauri/target/release/bundle/msi/MPGS_0.1.0_x64_en-US.msi
+#   apps/desktop/src-tauri/target/release/lobbytally-desktop.exe
+#   apps/desktop/src-tauri/target/release/bundle/nsis/LobbyTally_0.1.0_x64-setup.exe
+#   apps/desktop/src-tauri/target/release/bundle/msi/LobbyTally_0.1.0_x64_en-US.msi
 ```
 
 `tauri.conf.json` 的 bundle 目标为跨平台 `all`；CI 在原生 runner 上分别用 `--bundles deb`、

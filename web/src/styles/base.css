@@ -255,6 +255,9 @@ body::before {
 }
 
 .brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
   font-family: var(--font-display);
   font-weight: 700;
   font-size: 18px;
@@ -263,8 +266,22 @@ body::before {
   white-space: nowrap;
 }
 
+.brand-icon {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  border-radius: 9px;
+  user-select: none;
+}
+
+.brand-copy {
+  display: block;
+  line-height: 1.05;
+}
+
 .brand small {
   display: block;
+  margin-top: 3px;
   font-size: 10px;
   font-weight: 400;
   color: var(--ink-muted);
@@ -1205,6 +1222,16 @@ body::before {
   letter-spacing: var(--heading-spacing);
   text-transform: var(--heading-transform);
   text-align: center;
+}
+
+.onboarding-logo {
+  display: block;
+  width: 92px;
+  height: 92px;
+  margin: 0 auto 18px;
+  border-radius: 22px;
+  box-shadow: 0 16px 40px rgba(16, 19, 24, 0.22);
+  user-select: none;
 }
 
 .onboarding .sub {

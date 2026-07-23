@@ -23,7 +23,7 @@ function configuredPath(envName, fallback) {
 
 const application = configuredPath(
   "MPGS_E2E_APP",
-  `apps/desktop/src-tauri/target/debug/mpgs-desktop${executableSuffix}`,
+  `apps/desktop/src-tauri/target/debug/lobbytally-desktop${executableSuffix}`,
 );
 const serverBinary = configuredPath(
   "MPGS_E2E_SERVER",

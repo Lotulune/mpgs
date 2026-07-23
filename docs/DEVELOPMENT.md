@@ -18,7 +18,7 @@
 - Hash Embedding 当前版本为 `hash-embed-v2`；已有数据库升级后运行一次 `sync-retrieval` 或 `embed-documents` 重建派生向量。
 - 批处理：`mpgs-dbtool embed-documents <db> [limit] [batch]`；离线验收：`.\scripts\m5_acceptance.ps1`（见 [M5_ACCEPTANCE.md](M5_ACCEPTANCE.md)）。
 
-M4 关闭证据：本机验收与 E2E 见 [`M4_ACCEPTANCE.md`](M4_ACCEPTANCE.md)；跨平台 CI 全绿见 [`M4_CI_RUN.md`](M4_CI_RUN.md)（[run 29497583493](https://github.com/Lotulune/mpgs/actions/runs/29497583493)，commit `5e0274b`）。
+M4 关闭证据：本机验收与 E2E 见 [`M4_ACCEPTANCE.md`](M4_ACCEPTANCE.md)；跨平台 CI 全绿见 [`M4_CI_RUN.md`](M4_CI_RUN.md)（[run 29497583493](https://github.com/Lotulune/lobbytally/actions/runs/29497583493)，commit `5e0274b`）。
 ### Git
 
 本机已使用 Git for Windows。新终端若找不到 `git`，将 `C:\Program Files\Git\cmd` 加入 PATH，或在当前会话执行：
@@ -121,11 +121,11 @@ pnpm install
 # 另开终端启动带演示数据的服务端：
 $env:MPGS_SEED_DEMO = 'true'; cargo run -p mpgs-server
 # 浏览器开发（Vite 代理 /v1 到 127.0.0.1:17880）：
-pnpm --filter mpgs-web dev            # http://localhost:5173
+pnpm --filter lobbytally-web dev            # http://localhost:5173
 # 校验：
-pnpm --filter mpgs-web typecheck
-pnpm --filter mpgs-web test
-pnpm --filter mpgs-web build
+pnpm --filter lobbytally-web typecheck
+pnpm --filter lobbytally-web test
+pnpm --filter lobbytally-web build
 # M4 API 级验收（自动起临时演示服务端 + web test/build + desktop cargo check）：
 .\scripts\m4_acceptance.ps1
 # Windows/Linux 原生桌面 E2E（需先安装 tauri-driver 与平台 WebDriver）：

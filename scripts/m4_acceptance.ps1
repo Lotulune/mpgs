@@ -450,7 +450,7 @@ try {
     Write-Step 'Client offline/cache contract suite (vitest)'
     $prevEap = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
-    $offlineTests = & pnpm --filter mpgs-web exec vitest run `
+    $offlineTests = & pnpm --filter lobbytally-web exec vitest run `
         tests/apiClient.test.ts `
         tests/feedbackQueue.test.ts `
         tests/playIntentStore.test.ts `
@@ -463,16 +463,16 @@ try {
 
     Write-Step 'Complete client unit suite (vitest)'
     $ErrorActionPreference = 'Continue'
-    $vitest = & pnpm --filter mpgs-web test 2>&1
+    $vitest = & pnpm --filter lobbytally-web test 2>&1
     $vitestCode = $LASTEXITCODE
     $ErrorActionPreference = $prevEap
     $vitestText = ($vitest | Out-String)
     $vitestOk = $vitestCode -eq 0
-    Add-Result 'web.vitest' $vitestOk ($(if ($vitestOk) { 'pnpm --filter mpgs-web test exit 0' } else { $vitestText.Substring(0, [Math]::Min(400, $vitestText.Length)) }))
+    Add-Result 'web.vitest' $vitestOk ($(if ($vitestOk) { 'pnpm --filter lobbytally-web test exit 0' } else { $vitestText.Substring(0, [Math]::Min(400, $vitestText.Length)) }))
 
     Write-Step 'Web production build'
     $ErrorActionPreference = 'Continue'
-    $build = & pnpm --filter mpgs-web build 2>&1
+    $build = & pnpm --filter lobbytally-web build 2>&1
     $buildCode = $LASTEXITCODE
     $ErrorActionPreference = $prevEap
     $buildText = ($build | Out-String)

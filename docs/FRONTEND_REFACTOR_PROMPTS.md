@@ -6,7 +6,7 @@
 | --- | --- |
 | 范围 | 仅前端 `web/`（必要时读 `docs/API.md`）；默认不改 `apps/server`、`crates/*` |
 | 栈 | React 19 + TypeScript + Vite；Tauri 2 加载 `web/dist` |
-| 校验 | `pnpm --filter mpgs-web typecheck` · `test` · `build` |
+| 校验 | `pnpm --filter lobbytally-web typecheck` · `test` · `build` |
 
 ---
 
@@ -44,7 +44,7 @@
 - 不引入任意 HTTP 代理或把服务端密钥放进前端。
 - 中文 UI 文案；保持现有 data-testid（如 nav-feed-*、nav-*）若 e2e 依赖。
 - 小步提交式改动；不要无关重构、不要删测试除非同步更新。
-- 每阶段结束：pnpm --filter mpgs-web typecheck && pnpm --filter mpgs-web test
+- 每阶段结束：pnpm --filter lobbytally-web typecheck && pnpm --filter lobbytally-web test
 
 ## 当前结构（熟悉后再动）
 web/src/
@@ -242,7 +242,7 @@ AiSettings：
 
 ```text
 【阶段 9 · 质检与收敛】
-1. 跑 pnpm --filter mpgs-web typecheck && test && build
+1. 跑 pnpm --filter lobbytally-web typecheck && test && build
 2. 全局搜 FIXME/临时 hack；清掉本轮引入的死代码
 3. 确认 screens 无重复卡片实现（统一 GameCard/组件）
 4. 确认 data-testid 导航仍在

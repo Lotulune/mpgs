@@ -13,7 +13,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
-UA = "MPGS-Server/0.1 (+https://github.com/Lotulune/mpgs; research)"
+UA = "LobbyTally-Server/0.1 (+https://github.com/Lotulune/lobbytally; research)"
 
 
 def verified_catalog_header(app_id: int) -> str | None:

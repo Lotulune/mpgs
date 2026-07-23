@@ -39,6 +39,6 @@
 | games.detail | yes | app_id=2500002 name=Recent Co-op Sample |
 | etag.revalidate | yes | status=304 etag=W/"d71b37dcd5d94a9e" |
 | web.offline_contract | yes | ETag, offline snapshot, and durable pending-write tests passed |
-| web.vitest | yes | pnpm --filter mpgs-web test exit 0 |
+| web.vitest | yes | pnpm --filter lobbytally-web test exit 0 |
 | web.build | yes | typecheck+vite build ok |
 | desktop.cargo_check | yes | apps/desktop/src-tauri cargo check ok |

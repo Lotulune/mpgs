@@ -1,6 +1,6 @@
 [Unit]
 Description=MPGS recommendation server
-Documentation=https://github.com/Lotulune/mpgs
+Documentation=https://github.com/Lotulune/lobbytally
 After=network-online.target
 Wants=network-online.target
 

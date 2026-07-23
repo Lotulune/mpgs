@@ -159,7 +159,7 @@ export function ServicePanel() {
         )}
         {testedOrigin && (
           <p className="cal-note settings-note">
-            检查通过：{testedOrigin} 是一台兼容的 MPGS Server。
+            检查通过：{testedOrigin} 是一台兼容的 LobbyTally Server。
           </p>
         )}
         <div className="settings-actions">

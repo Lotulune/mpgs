@@ -34,7 +34,7 @@
 
 ## 质检记录（§9）
 
-1. `pnpm --filter mpgs-web typecheck` ✅ `test` 12 文件 66 用例 ✅ `build` ✅
+1. `pnpm --filter lobbytally-web typecheck` ✅ `test` 12 文件 66 用例 ✅ `build` ✅
 2. 全局搜 FIXME/临时 hack：无。
 3. 无重复卡片实现；旧 `screens/Facepile|GameMedia|VoteButton` 引用已全迁移至 `components/`。
 4. `data-testid` 导航与 auth 系列完整。

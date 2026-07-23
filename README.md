@@ -1,6 +1,6 @@
-# MPGS
+# LobbyTally
 
-MPGS（Multiplayer Game Scout）是一款面向熟人联机的 Steam 游戏发现工具。它优先推荐私人房间、合作模式、P2P 或可自建服务器的游戏，而不是简单复制 Steam 热门榜。
+LobbyTally 是一款面向熟人联机的 Steam 游戏发现、推荐与共同投票工具。它帮助朋友们一起挑选下一场游戏，优先推荐私人房间、合作模式、P2P 或可自建服务器的作品，而不是简单复制 Steam 热门榜。
 
 当前状态：`MVP 0.2 / M7 本地工程验收` — 账号、社区、头像、AI 设置和显式演示数据策略已实现并完成本地验证，见 [M7_ACCEPTANCE](docs/M7_ACCEPTANCE.md)。真实 Steam 数据覆盖率、外部采集执行器、跨平台发布包、合规签字和代码签名仍是未关闭的发布门禁。M6 证据见 [M6_ACCEPTANCE](docs/M6_ACCEPTANCE.md)。
 ## MVP 能力

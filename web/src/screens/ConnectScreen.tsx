@@ -38,9 +38,9 @@ export function connectErrorCopy(kind: ConnectErrorKind): string {
     case "invalid_url":
       return "地址格式不符合要求，请检查后重试。";
     case "tls_error":
-      return "证书校验失败，无法建立安全连接。MPGS 不允许绕过证书错误，请确认服务端证书有效。";
+      return "证书校验失败，无法建立安全连接。LobbyTally 不允许绕过证书错误，请确认服务端证书有效。";
     case "not_mpgs":
-      return "该地址不是 MPGS Server：未找到有效的服务识别信息。";
+      return "该地址不是 LobbyTally Server：未找到有效的服务识别信息。";
     case "incompatible":
       return "服务协议版本不兼容，请升级客户端或更换服务。";
     case "not_ready":
@@ -100,9 +100,16 @@ export function ConnectScreen({
   return (
     <div className="onboarding connect-screen">
       <header className="onboarding-head">
-        <h1>连接到 MPGS 服务</h1>
+        <img
+          className="onboarding-logo"
+          src="/app-icon-192.png"
+          alt=""
+          aria-hidden="true"
+          draggable={false}
+        />
+        <h1>连接到 LobbyTally</h1>
         <p className="sub">
-          MPGS 桌面端是纯客户端，需要连接一台 MPGS Server
+          LobbyTally 桌面端是纯客户端，需要连接一台 LobbyTally Server
           才能使用推荐、搜索、社区与账户功能。你的登录凭据、缓存与待同步数据都将按服务地址隔离保存。
         </p>
       </header>

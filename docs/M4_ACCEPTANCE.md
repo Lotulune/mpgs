@@ -80,7 +80,7 @@ macOS WKWebView 没有 Tauri 桌面 WebDriver 客户端，因此 macOS 只做原
 - 安装器静默安装 → 进程启动并创建 `client-state.sqlite3` → 静默卸载：[`M4_INSTALLER_LAUNCH_RUN.md`](M4_INSTALLER_LAUNCH_RUN.md)。
 - capability 仅含 core 默认权限和限定 Steam URL 的 opener；构建产物未发现服务端管理令牌或常见 Provider Key 标识。
 
-跨平台 CI（全绿）：https://github.com/Lotulune/mpgs/actions/runs/29497583493 — 11/11 jobs success，含 Linux/Windows 原生 E2E 与三平台 bundle smoke。macOS 无桌面 WebDriver，以 APP bundle 构建冒烟为该平台证据，不声称 GUI 自动点选。
+跨平台 CI（全绿）：https://github.com/Lotulune/lobbytally/actions/runs/29497583493 — 11/11 jobs success，含 Linux/Windows 原生 E2E 与三平台 bundle smoke。macOS 无桌面 WebDriver，以 APP bundle 构建冒烟为该平台证据，不声称 GUI 自动点选。
 
 最新 API 结果只认 `M4_ACCEPTANCE_RUN.md`，历史 `21/21` 结果因旧脚本允许 ETag `200`、反馈撤销跳过和搜索零结果而作废。
 

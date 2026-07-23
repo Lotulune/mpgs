@@ -1,18 +1,18 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "MPGS",
+  "productName": "LobbyTally",
   "version": "0.1.0",
   "identifier": "dev.mpgs.desktop",
   "build": {
-    "beforeDevCommand": "pnpm --dir ../../.. --filter mpgs-web dev",
+    "beforeDevCommand": "pnpm --dir ../../.. --filter lobbytally-web dev",
     "devUrl": "http://localhost:5173",
-    "beforeBuildCommand": "pnpm --dir ../../.. --filter mpgs-web build",
+    "beforeBuildCommand": "pnpm --dir ../../.. --filter lobbytally-web build",
     "frontendDist": "../../../web/dist"
   },
   "app": {
     "windows": [
       {
-        "title": "MPGS — 熟人联机游戏推荐",
+        "title": "LobbyTally — 熟人联机游戏推荐",
         "width": 1280,
         "height": 800,
         "minWidth": 820,

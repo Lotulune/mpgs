@@ -1,7 +1,7 @@
 {
   "$schema": "gen/schemas/desktop-schema.json",
   "identifier": "main-capability",
-  "description": "Minimal permissions for the MPGS main window: core defaults plus opening Steam store pages in the system browser. No shell, fs, or arbitrary HTTP capabilities.",
+  "description": "Minimal permissions for the LobbyTally main window: core defaults plus opening Steam store pages in the system browser. No shell, fs, or arbitrary HTTP capabilities.",
   "windows": ["main"],
   "permissions": [
     "core:default",
