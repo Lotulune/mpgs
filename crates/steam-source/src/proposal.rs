@@ -176,6 +176,35 @@ pub struct StorePriceProposal {
     pub package_id: Option<String>,
 }
 
+/// Normalized screenshot proposal from store appdetails.
+///
+/// `screenshots: Option<Vec<_>>` semantics on [`StoreDetailsProposal`]:
+/// - `None`: field missing / unusable → keep prior snapshot on ingest
+/// - `Some([])`: Steam returned an explicit empty array → clear prior screenshots
+/// - `Some(items)`: replace snapshot with these items
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StoreScreenshotProposal {
+    pub source_id: String,
+    pub sort_order: u16,
+    pub thumbnail_url: String,
+    pub full_url: String,
+}
+
+/// Normalized trailer/movie proposal from store appdetails.
+///
+/// Same `Option<Vec<_>>` semantics as screenshots; play URLs are whitelist-checked.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StoreMovieProposal {
+    pub source_id: String,
+    pub sort_order: u16,
+    pub title: Option<String>,
+    pub poster_url: String,
+    pub highlight: bool,
+    pub mp4_url: Option<String>,
+    pub hls_h264_url: Option<String>,
+    pub dash_h264_url: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StoreDetailsProposal {
     pub app_id: SteamAppId,
@@ -201,6 +230,10 @@ pub struct StoreDetailsProposal {
     pub publishers: Vec<String>,
     pub short_description: Option<String>,
     pub header_image_url: Option<String>,
+    /// `None` preserves prior screenshots; `Some` replaces (including empty).
+    pub screenshots: Option<Vec<StoreScreenshotProposal>>,
+    /// `None` preserves prior movies; `Some` replaces (including empty).
+    pub movies: Option<Vec<StoreMovieProposal>>,
     pub demo_app_ids: Vec<SteamAppId>,
     pub fullgame_app_id: Option<SteamAppId>,
     pub multiplayer_category_hints: Vec<String>,

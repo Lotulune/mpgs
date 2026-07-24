@@ -16,6 +16,13 @@
 
 M1 核验结果（2026-07-14，夹具 Spike）：见 [M1_FEASIBILITY.md](M1_FEASIBILITY.md)。`store.steampowered.com/api/appdetails` 可用作经批准的易变适配器，解析 `coming_soon`、原始发售日与 Demo/`fullgame` 关系；解析失败不得清空权威字段。熟人联机质量以黄金集与人工校正为准。
 
+媒体画廊扩展（2026-07-24）：同一 `appdetails` 响应可解析 `screenshots[]`（`id` / `path_thumbnail` / `path_full`）与 `movies[]`（`id` / `name` / `thumbnail` / `highlight`，以及 `hls_h264` / `dash_h264` / `dash_av1` 或旧式 `mp4`/`webm` 映射）。适配器版本 `store-appdetails-0.3.0`。规则：
+
+- 仍为 `ApprovedVolatile`；结构变化可观测；未知字段忽略。
+- 图片 URL 仅 `steamstatic.com` 子域；播放 URL 仅 Steam 视频 CDN（核验 host：`video.akamai.steamstatic.com`）。
+- 字段缺失 → 入库保留旧快照；显式 `[]` → 清空对应 kind；单项非法 URL 丢弃不拖垮整 App。
+- 不下载二进制、不代理视频流、不按 AppID 猜测媒体 URL、不暗示 Valve/Steam 官方背书。
+
 M3 实时核验结果（2026-07-14）：[Steam 商店搜索](https://store.steampowered.com/search/) 的 JSON 响应可返回 HTML 结果片段；`category2=1` 多人分类、`Reviews_DESC` 排序的低频采集在 21 个成功页面中建立 2,071 个去重 AppID 候选。此路径没有稳定公开契约，只批准用于低置信候选发现；不得据此推断合作、自建服、私人房间或主导体验。
 
 ## SQLite

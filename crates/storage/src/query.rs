@@ -61,6 +61,22 @@ pub struct PopularReviewRow {
     pub written_during_early_access: bool,
 }
 
+/// One screenshot or trailer row from `app_media_assets` (detail API only).
+#[derive(Debug, Clone, PartialEq)]
+pub struct GameMediaAssetRow {
+    pub kind: String,
+    pub source_id: String,
+    pub sort_order: u16,
+    pub title: Option<String>,
+    pub thumbnail_url: String,
+    pub full_url: Option<String>,
+    pub mp4_url: Option<String>,
+    pub hls_h264_url: Option<String>,
+    pub dash_h264_url: Option<String>,
+    pub is_highlight: bool,
+    pub updated_at_ms: i64,
+}
+
 impl GameCandidateRow {
     pub fn availability(&self) -> CandidateAvailability {
         CandidateAvailability {
@@ -425,6 +441,40 @@ pub fn search_by_name(
     Ok(out)
 }
 
+/// Load gallery assets for one app in stable sort order (no N+1).
+pub fn list_game_media_assets(
+    conn: &Connection,
+    app_id: u32,
+) -> StorageResult<Vec<GameMediaAssetRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT kind, source_id, sort_order, title, thumbnail_url, full_url,
+                mp4_url, hls_h264_url, dash_h264_url, is_highlight, updated_at_ms
+         FROM app_media_assets
+         WHERE app_id = ?1
+         ORDER BY kind ASC, sort_order ASC, source_id ASC",
+    )?;
+    let rows = stmt.query_map(params![app_id], |row| {
+        Ok(GameMediaAssetRow {
+            kind: row.get(0)?,
+            source_id: row.get(1)?,
+            sort_order: row.get::<_, i64>(2)?.clamp(0, i64::from(u16::MAX)) as u16,
+            title: row.get(3)?,
+            thumbnail_url: row.get(4)?,
+            full_url: row.get(5)?,
+            mp4_url: row.get(6)?,
+            hls_h264_url: row.get(7)?,
+            dash_h264_url: row.get(8)?,
+            is_highlight: row.get::<_, i64>(9)? != 0,
+            updated_at_ms: row.get(10)?,
+        })
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
 pub fn get_game_detail(conn: &Connection, app_id: u32) -> StorageResult<Option<GameCandidateRow>> {
     conn.query_row(
         "SELECT a.app_id, a.canonical_name, a.app_type, a.release_state, a.release_date,
@@ -739,6 +789,7 @@ pub fn data_updated_at_ms(conn: &Connection) -> StorageResult<i64> {
              UNION ALL SELECT MAX(MAX(created_at_ms, COALESCE(revoked_at_ms, 0))) FROM curation_overrides
               UNION ALL SELECT MAX(observed_at_ms) FROM release_events
               UNION ALL SELECT MAX(updated_at_ms) FROM app_media
+              UNION ALL SELECT MAX(updated_at_ms) FROM app_media_assets
               UNION ALL SELECT MAX(updated_at_ms) FROM app_localizations
           )",
         [],

@@ -1827,6 +1827,166 @@ fn feed_sections_use_earliest_known_release_date() {
     assert!(classic_ids.is_disjoint(&popular_ids));
 }
 
+#[test]
+fn store_media_gallery_ingest_replace_preserve_and_clear() {
+    let (repo, clock) = repo_with_clock(50_000);
+    let raw = RawResponse::validate(
+        200,
+        include_bytes!("../../steam-source/fixtures/store_appdetails_game.json").to_vec(),
+        Some("application/json".into()),
+        1024 * 1024,
+    )
+    .unwrap();
+    let parsed = parse_store_details(
+        &StoreDetailsRequest::with_locale(892970, "US", "english").unwrap(),
+        &raw,
+    )
+    .unwrap();
+    repo.ingest_store_details(&parsed.details, &parsed.relations)
+        .unwrap();
+
+    let assets = repo.game_media_assets(892970).unwrap();
+    assert_eq!(
+        assets.iter().filter(|a| a.kind == "screenshot").count(),
+        2
+    );
+    assert_eq!(assets.iter().filter(|a| a.kind == "movie").count(), 2);
+    let cover = repo.game_detail(892970).unwrap().unwrap();
+    assert!(cover.cover_url.is_some());
+
+    // Missing media fields preserve prior rows.
+    clock.advance_ms(10);
+    let mut no_media = parsed.details.clone();
+    no_media.screenshots = None;
+    no_media.movies = None;
+    no_media.header_image_url = None;
+    repo.ingest_store_details(&no_media, &parsed.relations)
+        .unwrap();
+    assert_eq!(repo.game_media_assets(892970).unwrap().len(), 4);
+    assert!(
+        repo.game_detail(892970)
+            .unwrap()
+            .unwrap()
+            .cover_url
+            .is_some(),
+        "cover must survive media-less refresh"
+    );
+
+    // Explicit empty arrays clear corresponding kinds only.
+    clock.advance_ms(10);
+    let mut clear_shots = parsed.details.clone();
+    clear_shots.screenshots = Some(vec![]);
+    clear_shots.movies = None;
+    repo.ingest_store_details(&clear_shots, &parsed.relations)
+        .unwrap();
+    let after_clear = repo.game_media_assets(892970).unwrap();
+    assert!(after_clear.iter().all(|a| a.kind == "movie"));
+    assert_eq!(after_clear.len(), 2);
+
+    // Replacement keeps Steam order.
+    clock.advance_ms(10);
+    repo.ingest_store_details(&parsed.details, &parsed.relations)
+        .unwrap();
+    let shots: Vec<_> = repo
+        .game_media_assets(892970)
+        .unwrap()
+        .into_iter()
+        .filter(|a| a.kind == "screenshot")
+        .collect();
+    assert_eq!(shots[0].source_id, "0");
+    assert_eq!(shots[0].sort_order, 0);
+    assert_eq!(shots[1].source_id, "1");
+    assert_eq!(shots[1].sort_order, 1);
+
+    // data_updated_at_ms includes media assets.
+    let before = repo.data_updated_at_ms().unwrap();
+    clock.advance_ms(5_000);
+    repo.ingest_store_details(&parsed.details, &parsed.relations)
+        .unwrap();
+    let after = repo.data_updated_at_ms().unwrap();
+    assert!(after > before);
+
+    // Cascading delete: media rows drop when the parent app is removed.
+    repo.database()
+        .with_conn_mut(|conn| {
+            conn.execute(
+                "INSERT INTO apps (
+                     app_id, app_type, canonical_name, release_state, created_at_ms, updated_at_ms
+                 ) VALUES (424242, 'game', 'Cascade Target', 'released', 1, 1)",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO app_media_assets (
+                     app_id, kind, source_id, sort_order, title, thumbnail_url, full_url,
+                     mp4_url, hls_h264_url, dash_h264_url, is_highlight, source, updated_at_ms
+                 ) VALUES (
+                     424242, 'screenshot', '1', 0, NULL,
+                     'https://shared.akamai.steamstatic.com/t.jpg',
+                     'https://shared.akamai.steamstatic.com/f.jpg',
+                     NULL, NULL, NULL, 0, 'test', 1
+                 )",
+                [],
+            )?;
+            conn.execute("DELETE FROM apps WHERE app_id = 424242", [])?;
+            Ok(())
+        })
+        .unwrap();
+    assert!(repo.game_media_assets(424242).unwrap().is_empty());
+}
+
+#[test]
+fn upgrade_from_v15_keeps_cover_and_empty_gallery() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("from_v15.db");
+    {
+        let db = Database::open(&path).unwrap();
+        db.with_conn_mut(|conn| {
+            migrate::migrate_to(conn, 15, 1_000)?;
+            conn.execute(
+                "INSERT INTO apps (
+                     app_id, app_type, canonical_name, release_state, created_at_ms, updated_at_ms
+                 ) VALUES (42, 'game', 'Legacy Cover', 'released', 1, 1)",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO app_media (app_id, capsule_url, source, updated_at_ms)
+                 VALUES (42, 'https://shared.akamai.steamstatic.com/legacy.jpg', 'seed', 1)",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(db.schema_version().unwrap(), 15);
+    }
+    let db = Database::open(&path).unwrap();
+    assert_eq!(db.migrate().unwrap(), latest_version());
+    let cover: String = db
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT capsule_url FROM app_media WHERE app_id = 42",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+        })
+        .unwrap();
+    assert_eq!(
+        cover,
+        "https://shared.akamai.steamstatic.com/legacy.jpg"
+    );
+    let assets: i64 = db
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM app_media_assets WHERE app_id = 42",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+        })
+        .unwrap();
+    assert_eq!(assets, 0);
+}
+
 // silence unused import warnings for types used only in docs-like examples
 #[allow(dead_code)]
 fn _types() {

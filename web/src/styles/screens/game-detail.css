@@ -35,6 +35,193 @@
   box-shadow: var(--shadow-card);
 }
 
+/* ---------- Media gallery ---------- */
+
+.detail-screen .game-media-gallery {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.detail-screen .gallery-stage {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+  background: var(--surface-2, var(--panel));
+}
+
+.detail-screen .gallery-stage-skeleton {
+  display: block;
+}
+
+.detail-screen .gallery-stage-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: zoom-in;
+}
+
+.detail-screen .gallery-stage-image img,
+.detail-screen .gallery-video,
+.detail-screen .gallery-fallback {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.detail-screen .gallery-stage-video {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.detail-screen .gallery-video {
+  background: #000;
+}
+
+.detail-screen .gallery-play-btn {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 0;
+  background: color-mix(in srgb, #000 42%, transparent);
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+}
+
+.detail-screen .gallery-play-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -4px;
+}
+
+.detail-screen .gallery-play-icon {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 999px;
+  background: color-mix(in srgb, #000 55%, transparent);
+  border: 2px solid #fff;
+  font-size: 20px;
+  padding-left: 3px;
+}
+
+.detail-screen .gallery-video-error {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  padding: 10px 12px;
+  border-radius: calc(var(--radius) - 2px);
+  background: color-mix(in srgb, var(--panel) 92%, #000);
+  border: 1px solid var(--border-strong);
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.detail-screen .gallery-video-error p {
+  margin: 0 0 6px;
+}
+
+.detail-screen .gallery-video-error a {
+  color: var(--accent);
+}
+
+.detail-screen .gallery-rail {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 2px;
+  max-width: 100%;
+  scrollbar-width: thin;
+}
+
+.detail-screen .gallery-thumb {
+  position: relative;
+  flex: 0 0 auto;
+  width: 72px;
+  height: 40px;
+  padding: 0;
+  border: 2px solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  overflow: hidden;
+  background: var(--surface-2, var(--panel));
+  cursor: pointer;
+}
+
+.detail-screen .gallery-thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.detail-screen .gallery-thumb.is-current,
+.detail-screen .gallery-thumb[aria-selected="true"] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.detail-screen .gallery-thumb:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.detail-screen .gallery-thumb-play {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  background: color-mix(in srgb, #000 35%, transparent);
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.detail-screen .gallery-fallback {
+  display: grid;
+  place-items: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .detail-screen .gallery-stage-image,
+  .detail-screen .gallery-thumb,
+  .detail-screen .gallery-play-btn {
+    transition: none;
+  }
+}
+
+/* Lightbox is portaled under body; keep styles global but namespaced. */
+.gallery-lightbox .gallery-lightbox-body {
+  max-height: min(80vh, 720px);
+  overflow: auto;
+  display: grid;
+  place-items: center;
+}
+
+.gallery-lightbox .gallery-lightbox-body img {
+  max-width: 100%;
+  max-height: min(78vh, 700px);
+  object-fit: contain;
+  border-radius: calc(var(--radius) - 2px);
+}
+
 .detail-screen .detail-hero-body {
   min-width: 0;
   display: flex;

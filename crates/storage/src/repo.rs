@@ -1159,6 +1159,14 @@ impl Repository {
             .with_conn(|conn| crate::query::get_game_detail(conn, app_id))
     }
 
+    pub fn game_media_assets(
+        &self,
+        app_id: u32,
+    ) -> StorageResult<Vec<crate::query::GameMediaAssetRow>> {
+        self.db
+            .with_conn(|conn| crate::query::list_game_media_assets(conn, app_id))
+    }
+
     pub fn popular_reviews(
         &self,
         app_id: u32,

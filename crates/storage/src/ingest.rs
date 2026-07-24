@@ -297,6 +297,8 @@ pub fn ingest_store_details(
             params![details.app_id, header_image_url, details.source, now_ms],
         )?;
     }
+    // Media gallery snapshot: None keeps prior rows; Some replaces that kind.
+    replace_app_media_assets(conn, details, now_ms)?;
     // Store adapters distinguish an explicit unknown date from a temporarily absent field.
     if details.release_date_observed {
         conn.execute(
@@ -459,6 +461,70 @@ pub fn ingest_store_details(
                 details.source,
             ],
         )?;
+    }
+    Ok(())
+}
+
+/// Replace screenshot/movie snapshots for an app inside the current transaction.
+///
+/// - `screenshots` / `movies` == `None` → leave existing rows of that kind alone
+/// - `Some(items)` → delete that kind for the app, then insert the new set
+fn replace_app_media_assets(
+    conn: &Connection,
+    details: &StoreDetailsProposal,
+    now_ms: i64,
+) -> StorageResult<()> {
+    if let Some(screenshots) = details.screenshots.as_ref() {
+        conn.execute(
+            "DELETE FROM app_media_assets WHERE app_id = ?1 AND kind = 'screenshot'",
+            params![details.app_id],
+        )?;
+        for shot in screenshots {
+            conn.execute(
+                "INSERT INTO app_media_assets (
+                     app_id, kind, source_id, sort_order, title,
+                     thumbnail_url, full_url, mp4_url, hls_h264_url, dash_h264_url,
+                     is_highlight, source, updated_at_ms
+                 ) VALUES (?1, 'screenshot', ?2, ?3, NULL, ?4, ?5, NULL, NULL, NULL, 0, ?6, ?7)",
+                params![
+                    details.app_id,
+                    shot.source_id,
+                    i64::from(shot.sort_order),
+                    shot.thumbnail_url,
+                    shot.full_url,
+                    details.source,
+                    now_ms,
+                ],
+            )?;
+        }
+    }
+    if let Some(movies) = details.movies.as_ref() {
+        conn.execute(
+            "DELETE FROM app_media_assets WHERE app_id = ?1 AND kind = 'movie'",
+            params![details.app_id],
+        )?;
+        for movie in movies {
+            conn.execute(
+                "INSERT INTO app_media_assets (
+                     app_id, kind, source_id, sort_order, title,
+                     thumbnail_url, full_url, mp4_url, hls_h264_url, dash_h264_url,
+                     is_highlight, source, updated_at_ms
+                 ) VALUES (?1, 'movie', ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    details.app_id,
+                    movie.source_id,
+                    i64::from(movie.sort_order),
+                    movie.title,
+                    movie.poster_url,
+                    movie.mp4_url,
+                    movie.hls_h264_url,
+                    movie.dash_h264_url,
+                    if movie.highlight { 1_i64 } else { 0_i64 },
+                    details.source,
+                    now_ms,
+                ],
+            )?;
+        }
     }
     Ok(())
 }

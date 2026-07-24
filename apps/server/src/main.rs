@@ -1912,6 +1912,140 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn game_detail_includes_media_gallery_contract() {
+        let (repo, app) = test_repo_and_app(RateLimitConfig::default());
+
+        // Empty media on seeded games: always-present object with empty arrays.
+        let empty = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/games/548430")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(empty.status(), StatusCode::OK);
+        let empty_json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(empty.into_body(), 1 << 20)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(empty_json["cover_url"].is_string() || empty_json["cover_url"].is_null());
+        assert!(empty_json["media"]["screenshots"].as_array().unwrap().is_empty());
+        assert!(empty_json["media"]["videos"].as_array().unwrap().is_empty());
+        assert!(empty_json["media"]["updated_at_ms"].is_null());
+
+        // Feed/search must not grow media arrays.
+        let feed = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/feeds/classic_legacy?limit=1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let feed_json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(feed.into_body(), 1 << 20)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let item = &feed_json["items"][0];
+        assert!(item.get("media").is_none());
+        assert!(item.get("screenshots").is_none());
+        assert!(item.get("videos").is_none());
+
+        // Baseline ETag for Valheim before gallery ingest.
+        let before = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/games/892970")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(before.status(), StatusCode::OK);
+        let before_etag = before.headers().get(header::ETAG).unwrap().clone();
+        let before_json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(before.into_body(), 1 << 20)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(before_json["media"]["screenshots"].as_array().unwrap().is_empty());
+
+        // Insert gallery assets directly and verify full JSON + ETag change.
+        let now_ms = repo.data_updated_at_ms().unwrap() + 10_000;
+        repo.database()
+            .with_conn_mut(|conn| {
+                let sql = format!(
+                    "INSERT INTO app_media_assets (
+                         app_id, kind, source_id, sort_order, title, thumbnail_url, full_url,
+                         mp4_url, hls_h264_url, dash_h264_url, is_highlight, source, updated_at_ms
+                     ) VALUES
+                     (892970, 'screenshot', '0', 0, NULL,
+                      'https://shared.akamai.steamstatic.com/t0.jpg',
+                      'https://shared.akamai.steamstatic.com/f0.jpg',
+                      NULL, NULL, NULL, 0, 'test', {now_ms}),
+                     (892970, 'screenshot', '1', 1, NULL,
+                      'https://shared.akamai.steamstatic.com/t1.jpg',
+                      'https://shared.akamai.steamstatic.com/f1.jpg',
+                      NULL, NULL, NULL, 0, 'test', {now_ms}),
+                     (892970, 'movie', '257363622', 0, '1.0 Release Date Reveal Trailer',
+                      'https://shared.akamai.steamstatic.com/p.jpg', NULL,
+                      NULL, 'https://video.akamai.steamstatic.com/h.m3u8',
+                      'https://video.akamai.steamstatic.com/h.mpd', 1, 'test', {now_ms}),
+                     (892970, 'movie', '1001', 1, 'Legacy MP4 Trailer',
+                      'https://shared.akamai.steamstatic.com/p2.jpg', NULL,
+                      'https://video.akamai.steamstatic.com/m.mp4', NULL, NULL, 0, 'test', {now_ms})"
+                );
+                conn.execute_batch(&sql)?;
+                Ok(())
+            })
+            .unwrap();
+
+        let rich = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/games/892970")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(rich.status(), StatusCode::OK);
+        let rich_etag = rich.headers().get(header::ETAG).unwrap().clone();
+        assert_ne!(before_etag, rich_etag);
+        let rich_json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(rich.into_body(), 1 << 20)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let shots = rich_json["media"]["screenshots"].as_array().unwrap();
+        let videos = rich_json["media"]["videos"].as_array().unwrap();
+        assert_eq!(shots.len(), 2);
+        assert_eq!(shots[0]["id"], "0");
+        assert!(shots[0]["thumbnail_url"].as_str().unwrap().starts_with("https://"));
+        assert!(shots[0]["full_url"].as_str().unwrap().starts_with("https://"));
+        assert_eq!(videos.len(), 2);
+        assert_eq!(videos[0]["id"], "257363622");
+        assert_eq!(videos[0]["highlight"], true);
+        assert!(videos[0]["hls_h264_url"].as_str().is_some());
+        assert_eq!(rich_json["media"]["updated_at_ms"], now_ms);
+        // Legacy cover fields remain.
+        assert!(rich_json.get("cover_url").is_some());
+        assert!(rich_json.get("cover_updated_at_ms").is_some());
+    }
+
+    #[tokio::test]
     async fn active_algorithm_version_is_consistent_across_public_responses() {
         let (repo, app) = test_repo_and_app(RateLimitConfig::default());
         repo.database()

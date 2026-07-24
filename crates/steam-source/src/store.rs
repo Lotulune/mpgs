@@ -9,15 +9,23 @@ use serde_json::Value;
 use crate::error::SourceError;
 use crate::proposal::{
     AppRelationProposal, AppTypeProposal, RelationTypeProposal, ReleaseStateProposal,
-    SourceStability, StoreDetailsProposal, StorePriceProposal,
+    SourceStability, StoreDetailsProposal, StoreMovieProposal, StorePriceProposal,
+    StoreScreenshotProposal,
 };
 use crate::raw::RawResponse;
 
-pub const ADAPTER_VERSION: &str = "store-appdetails-0.2.0";
+pub const ADAPTER_VERSION: &str = "store-appdetails-0.3.0";
 pub const SOURCE_NAME: &str = "steam_store_appdetails";
 /// Default storefront region for price snapshots (ISO country, lower-case query).
 pub const DEFAULT_STORE_COUNTRY: &str = "cn";
 pub const DEFAULT_STORE_LANGUAGE: &str = "schinese";
+
+/// Max screenshots retained from a single appdetails response (Steam order).
+pub const MAX_SCREENSHOTS: usize = 20;
+/// Max movies/trailers retained from a single appdetails response (Steam order).
+pub const MAX_MOVIES: usize = 5;
+/// Max Unicode scalar values kept for movie titles after trim.
+const MAX_MOVIE_TITLE_CHARS: usize = 200;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoreDetailsRequest {
@@ -117,6 +125,77 @@ struct AppDetailsData {
     price_overview: Option<PriceOverviewDto>,
     #[serde(default)]
     packages: Option<Vec<i64>>,
+    /// Missing → None (preserve prior on ingest). Explicit `[]` → Some(empty).
+    #[serde(default)]
+    screenshots: Option<Vec<ScreenshotDto>>,
+    /// Missing → None (preserve prior on ingest). Explicit `[]` → Some(empty).
+    #[serde(default)]
+    movies: Option<Vec<MovieDto>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ScreenshotDto {
+    #[serde(default)]
+    id: Option<u64>,
+    #[serde(default)]
+    path_thumbnail: Option<String>,
+    #[serde(default)]
+    path_full: Option<String>,
+}
+
+/// Nested MP4 map from older Steam movie payloads (`480` / `max`).
+#[derive(Debug, Deserialize)]
+struct MovieMp4Dto {
+    #[serde(default)]
+    #[serde(rename = "480")]
+    p480: Option<String>,
+    #[serde(default)]
+    max: Option<String>,
+}
+
+/// Nested WebM map from older Steam movie payloads (accepted but not persisted).
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+struct MovieWebmDto {
+    #[serde(default)]
+    #[serde(rename = "480")]
+    p480: Option<String>,
+    #[serde(default)]
+    max: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MovieDto {
+    #[serde(default)]
+    id: Option<u64>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    thumbnail: Option<String>,
+    #[serde(default)]
+    highlight: Option<bool>,
+    #[serde(default)]
+    hls_h264: Option<String>,
+    #[serde(default)]
+    dash_h264: Option<String>,
+    #[serde(default)]
+    dash_av1: Option<String>,
+    #[serde(default)]
+    mp4: Option<MovieMp4Dto>,
+    #[serde(default)]
+    webm: Option<MovieWebmDto>,
+}
+
+/// Aggregate counters for media structure drift / rejected URLs (no raw URL dumps).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct MediaParseStats {
+    pub screenshots_rejected: u32,
+    pub movies_rejected: u32,
+    pub urls_rejected: u32,
+    pub screenshots_deduped: u32,
+    pub movies_deduped: u32,
+    pub screenshots_truncated: u32,
+    pub movies_truncated: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -296,6 +375,16 @@ pub fn parse_store_details(
         package_id,
     );
 
+    let mut media_stats = MediaParseStats::default();
+    let screenshots = data
+        .screenshots
+        .map(|items| normalize_screenshots(items, &mut media_stats));
+    let movies = data
+        .movies
+        .map(|items| normalize_movies(items, &mut media_stats));
+    // Counters are intentional for observability in tests / future metrics hooks.
+    let _ = media_stats;
+
     let details = StoreDetailsProposal {
         app_id,
         country_code: request.country_code.trim().to_ascii_uppercase(),
@@ -317,7 +406,9 @@ pub fn parse_store_details(
         developers: data.developers.unwrap_or_default(),
         publishers: data.publishers.unwrap_or_default(),
         short_description: data.short_description,
-        header_image_url: normalize_header_image(data.header_image),
+        header_image_url: normalize_image_url(data.header_image.as_deref()),
+        screenshots,
+        movies,
         demo_app_ids: demo_app_ids.clone(),
         fullgame_app_id,
         multiplayer_category_hints,
@@ -398,18 +489,202 @@ fn normalize_price(
     None
 }
 
-fn normalize_header_image(raw: Option<String>) -> Option<String> {
-    let value = raw?.trim().to_owned();
-    let authority_and_path = value.strip_prefix("https://")?;
-    let (authority, path) = authority_and_path.split_once('/')?;
-    if authority.is_empty()
-        || path.is_empty()
-        || authority.contains(['@', ':'])
-        || !(authority == "steamstatic.com" || authority.ends_with(".steamstatic.com"))
-    {
+/// Kind of Steam media URL for host allowlisting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SteamMediaUrlKind {
+    /// Header images, screenshots, movie posters.
+    Image,
+    /// Progressive / HLS / DASH playable streams.
+    VideoPlay,
+}
+
+/// Shared Steam media URL validator used for covers, screenshots, posters, and streams.
+///
+/// Rules:
+/// - absolute `https://` only
+/// - no userinfo, explicit port, empty host, empty path, backslash, or control chars
+/// - image hosts: `steamstatic.com` and subdomains
+/// - video play hosts: `video.akamai.steamstatic.com` (plus other `*.steamstatic.com` video CDNs if needed)
+fn normalize_steam_media_url(raw: Option<&str>, kind: SteamMediaUrlKind) -> Option<String> {
+    let value = raw?.trim();
+    if value.is_empty() {
         return None;
     }
-    Some(value)
+    if value.chars().any(|ch| ch.is_control() || ch == '\\') {
+        return None;
+    }
+    let authority_and_path = value.strip_prefix("https://")?;
+    if authority_and_path.contains('@') {
+        return None;
+    }
+    let (authority, path) = authority_and_path.split_once('/')?;
+    if authority.is_empty() || path.is_empty() {
+        return None;
+    }
+    // Reject explicit ports and malformed authorities.
+    if authority.contains(':') {
+        return None;
+    }
+    let host_ok = match kind {
+        SteamMediaUrlKind::Image => {
+            authority == "steamstatic.com" || authority.ends_with(".steamstatic.com")
+        }
+        SteamMediaUrlKind::VideoPlay => is_steam_video_play_host(authority),
+    };
+    if !host_ok {
+        return None;
+    }
+    Some(value.to_owned())
+}
+
+fn is_steam_video_play_host(authority: &str) -> bool {
+    // Primary verified host from live appdetails (2026-07-24).
+    if authority == "video.akamai.steamstatic.com" {
+        return true;
+    }
+    // Other steamstatic video CDNs only when the subdomain signals video delivery.
+    authority.ends_with(".steamstatic.com")
+        && (authority.starts_with("video.") || authority.contains(".video."))
+}
+
+fn normalize_image_url(raw: Option<&str>) -> Option<String> {
+    normalize_steam_media_url(raw, SteamMediaUrlKind::Image)
+}
+
+fn normalize_video_play_url(raw: Option<&str>) -> Option<String> {
+    normalize_steam_media_url(raw, SteamMediaUrlKind::VideoPlay)
+}
+
+fn normalize_movie_title(raw: Option<String>) -> Option<String> {
+    let trimmed = raw?.trim().to_owned();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let truncated: String = trimmed.chars().take(MAX_MOVIE_TITLE_CHARS).collect();
+    Some(truncated)
+}
+
+fn normalize_screenshots(
+    items: Vec<ScreenshotDto>,
+    stats: &mut MediaParseStats,
+) -> Vec<StoreScreenshotProposal> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for item in items {
+        if out.len() >= MAX_SCREENSHOTS {
+            stats.screenshots_truncated += 1;
+            continue;
+        }
+        let Some(id) = item.id else {
+            stats.screenshots_rejected += 1;
+            continue;
+        };
+        let source_id = id.to_string();
+        if !seen.insert(source_id.clone()) {
+            stats.screenshots_deduped += 1;
+            continue;
+        }
+        let thumb = normalize_image_url(item.path_thumbnail.as_deref());
+        let full = normalize_image_url(item.path_full.as_deref());
+        let (Some(thumbnail_url), Some(full_url)) = (thumb, full) else {
+            stats.screenshots_rejected += 1;
+            stats.urls_rejected += 1;
+            continue;
+        };
+        let sort_order = out.len() as u16;
+        out.push(StoreScreenshotProposal {
+            source_id,
+            sort_order,
+            thumbnail_url,
+            full_url,
+        });
+    }
+    out
+}
+
+fn normalize_movies(
+    items: Vec<MovieDto>,
+    stats: &mut MediaParseStats,
+) -> Vec<StoreMovieProposal> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for item in items {
+        if out.len() >= MAX_MOVIES {
+            stats.movies_truncated += 1;
+            continue;
+        }
+        let Some(id) = item.id else {
+            stats.movies_rejected += 1;
+            continue;
+        };
+        let source_id = id.to_string();
+        if !seen.insert(source_id.clone()) {
+            stats.movies_deduped += 1;
+            continue;
+        }
+        let Some(poster_url) = normalize_image_url(item.thumbnail.as_deref()) else {
+            stats.movies_rejected += 1;
+            stats.urls_rejected += 1;
+            continue;
+        };
+
+        let mut url_rejections = 0u32;
+        let mp4_raw = item
+            .mp4
+            .as_ref()
+            .and_then(|m| m.max.as_deref().or(m.p480.as_deref()));
+        let mp4_url = match mp4_raw {
+            Some(raw) => match normalize_video_play_url(Some(raw)) {
+                Some(url) => Some(url),
+                None => {
+                    url_rejections += 1;
+                    None
+                }
+            },
+            None => None,
+        };
+        let hls_h264_url = match item.hls_h264.as_deref() {
+            Some(raw) => match normalize_video_play_url(Some(raw)) {
+                Some(url) => Some(url),
+                None => {
+                    url_rejections += 1;
+                    None
+                }
+            },
+            None => None,
+        };
+        let dash_h264_url = match item.dash_h264.as_deref() {
+            Some(raw) => match normalize_video_play_url(Some(raw)) {
+                Some(url) => Some(url),
+                None => {
+                    url_rejections += 1;
+                    None
+                }
+            },
+            None => None,
+        };
+        // dash_av1 / webm are observed but not persisted in the current contract.
+        let _ = (item.dash_av1, item.webm);
+
+        stats.urls_rejected += url_rejections;
+        if mp4_url.is_none() && hls_h264_url.is_none() && dash_h264_url.is_none() {
+            stats.movies_rejected += 1;
+            continue;
+        }
+
+        let sort_order = out.len() as u16;
+        out.push(StoreMovieProposal {
+            source_id,
+            sort_order,
+            title: normalize_movie_title(item.name),
+            poster_url,
+            highlight: item.highlight.unwrap_or(false),
+            mp4_url,
+            hls_h264_url,
+            dash_h264_url,
+        });
+    }
+    out
 }
 
 fn currency_for_country(country: &str) -> Option<&'static str> {
@@ -962,5 +1237,124 @@ mod tests {
         .unwrap();
         let result = parse_store_details(&StoreDetailsRequest::new(42), &raw).unwrap();
         assert_eq!(result.details.header_image_url, None);
+    }
+
+    #[test]
+    fn parses_screenshots_and_movies_with_order_dedup_and_url_rejects() {
+        let request = StoreDetailsRequest::with_locale(892970, "US", "english").unwrap();
+        let result = parse_store_details(&request, &fixture("game")).unwrap();
+
+        let screenshots = result.details.screenshots.expect("screenshots present");
+        assert_eq!(screenshots.len(), 2);
+        assert_eq!(screenshots[0].source_id, "0");
+        assert_eq!(screenshots[0].sort_order, 0);
+        assert!(screenshots[0].thumbnail_url.contains("ss_thumb_0"));
+        assert!(screenshots[0].full_url.contains("ss_full_0"));
+        assert_eq!(screenshots[1].source_id, "1");
+        assert_eq!(screenshots[1].sort_order, 1);
+
+        let movies = result.details.movies.expect("movies present");
+        assert_eq!(movies.len(), 2);
+        assert_eq!(movies[0].source_id, "257363622");
+        assert_eq!(movies[0].title.as_deref(), Some("1.0 Release Date Reveal Trailer"));
+        assert!(movies[0].highlight);
+        assert!(movies[0].mp4_url.is_none());
+        assert_eq!(
+            movies[0].hls_h264_url.as_deref(),
+            Some("https://video.akamai.steamstatic.com/steam/apps/892970/movie_highlight.m3u8")
+        );
+        assert_eq!(
+            movies[0].dash_h264_url.as_deref(),
+            Some("https://video.akamai.steamstatic.com/steam/apps/892970/movie_highlight.mpd")
+        );
+        assert_eq!(movies[1].source_id, "1001");
+        assert!(!movies[1].highlight);
+        assert_eq!(
+            movies[1].mp4_url.as_deref(),
+            Some("https://video.akamai.steamstatic.com/steam/apps/892970/movie_max.mp4")
+        );
+        assert!(movies[1].hls_h264_url.is_none());
+    }
+
+    #[test]
+    fn missing_media_fields_yield_none_not_empty_vecs() {
+        let raw = RawResponse::validate(
+            200,
+            br#"{"42":{"success":true,"data":{"steam_appid":42,"type":"game","name":"No Media"}}}"#.to_vec(),
+            Some("application/json".into()),
+            1024,
+        )
+        .unwrap();
+        let result = parse_store_details(&StoreDetailsRequest::new(42), &raw).unwrap();
+        assert_eq!(result.details.screenshots, None);
+        assert_eq!(result.details.movies, None);
+    }
+
+    #[test]
+    fn explicit_empty_media_arrays_yield_some_empty() {
+        let raw = RawResponse::validate(
+            200,
+            br#"{"42":{"success":true,"data":{"steam_appid":42,"type":"game","screenshots":[],"movies":[]}}}"#.to_vec(),
+            Some("application/json".into()),
+            1024,
+        )
+        .unwrap();
+        let result = parse_store_details(&StoreDetailsRequest::new(42), &raw).unwrap();
+        assert_eq!(result.details.screenshots.as_deref(), Some(&[][..]));
+        assert_eq!(result.details.movies.as_deref(), Some(&[][..]));
+    }
+
+    #[test]
+    fn enforces_screenshot_and_movie_caps_preserving_steam_order() {
+        let mut screenshots = String::new();
+        for i in 0..25 {
+            if i > 0 {
+                screenshots.push(',');
+            }
+            screenshots.push_str(&format!(
+                r#"{{"id":{i},"path_thumbnail":"https://shared.akamai.steamstatic.com/t/{i}.jpg","path_full":"https://shared.akamai.steamstatic.com/f/{i}.jpg"}}"#
+            ));
+        }
+        let mut movies = String::new();
+        for i in 0..8 {
+            if i > 0 {
+                movies.push(',');
+            }
+            movies.push_str(&format!(
+                r#"{{"id":{i},"name":"M{i}","thumbnail":"https://shared.akamai.steamstatic.com/p/{i}.jpg","hls_h264":"https://video.akamai.steamstatic.com/v/{i}.m3u8"}}"#
+            ));
+        }
+        let body = format!(
+            r#"{{"42":{{"success":true,"data":{{"steam_appid":42,"type":"game","screenshots":[{screenshots}],"movies":[{movies}]}}}}}}"#
+        );
+        let raw = RawResponse::validate(
+            200,
+            body.into_bytes(),
+            Some("application/json".into()),
+            64 * 1024,
+        )
+        .unwrap();
+        let result = parse_store_details(&StoreDetailsRequest::new(42), &raw).unwrap();
+        let shots = result.details.screenshots.expect("screenshots");
+        let movs = result.details.movies.expect("movies");
+        assert_eq!(shots.len(), MAX_SCREENSHOTS);
+        assert_eq!(movs.len(), MAX_MOVIES);
+        assert_eq!(shots[0].source_id, "0");
+        assert_eq!(shots[19].source_id, "19");
+        assert_eq!(movs[0].source_id, "0");
+        assert_eq!(movs[4].source_id, "4");
+    }
+
+    #[test]
+    fn rejects_video_play_urls_outside_steam_video_cdn() {
+        let raw = RawResponse::validate(
+            200,
+            br#"{"42":{"success":true,"data":{"steam_appid":42,"type":"game","movies":[{"id":1,"thumbnail":"https://shared.akamai.steamstatic.com/p.jpg","mp4":{"max":"https://cdn.example.com/x.mp4"}}]}}}"#.to_vec(),
+            Some("application/json".into()),
+            4096,
+        )
+        .unwrap();
+        let result = parse_store_details(&StoreDetailsRequest::new(42), &raw).unwrap();
+        assert_eq!(result.details.movies.as_deref(), Some(&[][..]));
     }
 }

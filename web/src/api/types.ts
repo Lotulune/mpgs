@@ -210,6 +210,34 @@ export interface NaturalLanguageRecommendationResponse {
   data_updated_at_ms: number;
 }
 
+/** Steam screenshot from game detail media gallery (server-whitelisted URLs). */
+export interface GameMediaScreenshot {
+  id: string;
+  thumbnail_url: string;
+  full_url: string;
+}
+
+/** Steam trailer metadata; play URLs may be null when unavailable for a format. */
+export interface GameMediaVideo {
+  id: string;
+  title: string | null;
+  poster_url: string;
+  highlight: boolean;
+  mp4_url: string | null;
+  hls_h264_url: string | null;
+  dash_h264_url: string | null;
+}
+
+/**
+ * Media block on game detail. Always present on new servers; older servers may
+ * omit it entirely — clients should treat missing media as empty arrays.
+ */
+export interface GameMediaBlock {
+  updated_at_ms: number | null;
+  screenshots: GameMediaScreenshot[];
+  videos: GameMediaVideo[];
+}
+
 export interface GameDetail {
   app_id: number;
   name: string;
@@ -222,6 +250,8 @@ export interface GameDetail {
   cover_updated_at_ms: number | null;
   short_description: string | null;
   steam_url: string;
+  /** Optional for older servers; treat as empty gallery when missing. */
+  media?: GameMediaBlock;
   multiplayer: {
     dominant_mode: string | null;
     private_session: boolean | null;

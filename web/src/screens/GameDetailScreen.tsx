@@ -28,7 +28,7 @@ import { useTheme } from "../app/ThemeProvider";
 import { Button } from "../components/Button";
 import { Chip } from "../components/Chip";
 import { EmptyState } from "../components/EmptyState";
-import { GameMedia } from "../components/GameMedia";
+import { GameMediaGallery } from "../components/GameMediaGallery";
 import { Panel } from "../components/Panel";
 import { Skeleton } from "../components/Skeleton";
 import { VoteButton } from "../components/VoteButton";
@@ -187,7 +187,11 @@ export function GameDetailScreen({ appId, onBack }: { appId: number; onBack: () 
           </Button>
         </div>
         <div className="detail-hero">
-          <Skeleton height={220} />
+          <div className="detail-cover">
+            <div className="gallery-stage gallery-stage-skeleton" aria-hidden="true">
+              <Skeleton height={225} />
+            </div>
+          </div>
           <div className="detail-hero-body">
             <Skeleton height={34} />
             <Skeleton height={26} />
@@ -244,7 +248,13 @@ export function GameDetailScreen({ appId, onBack }: { appId: number; onBack: () 
 
       <header className="detail-hero">
         <div className="detail-cover">
-          <GameMedia coverUrl={game.cover_url} name={game.name} appId={game.app_id} />
+          <GameMediaGallery
+            appId={game.app_id}
+            name={game.name}
+            coverUrl={game.cover_url}
+            media={game.media}
+            steamUrl={game.steam_url}
+          />
         </div>
         <div className="detail-hero-body">
           <h2 className="detail-title">{game.name}</h2>

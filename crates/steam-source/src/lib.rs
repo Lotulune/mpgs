@@ -40,7 +40,8 @@ pub use hash::{content_hash, parameter_hash};
 pub use proposal::{
     AppCatalogProposal, AppRelationProposal, AppTypeProposal, CcuProposal, PopularReviewProposal,
     PopularReviewsProposal, RelationTypeProposal, ReleaseStateProposal, ReviewSummaryProposal,
-    SourceStability, StoreDetailsProposal, StorePriceProposal,
+    SourceStability, StoreDetailsProposal, StoreMovieProposal, StorePriceProposal,
+    StoreScreenshotProposal,
 };
 pub use rate_limit::{DailyBudget, TokenBucket};
 pub use raw::RawResponse;

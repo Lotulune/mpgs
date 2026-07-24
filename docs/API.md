@@ -386,6 +386,39 @@ Embedding 或 AI 意图解析不可用时回退到 FTS 和当前偏好。
 
 当前响应的 `availability` 包含 `platforms`、`languages`、典型局时长范围、免费状态、最新价格/币种和 `has_demo`。`reviews.total` / `positive` 是 Steam 全语言评价汇总；`reviews.featured` 为按 Steam `filter=all` 顺序同步的简体中文热门评价，最多 10 条，包含正文、推荐态度、公开作者名/主页、游玩时长、有用票数和撰写时间。正文会清理 Steam BBCode 并截断到 4,000 字符。缺失值返回空数组或 `null`，客户端不得解释为明确不支持。
 
+向后兼容增量字段 `media`（始终存在于新服务端响应中；旧服务端可能省略，客户端应按空媒体处理）：
+
+```json
+{
+  "media": {
+    "updated_at_ms": 1784880000000,
+    "screenshots": [
+      {
+        "id": "0",
+        "thumbnail_url": "https://shared.akamai.steamstatic.com/...",
+        "full_url": "https://shared.akamai.steamstatic.com/..."
+      }
+    ],
+    "videos": [
+      {
+        "id": "257363622",
+        "title": "1.0 Release Date Reveal Trailer",
+        "poster_url": "https://shared.akamai.steamstatic.com/...",
+        "highlight": true,
+        "mp4_url": null,
+        "hls_h264_url": "https://video.akamai.steamstatic.com/...",
+        "dash_h264_url": "https://video.akamai.steamstatic.com/..."
+      }
+    ]
+  }
+}
+```
+
+- `media` 只出现在游戏详情；Feed、搜索、日历、社区列表**不**携带完整媒体数组。
+- 无媒体时 `screenshots` / `videos` 为 `[]`，`updated_at_ms` 为 `null`（不是 `null` 数组）。
+- URL 均经过服务端 Steam CDN 白名单；客户端不得用 AppID 猜测截图/视频 URL。
+- 现有 `cover_url` / `cover_updated_at_ms` 保持不变；媒体刷新会抬升 `data_updated_at_ms`，从而使详情 ETag 变化。
+
 ### `GET /v1/games/{app_id}/evidence`
 
 默认返回对最终推荐产生影响的公开证据摘要，不返回内部敏感备注。支持 `?feature=private_session`。

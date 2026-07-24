@@ -34,6 +34,84 @@
       },
       "demos": [
         { "appid": 1888930 }
+      ],
+      "screenshots": [
+        {
+          "id": 0,
+          "path_thumbnail": "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/892970/ss_thumb_0.jpg",
+          "path_full": "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/892970/ss_full_0.jpg"
+        },
+        {
+          "id": 1,
+          "path_thumbnail": "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/892970/ss_thumb_1.jpg",
+          "path_full": "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/892970/ss_full_1.jpg"
+        },
+        {
+          "id": 0,
+          "path_thumbnail": "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/892970/ss_dup.jpg",
+          "path_full": "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/892970/ss_dup_full.jpg"
+        },
+        {
+          "id": 99,
+          "path_thumbnail": "https://example.com/evil_thumb.jpg",
+          "path_full": "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/892970/ss_full_evil.jpg"
+        },
+        {
+          "id": 98,
+          "path_thumbnail": "http://shared.akamai.steamstatic.com/store_item_assets/steam/apps/892970/ss_http.jpg",
+          "path_full": "http://shared.akamai.steamstatic.com/store_item_assets/steam/apps/892970/ss_http_full.jpg"
+        }
+      ],
+      "movies": [
+        {
+          "id": 257363622,
+          "name": "  1.0 Release Date Reveal Trailer  ",
+          "thumbnail": "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/892970/movie_thumb.jpg",
+          "highlight": true,
+          "hls_h264": "https://video.akamai.steamstatic.com/steam/apps/892970/movie_highlight.m3u8",
+          "dash_h264": "https://video.akamai.steamstatic.com/steam/apps/892970/movie_highlight.mpd",
+          "dash_av1": "https://video.akamai.steamstatic.com/steam/apps/892970/movie_highlight_av1.mpd"
+        },
+        {
+          "id": 1001,
+          "name": "Legacy MP4 Trailer",
+          "thumbnail": "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/892970/legacy_thumb.jpg",
+          "highlight": false,
+          "mp4": {
+            "480": "https://video.akamai.steamstatic.com/steam/apps/892970/movie480.mp4",
+            "max": "https://video.akamai.steamstatic.com/steam/apps/892970/movie_max.mp4"
+          },
+          "webm": {
+            "480": "https://video.akamai.steamstatic.com/steam/apps/892970/movie480.webm",
+            "max": "https://video.akamai.steamstatic.com/steam/apps/892970/movie_max.webm"
+          }
+        },
+        {
+          "id": 257363622,
+          "name": "Duplicate highlight",
+          "thumbnail": "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/892970/dup_movie.jpg",
+          "highlight": false,
+          "hls_h264": "https://video.akamai.steamstatic.com/steam/apps/892970/dup.m3u8"
+        },
+        {
+          "id": 2002,
+          "name": "No poster",
+          "highlight": false,
+          "hls_h264": "https://video.akamai.steamstatic.com/steam/apps/892970/noposter.m3u8"
+        },
+        {
+          "id": 2003,
+          "name": "No playable URL",
+          "thumbnail": "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/892970/noplay.jpg",
+          "highlight": false
+        },
+        {
+          "id": 2004,
+          "name": "Evil video host",
+          "thumbnail": "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/892970/evil_vid.jpg",
+          "highlight": false,
+          "hls_h264": "https://evil.example.com/stream.m3u8"
+        }
       ]
     }
   }

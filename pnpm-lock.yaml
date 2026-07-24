@@ -35,6 +35,9 @@ importers:
       '@tauri-apps/api':
         specifier: ^2.8.0
         version: 2.11.1
+      hls.js:
+        specifier: ^1.5.0
+        version: 1.6.16
       react:
         specifier: ^19.1.0
         version: 19.2.7
@@ -1902,6 +1905,9 @@ packages:
   he@1.2.0:
     resolution: {integrity: sha512-F/1DnUGPopORZi0ni+CvrCgHQ5FyEAHRLSApuYWMmrbSwoN2Mn/7k+Gl38gJnR7yyDZk6WLXwiGod1JOWNDKGw==}
     hasBin: true
+
+  hls.js@1.6.16:
+    resolution: {integrity: sha512-VSIRpLfRwlAAdGL4wiTucx2ScRipo0ed1FBatWkyt832jC4CReKstga6yIhYVwGu9LOBjuX9wzmRMeQdBJtzEA==}
 
   hosted-git-info@7.0.2:
     resolution: {integrity: sha512-puUZAUKT5m8Zzvs72XWy3HtvVbTWljRE66cP60bxJzAqf2DgICo7lYTY2IHUmLnNpjYvw5bvmoHvPc0QO2a62w==}
@@ -4809,6 +4815,8 @@ snapshots:
       function-bind: 1.1.2
 
   he@1.2.0: {}
+
+  hls.js@1.6.16: {}
 
   hosted-git-info@7.0.2:
     dependencies:

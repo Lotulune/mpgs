@@ -79,6 +79,11 @@ pub const MIGRATIONS: &[(i64, &str, &str)] = &[
         "0015_m8_ai_routing",
         include_str!("../../../migrations/0015_m8_ai_routing.sql"),
     ),
+    (
+        16,
+        "0016_steam_media_gallery",
+        include_str!("../../../migrations/0016_steam_media_gallery.sql"),
+    ),
 ];
 
 pub fn current_version(conn: &Connection) -> StorageResult<i64> {

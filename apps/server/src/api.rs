@@ -5478,8 +5478,14 @@ async fn get_game(
         Ok(value) => value,
         Err(error) => return map_storage_error(error, None),
     };
+    let media_assets =
+        match storage_result(repo, move |repo| repo.game_media_assets(app_id)).await {
+            Ok(value) => value,
+            Err(error) => return map_storage_error(error, None),
+        };
     match storage_result(repo, move |repo| repo.game_detail(app_id)).await {
         Ok(Some(game)) => {
+            let media = game_media_json(&media_assets);
             let body = json!({
                 "app_id": game.app_id,
                 "name": game.name,
@@ -5492,6 +5498,7 @@ async fn get_game(
                 "cover_updated_at_ms": game.cover_updated_at_ms,
                 "short_description": game.short_description,
                 "steam_url": format!("https://store.steampowered.com/app/{app_id}/"),
+                "media": media,
                 "multiplayer": {
                     "dominant_mode": mpgs_storage::resolve_display_dominant_mode(
                         game.dominant_mode.as_deref(),
@@ -5551,6 +5558,48 @@ async fn get_game(
         Ok(None) => error_response(StatusCode::NOT_FOUND, "not_found", "game not found", None),
         Err(error) => map_storage_error(error, None),
     }
+}
+
+/// Build the always-present `media` object for game detail responses.
+fn game_media_json(assets: &[mpgs_storage::GameMediaAssetRow]) -> serde_json::Value {
+    let mut screenshots = Vec::new();
+    let mut videos = Vec::new();
+    let mut updated_at_ms: Option<i64> = None;
+    for asset in assets {
+        updated_at_ms = Some(
+            updated_at_ms
+                .map(|prev| prev.max(asset.updated_at_ms))
+                .unwrap_or(asset.updated_at_ms),
+        );
+        match asset.kind.as_str() {
+            "screenshot" => {
+                if let Some(full_url) = asset.full_url.as_ref() {
+                    screenshots.push(json!({
+                        "id": asset.source_id,
+                        "thumbnail_url": asset.thumbnail_url,
+                        "full_url": full_url,
+                    }));
+                }
+            }
+            "movie" => {
+                videos.push(json!({
+                    "id": asset.source_id,
+                    "title": asset.title,
+                    "poster_url": asset.thumbnail_url,
+                    "highlight": asset.is_highlight,
+                    "mp4_url": asset.mp4_url,
+                    "hls_h264_url": asset.hls_h264_url,
+                    "dash_h264_url": asset.dash_h264_url,
+                }));
+            }
+            _ => {}
+        }
+    }
+    json!({
+        "updated_at_ms": updated_at_ms,
+        "screenshots": screenshots,
+        "videos": videos,
+    })
 }
 
 #[derive(Debug, Deserialize, utoipa::IntoParams)]

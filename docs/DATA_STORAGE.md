@@ -183,6 +183,36 @@ computed_at_ms
 
 每个游戏最多一条推荐约束记录：平台与语言 JSON 数组、典型局时长上下界、免费状态和更新时间。平台来自 Steam `appdetails.platforms` 的结构化字段；语言由商店字符串归一化为 Steam 语言代码；典型局时长属于人工校准字段。人工覆盖平台/语言时保留商店证据，撤销后恢复最新来源值。
 
+#### `app_media`
+
+每个 App 至多一行列表封面（`capsule_url`）。由 catalog 种子、`appdetails.header_image` 或回填脚本维护，供 Feed/搜索/卡片使用。
+
+#### `app_media_assets`（migration `0016_steam_media_gallery`）
+
+一对多商店媒体快照，仅服务游戏详情画廊：
+
+```text
+PRIMARY KEY (app_id, kind, source_id)
+kind ∈ {screenshot, movie}
+sort_order
+title (movie 可选)
+thumbnail_url  -- screenshot 缩略图 / movie 海报
+full_url       -- screenshot 大图；movie 必须为 NULL
+mp4_url / hls_h264_url / dash_h264_url  -- movie 播放地址（至少一个非空）
+is_highlight
+source
+updated_at_ms
+```
+
+入库语义（与 `appdetails` 同一事务）：
+
+- `screenshots` / `movies` 字段为 `None`：保留该 kind 旧行。
+- 为 `Some(items)`（含空数组）：删除该 kind 后插入新集合。
+- 解析失败、请求失败或 `success=false` 不得清空旧媒体。
+- 不下载二进制；只存白名单 URL。截图上限 20、视频上限 5。
+- 旧库升级后表为空属正常；`app_media` 封面必须继续可用。
+- `latest_data_update_ms` 包含 `app_media_assets.updated_at_ms`。
+
 #### `feature_evidence`
 
 ```text
