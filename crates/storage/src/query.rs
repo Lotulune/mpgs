@@ -409,7 +409,12 @@ pub fn search_by_name(
         .replace('\\', "\\\\")
         .replace('%', "\\%")
         .replace('_', "\\_");
+    if escaped.is_empty() {
+        return Ok(Vec::new());
+    }
     let pattern = format!("%{escaped}%");
+    // Match both the list/display canonical string and CN/EN localization names.
+    // Other languages are intentionally not included yet.
     let mut stmt = conn.prepare(
         "SELECT a.app_id, a.canonical_name, a.app_type, a.release_state, a.release_date,
                 p.dominant_mode, p.private_session, p.online_coop, p.self_hosted_server,
@@ -430,6 +435,15 @@ pub fn search_by_name(
          LEFT JOIN app_availability v ON v.app_id = a.app_id
          LEFT JOIN app_media media ON media.app_id = a.app_id
          WHERE a.canonical_name LIKE ?1 ESCAPE '\\' COLLATE NOCASE
+            OR EXISTS (
+                SELECT 1
+                FROM app_localizations loc
+                WHERE loc.app_id = a.app_id
+                  AND lower(loc.language) IN ('schinese', 'english', 'en')
+                  AND loc.name IS NOT NULL
+                  AND trim(loc.name) != ''
+                  AND loc.name LIKE ?1 ESCAPE '\\' COLLATE NOCASE
+            )
          ORDER BY a.canonical_name
          LIMIT ?2",
     )?;

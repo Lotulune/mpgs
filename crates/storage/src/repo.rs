@@ -250,7 +250,7 @@ impl Repository {
             after_app_id,
             country_code,
             language,
-            EnrichmentNeedFilter::ALL,
+            EnrichmentNeedFilter::CLASSIC,
             MediaBackfillPolicy::DISABLED,
         )
     }
@@ -302,6 +302,7 @@ impl Repository {
         let want_excerpts = i64::from(filter.review_excerpts);
         let want_ccu = i64::from(filter.ccu);
         let want_price = i64::from(filter.price);
+        let want_english_name = i64::from(filter.english_name);
 
         // Coverage gate: only schedule media backfill when below threshold.
         let want_media = if filter.media_backfill && media_policy.enabled {
@@ -407,7 +408,22 @@ impl Repository {
                                        backfill.last_attempt_at_ms IS NULL
                                        OR backfill.last_attempt_at_ms < ?15
                                    )
-                              THEN 1 ELSE 0 END AS needs_media_backfill
+                              THEN 1 ELSE 0 END AS needs_media_backfill,
+                         CASE WHEN ?16 = 1
+                                   AND NOT EXISTS (
+                                       SELECT 1 FROM app_localizations en
+                                       WHERE en.app_id = candidates.app_id
+                                         AND lower(en.language) IN ('english', 'en')
+                                         AND en.name IS NOT NULL
+                                         AND trim(en.name) != ''
+                                   )
+                                   AND NOT EXISTS (
+                                       SELECT 1 FROM store_detail_refresh_state en_refresh
+                                       WHERE en_refresh.app_id = candidates.app_id
+                                         AND en_refresh.country_code = 'US'
+                                         AND en_refresh.language = 'english'
+                                   )
+                              THEN 1 ELSE 0 END AS needs_english_name
                      FROM candidates
                      LEFT JOIN app_availability v ON v.app_id = candidates.app_id
                      LEFT JOIN app_media_backfill_state backfill
@@ -415,7 +431,7 @@ impl Repository {
                  )
                  SELECT
                      app_id, needs_store_details, needs_reviews, needs_review_excerpts,
-                     needs_ccu, needs_price, needs_media_backfill
+                     needs_ccu, needs_price, needs_media_backfill, needs_english_name
                  FROM due
                  WHERE (needs_store_details = 1 AND ?8 = 1)
                     OR (needs_reviews = 1 AND ?9 = 1)
@@ -423,9 +439,11 @@ impl Repository {
                     OR (needs_ccu = 1 AND ?11 = 1)
                     OR (needs_price = 1 AND ?12 = 1)
                     OR (needs_media_backfill = 1 AND ?13 = 1)
+                    OR (needs_english_name = 1 AND ?16 = 1)
                  ORDER BY
                      (
                          CASE WHEN needs_media_backfill = 1 AND ?13 = 1 THEN 5 ELSE 0 END
+                       + CASE WHEN needs_english_name = 1 AND ?16 = 1 THEN 4 ELSE 0 END
                        + CASE WHEN needs_store_details = 1 AND ?8 = 1 THEN 3 ELSE 0 END
                        + CASE WHEN needs_price = 1 AND ?12 = 1 THEN 3 ELSE 0 END
                        + CASE WHEN needs_reviews = 1 AND ?9 = 1 THEN 4 ELSE 0 END
@@ -453,6 +471,7 @@ impl Repository {
                     want_media,
                     media_max_attempts,
                     media_cooldown_cutoff,
+                    want_english_name,
                 ],
                 |row| {
                     Ok(EnrichmentTarget {
@@ -463,6 +482,7 @@ impl Repository {
                         needs_ccu: row.get::<_, i64>(4)? != 0,
                         needs_price: row.get::<_, i64>(5)? != 0,
                         needs_media_backfill: row.get::<_, i64>(6)? != 0,
+                        needs_english_name: row.get::<_, i64>(7)? != 0,
                     })
                 },
             )?;
@@ -599,6 +619,92 @@ impl Repository {
                 |row| row.get(0),
             )?;
             Ok(count > 0)
+        })
+    }
+
+    /// Whether a non-empty localized display name exists for `language`.
+    pub fn app_has_localization_name(&self, app_id: u32, language: &str) -> StorageResult<bool> {
+        let language = language.trim().to_ascii_lowercase();
+        self.db.with_conn(|conn| {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM app_localizations
+                 WHERE app_id = ?1
+                   AND lower(language) = ?2
+                   AND name IS NOT NULL
+                   AND trim(name) != ''",
+                rusqlite::params![app_id, language],
+                |row| row.get(0),
+            )?;
+            Ok(count > 0)
+        })
+    }
+
+    /// Whether any store-detail refresh row exists for a locale (success or not_found).
+    pub fn has_store_detail_refresh(
+        &self,
+        app_id: u32,
+        country_code: &str,
+        language: &str,
+    ) -> StorageResult<bool> {
+        let country_code = country_code.trim().to_ascii_uppercase();
+        let language = language.trim().to_ascii_lowercase();
+        self.db.with_conn(|conn| {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM store_detail_refresh_state
+                 WHERE app_id = ?1 AND country_code = ?2 AND language = ?3",
+                rusqlite::params![app_id, country_code, language],
+                |row| row.get(0),
+            )?;
+            Ok(count > 0)
+        })
+    }
+
+    pub fn record_store_details_succeeded_locale(
+        &self,
+        app_id: u32,
+        country_code: &str,
+        language: &str,
+        source: &str,
+    ) -> StorageResult<()> {
+        let now = self.db.now_ms();
+        let country_code = country_code.trim().to_ascii_uppercase();
+        let language = language.trim().to_ascii_lowercase();
+        self.db.with_conn_mut(|conn| {
+            conn.execute(
+                "INSERT INTO store_detail_refresh_state(
+                     app_id, country_code, language, captured_at_ms, status, source
+                 ) VALUES (?1, ?2, ?3, ?4, 'succeeded', ?5)
+                 ON CONFLICT(app_id, country_code, language) DO UPDATE SET
+                     captured_at_ms = excluded.captured_at_ms,
+                     status = excluded.status,
+                     source = excluded.source",
+                rusqlite::params![app_id, country_code, language, now, source],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Upsert only localization fields (does not rewrite `apps.canonical_name`).
+    pub fn upsert_app_localization(
+        &self,
+        app_id: u32,
+        language: &str,
+        name: Option<&str>,
+        short_description: Option<&str>,
+        source: &str,
+    ) -> StorageResult<()> {
+        let now = self.db.now_ms();
+        let language = language.trim().to_ascii_lowercase();
+        self.db.with_conn_mut(|conn| {
+            catalog::upsert_app_localization(
+                conn,
+                app_id,
+                &language,
+                name,
+                short_description,
+                source,
+                now,
+            )
         })
     }
 

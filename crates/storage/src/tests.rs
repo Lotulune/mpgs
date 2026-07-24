@@ -1828,6 +1828,70 @@ fn feed_sections_use_earliest_known_release_date() {
 }
 
 #[test]
+fn search_matches_chinese_and_english_localization_names() {
+    let (repo, _) = repo_with_clock(50_000);
+    repo.database()
+        .with_conn_mut(|conn| {
+            conn.execute(
+                "INSERT INTO apps (
+                     app_id, app_type, canonical_name, release_state, created_at_ms, updated_at_ms
+                 ) VALUES
+                 (548430, 'game', '深岩银河', 'released', 1, 1),
+                 (1245620, 'game', '艾尔登法环', 'released', 1, 1)",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    repo.upsert_app_localization(
+        548430,
+        "schinese",
+        Some("深岩银河"),
+        None,
+        "test",
+    )
+    .unwrap();
+    repo.upsert_app_localization(
+        548430,
+        "english",
+        Some("Deep Rock Galactic"),
+        None,
+        "test",
+    )
+    .unwrap();
+    repo.upsert_app_localization(
+        1245620,
+        "english",
+        Some("ELDEN RING"),
+        None,
+        "test",
+    )
+    .unwrap();
+
+    let by_en = repo.search_games("Deep Rock", 10).unwrap();
+    assert_eq!(by_en.len(), 1);
+    assert_eq!(by_en[0].app_id, 548430);
+    assert_eq!(by_en[0].name, "深岩银河");
+
+    let by_zh = repo.search_games("深岩", 10).unwrap();
+    assert_eq!(by_zh.len(), 1);
+    assert_eq!(by_zh[0].app_id, 548430);
+
+    let elden_en = repo.search_games("ELDEN", 10).unwrap();
+    assert_eq!(elden_en.len(), 1);
+    assert_eq!(elden_en[0].app_id, 1_245_620);
+
+    let elden_zh = repo.search_games("艾尔登", 10).unwrap();
+    assert_eq!(elden_zh.len(), 1);
+    assert_eq!(elden_zh[0].app_id, 1_245_620);
+
+    // Unrelated languages should not match until we opt in later.
+    repo.upsert_app_localization(548430, "japanese", Some("ディープロックガラクティック"), None, "test")
+        .unwrap();
+    assert!(repo.search_games("ディープ", 10).unwrap().is_empty());
+}
+
+#[test]
 fn media_backfill_is_coverage_gated_and_attempt_limited() {
     let (repo, clock) = repo_with_clock(100_000);
     // Seed two multiplayer candidates via store ingest with categories.
@@ -1865,6 +1929,7 @@ fn media_backfill_is_coverage_gated_and_attempt_limited() {
         ccu: false,
         price: false,
         media_backfill: true,
+        english_name: false,
     };
     let due = repo
         .list_enrichment_targets_after_filtered_with_media(10, None, "CN", "schinese", filter, policy)

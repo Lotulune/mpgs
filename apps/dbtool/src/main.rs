@@ -509,6 +509,7 @@ fn run() -> Result<(), String> {
                 ccu: !skip_ccu,
                 price: !skip_store,
                 media_backfill: !skip_store && media_policy.enabled,
+                english_name: !skip_store,
             };
             let mut targets = repo
                 .list_enrichment_targets_after_filtered_with_media(
@@ -1084,6 +1085,7 @@ fn run_enrichment_worker_task(repo: &Repository, limit: u32) -> Result<(), Worke
         ccu: true,
         price: true,
         media_backfill: media_policy.enabled,
+        english_name: true,
     };
     let targets = repo
         .list_enrichment_targets_after_filtered_with_media(
@@ -1901,6 +1903,25 @@ fn enrich_steam_candidates(
             thread::sleep(Duration::from_millis(inter_request_ms));
         }
 
+        // CN/EN dual-name search: once per app, fill the missing English display name
+        // without rewriting apps.canonical_name (which stays the primary storefront name).
+        if !skip_store {
+            match ensure_english_search_name(&client, repo, target.app_id, &mut stats) {
+                Ok(true) => {
+                    app_ok = app_ok.saturating_add(1);
+                    thread::sleep(Duration::from_millis(inter_request_ms));
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    // Non-fatal: search still works on canonical Chinese name.
+                    eprintln!(
+                        "warn app_id={} english_name: {} ({})",
+                        target.app_id, error.message, error.category
+                    );
+                }
+            }
+        }
+
         if target.needs_reviews && !skip_reviews {
             match enrich_reviews(&client, repo, target.app_id, &mut stats) {
                 Ok(()) => {
@@ -2027,6 +2048,81 @@ fn enrich_store_details(
     };
     persist_with_retry(|| repo.ingest_store_details(&parsed.details, &parsed.relations))?;
     Ok(StoreDetailsOutcome::Ingested)
+}
+
+/// Fetch English store name into `app_localizations` for dual-name search.
+///
+/// Returns `Ok(true)` when a network fetch was performed, `Ok(false)` when skipped.
+fn ensure_english_search_name(
+    client: &reqwest::blocking::Client,
+    repo: &Repository,
+    app_id: u32,
+    stats: &mut EnrichStats,
+) -> Result<bool, SoftEnrichError> {
+    let map_storage = |error: mpgs_storage::StorageError| SoftEnrichError {
+        category: "storage",
+        message: error.to_string(),
+    };
+    if repo
+        .app_has_localization_name(app_id, "english")
+        .map_err(map_storage)?
+        || repo
+            .has_store_detail_refresh(app_id, "US", "english")
+            .map_err(map_storage)?
+    {
+        return Ok(false);
+    }
+    let request = StoreDetailsRequest::with_locale(app_id, "US", "english").map_err(|error| {
+        SoftEnrichError {
+            category: source_error_category(&error),
+            message: error.to_string(),
+        }
+    })?;
+    let raw = fetch_raw_with_retry(
+        client,
+        &format!("{STEAM_STORE_HOST}{}", request.path_and_query()),
+        stats,
+    )?;
+    let parsed = match parse_store_details(&request, &raw) {
+        Ok(parsed) => parsed,
+        Err(_error @ SourceError::NotFound { .. }) => {
+            persist_with_retry(|| repo.record_store_details_not_found(app_id, "US", "english"))?;
+            return Ok(true);
+        }
+        Err(error) => {
+            return Err(SoftEnrichError {
+                category: source_error_category(&error),
+                message: error.to_string(),
+            });
+        }
+    };
+    let name = parsed
+        .details
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if let Some(name) = name {
+        let short = parsed.details.short_description.as_deref();
+        persist_with_retry(|| {
+            repo.upsert_app_localization(
+                app_id,
+                "english",
+                Some(name),
+                short,
+                "steam_store_appdetails_en",
+            )
+        })?;
+    }
+    persist_with_retry(|| {
+        repo.record_store_details_succeeded_locale(
+            app_id,
+            "US",
+            "english",
+            "steam_store_appdetails_en",
+        )
+    })?;
+    Ok(true)
 }
 
 fn enrich_reviews(

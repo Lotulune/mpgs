@@ -145,6 +145,8 @@ pub struct EnrichmentTarget {
     pub needs_price: bool,
     /// Missing gallery media and eligible for a bounded store re-fetch.
     pub needs_media_backfill: bool,
+    /// Missing English display name for dual-name search.
+    pub needs_english_name: bool,
 }
 
 /// Which enrichment dimensions should be selected and prioritized.
@@ -159,6 +161,7 @@ pub struct EnrichmentNeedFilter {
     pub ccu: bool,
     pub price: bool,
     pub media_backfill: bool,
+    pub english_name: bool,
 }
 
 impl EnrichmentNeedFilter {
@@ -169,6 +172,18 @@ impl EnrichmentNeedFilter {
         ccu: true,
         price: true,
         media_backfill: true,
+        english_name: true,
+    };
+
+    /// Store/reviews/CCU/price only — used by classic `list_enrichment_targets`.
+    pub const CLASSIC: Self = Self {
+        store: true,
+        reviews: true,
+        review_excerpts: true,
+        ccu: true,
+        price: true,
+        media_backfill: false,
+        english_name: false,
     };
 
     pub fn any(self) -> bool {
@@ -178,6 +193,7 @@ impl EnrichmentNeedFilter {
             || self.ccu
             || self.price
             || self.media_backfill
+            || self.english_name
     }
 }
 
@@ -223,6 +239,7 @@ impl EnrichmentTarget {
             || self.needs_ccu
             || self.needs_price
             || self.needs_media_backfill
+            || self.needs_english_name
     }
 
     pub fn needs_store_fetch(self) -> bool {
@@ -236,6 +253,7 @@ impl EnrichmentTarget {
             + u8::from(self.needs_ccu)
             + u8::from(self.needs_price)
             + u8::from(self.needs_media_backfill)
+            + u8::from(self.needs_english_name)
     }
 
     pub fn matches_filter(self, filter: EnrichmentNeedFilter) -> bool {
@@ -245,6 +263,7 @@ impl EnrichmentTarget {
             || (filter.ccu && self.needs_ccu)
             || (filter.price && self.needs_price)
             || (filter.media_backfill && self.needs_media_backfill)
+            || (filter.english_name && self.needs_english_name)
     }
 }
 

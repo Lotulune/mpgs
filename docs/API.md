@@ -252,13 +252,18 @@ order=asc|desc
 
 ### `GET /v1/search`
 
-用于名称和普通全文搜索：
+用于名称搜索（**中英双名**）：
 
 ```text
 ?q=deep+rock&party_size=4&limit=20
 ```
 
-不调用在线 AI。可使用 FTS 和确定性排序。
+匹配范围：
+
+- `apps.canonical_name`（列表展示用主名，生产多为简中店面名）；
+- `app_localizations.name` 中语言为 `schinese` / `english`（及 `en`）的字段。
+
+因此简中主名游戏在补全英文本地化名后，可用英文原名搜到；Valheim 这类主名本身含中英时，两种片段都可命中。其它语言名暂不参与。大小写对 ASCII 不敏感（`COLLATE NOCASE`）。不调用在线 AI。
 
 ### `POST /v1/search/semantic`
 
