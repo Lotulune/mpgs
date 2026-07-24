@@ -61,6 +61,7 @@
 }
 
 .detail-screen .gallery-stage-image {
+  position: relative;
   display: block;
   width: 100%;
   height: 100%;
@@ -77,6 +78,32 @@
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+.detail-screen .gallery-zoom-hint {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  line-height: 1.2;
+  color: #fff;
+  background: color-mix(in srgb, #000 55%, transparent);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.detail-screen .gallery-stage-image:hover .gallery-zoom-hint,
+.detail-screen .gallery-stage-image:focus-visible .gallery-zoom-hint {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .detail-screen .gallery-zoom-hint {
+    transition: none;
+  }
 }
 
 .detail-screen .gallery-stage-video {
@@ -207,19 +234,125 @@
   }
 }
 
-/* Lightbox is portaled under body; keep styles global but namespaced. */
-.gallery-lightbox .gallery-lightbox-body {
-  max-height: min(80vh, 720px);
-  overflow: auto;
+/* Full-viewport photo lightbox with wheel zoom + drag pan. */
+.gallery-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 500;
   display: grid;
+  grid-template-rows: auto 1fr auto;
   place-items: center;
+  padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right))
+    max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+  background: rgb(0 0 0 / 84%);
+  cursor: zoom-out;
+  overflow: hidden;
+  user-select: none;
+  touch-action: none;
 }
 
-.gallery-lightbox .gallery-lightbox-body img {
-  max-width: 100%;
-  max-height: min(78vh, 700px);
+.gallery-lightbox.is-zoomed {
+  cursor: grab;
+}
+
+.gallery-lightbox.is-dragging {
+  cursor: grabbing;
+}
+
+.gallery-lightbox-toolbar {
+  z-index: 502;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 10px 14px;
+  margin-top: 4px;
+  pointer-events: none;
+}
+
+.gallery-lightbox-scale {
+  min-width: 3.5em;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgb(0 0 0 / 50%);
+  border: 1px solid rgb(255 255 255 / 22%);
+  color: #fff;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.gallery-lightbox-hint {
+  color: rgb(255 255 255 / 72%);
+  font-size: 12px;
+}
+
+.gallery-lightbox-stage {
+  position: relative;
+  width: min(96vw, 1400px);
+  height: min(78vh, 820px);
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: calc(var(--radius) - 2px);
+  cursor: inherit;
+}
+
+.gallery-lightbox-img {
+  display: block;
+  max-width: min(96vw, 1400px);
+  max-height: min(78vh, 820px);
+  width: auto;
+  height: auto;
   object-fit: contain;
   border-radius: calc(var(--radius) - 2px);
+  box-shadow: 0 18px 48px rgb(0 0 0 / 45%);
+  background: rgb(0 0 0 / 35%);
+  transform-origin: center center;
+  will-change: transform;
+  pointer-events: none;
+}
+
+.gallery-lightbox-caption {
+  margin: 8px 0 0;
+  max-width: min(90vw, 720px);
+  color: rgb(255 255 255 / 88%);
+  font-size: 13px;
+  text-align: center;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+}
+
+.gallery-lightbox-close {
+  position: fixed;
+  top: max(12px, env(safe-area-inset-top));
+  right: max(12px, env(safe-area-inset-right));
+  z-index: 503;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 1px solid rgb(255 255 255 / 28%);
+  border-radius: 999px;
+  background: rgb(0 0 0 / 45%);
+  color: #fff;
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.gallery-lightbox-close:hover,
+.gallery-lightbox-close:focus-visible {
+  background: rgb(0 0 0 / 65%);
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gallery-lightbox-img {
+    transition: none;
+  }
 }
 
 .detail-screen .detail-hero-body {

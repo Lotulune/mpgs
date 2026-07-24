@@ -265,7 +265,7 @@ describe("GameMediaGallery", () => {
     unmount();
   });
 
-  it("opens lightbox for images and Escape closes without bubbling to the page", () => {
+  it("opens a full-viewport zoom lightbox and Escape closes without going back", () => {
     const { host, unmount } = mountGallery({ media: fullMedia });
     const underlying = vi.fn();
     window.addEventListener("keydown", underlying);
@@ -273,19 +273,67 @@ describe("GameMediaGallery", () => {
     act(() => {
       host.querySelector<HTMLButtonElement>(".gallery-stage-image")?.click();
     });
-    expect(host.querySelector(".gallery-lightbox")).toBeTruthy();
-    expect(document.querySelector('[role="dialog"][aria-modal="true"]')).toBeTruthy();
+    const lightbox = document.querySelector<HTMLElement>(".gallery-lightbox");
+    expect(lightbox).toBeTruthy();
+    expect(lightbox?.getAttribute("role")).toBe("dialog");
+    expect(lightbox?.getAttribute("aria-modal")).toBe("true");
+    expect(document.querySelector(".gallery-lightbox-img")).toBeTruthy();
+    // Must not look like the form Modal card.
+    expect(document.querySelector(".modal-backdrop")).toBeNull();
+    expect(document.querySelector(".modal-head")).toBeNull();
 
-    const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
     act(() => {
-      dialog.dispatchEvent(
-        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          bubbles: true,
+          cancelable: true,
+        }),
       );
     });
-    // Modal stops propagation; page handler must not run for the dialog key path.
+    expect(document.querySelector(".gallery-lightbox")).toBeNull();
+    // Capture-phase handler should prevent the detail page from treating Escape as back.
     expect(underlying).not.toHaveBeenCalled();
 
     window.removeEventListener("keydown", underlying);
+    unmount();
+  });
+
+  it("supports wheel zoom scale changes in the lightbox", () => {
+    const { host, unmount } = mountGallery({ media: fullMedia });
+    act(() => {
+      host.querySelector<HTMLButtonElement>(".gallery-stage-image")?.click();
+    });
+
+    const stage = document.querySelector<HTMLDivElement>(".gallery-lightbox-stage")!;
+    const img = document.querySelector<HTMLImageElement>(".gallery-lightbox-img")!;
+    expect(img.style.transform).toContain("scale(1)");
+    expect(document.querySelector(".gallery-lightbox-scale")?.textContent).toBe("100%");
+
+    act(() => {
+      stage.dispatchEvent(
+        new WheelEvent("wheel", {
+          deltaY: -120,
+          clientX: 200,
+          clientY: 200,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+    expect(document.querySelector(".gallery-lightbox-scale")?.textContent).not.toBe("100%");
+    expect(img.style.transform).toMatch(/scale\((?!1(?:\.0+)?\))/);
+    expect(document.querySelector(".gallery-lightbox")?.classList.contains("is-zoomed")).toBe(
+      true,
+    );
+
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "0", bubbles: true, cancelable: true }),
+      );
+    });
+    expect(document.querySelector(".gallery-lightbox-scale")?.textContent).toBe("100%");
+
     unmount();
   });
 });
